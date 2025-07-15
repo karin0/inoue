@@ -45,76 +45,110 @@ def render_sign(v: float | int) -> str:
     return f'{v:+.3}'
 
 
-def render_val(v: tuple[int, float | int] | int) -> str:
-    if isinstance(v, tuple):
-        if v[1] == 0:
-            v = v[0]
-        else:
-            return f'{v[0]} ({render_sign(v[1])})'
+def render_pair(x, y) -> str:
+    if y == 0:
+        return str(x)
+    return f'{x} ({render_sign(y)})'
 
-    return str(v)
+
+class Value:
+    def __init__(self, raw: float):
+        self.raw = raw
+        self.cost = round(raw)
+
+    @property
+    def adj(self):
+        return self.cost - self.raw
+
+    def __str__(self):
+        return render_pair(self.cost, self.adj)
+
+
+def alter(items: list[Value], real_tot: int | None = None) -> tuple[int, float]:
+    tot = sum(item.raw for item in items)
+    if real_tot:
+        assert real_tot == floor(tot)
+    else:
+        real_tot = floor(tot)
+
+    # Alter the last value to match the total
+    d = sum(item.cost for item in items) - real_tot
+    n = len(items)
+    if d:
+        assert -n < d < n
+        t = sorted(items, key=lambda x: x.adj)
+        if d > 0:
+            for x in t[-d:]:
+                x.cost -= 1
+        else:
+            for x in t[:-d]:
+                x.cost += 1
+
+    assert real_tot == sum(item.cost for item in items)
+    return real_tot, tot
+
+
+def cny_rounder(x: float) -> float:
+    return round(x * 100)
 
 
 def _handle(text: str):
     real_tot: int | None = None
-    tot: float = 0
-    raw_vals: list[float] = []
-    vals: list[int] = []
     tax: float = 1.08
+    items: list[Value] = []
+    alt_tots: list[float] = []
+    alt_bases: list[int] = []
 
     for line in text.splitlines():
         parts = line.split()
         if not parts:
             continue
-
-        part = parts[0]
-
-        if len(parts) == 2 and not part.isdigit():
-            cmd = part
-            part = parts[1]
+        if len(parts) == 2 and not parts[0].isdigit():
+            cmd, arg = parts
             if cmd == '=':
                 if real_tot:
                     raise SyntaxError('Unexpected "=" command')
-                real_tot = int(part)
+                real_tot = int(arg)
             elif cmd.startswith('t'):
-                tax = calc(part)
+                tax = calc(arg)
+            elif cmd.startswith('a'):
+                # Find the precision of the argument
+                p = arg.find('.')
+                if p >= 0:
+                    base = 10 ** (len(arg) - p - 1)
+                    alt_bases.append(base)
+                    alt_tots.append(int(calc(arg) * base))
+                else:
+                    alt_bases.append(1)
+                    alt_tots.append(calc(arg))
             else:
                 raise SyntaxError(f'Unknown command: {cmd}')
             continue
+        v = calc(parts[0]) * tax if len(parts) == 1 else functools.reduce(lambda x, y: x * y, map(calc, parts))
+        items.append(Value(v))
 
-        if len(parts) == 1:
-            v = calc(part) * tax
-        else:
-            v = functools.reduce(lambda x, y: x * y, map(calc, parts))
-
-        tot += v
-        raw_vals.append(v)
-        vals.append(round(v))
-
-    if not vals:
+    if not items:
         raise ValueError('No values provided')
 
-    if not real_tot:
-        real_tot = floor(tot)
+    real_tot, tot = alter(items, real_tot)
+    results = [render_pair(real_tot, real_tot - tot)]
 
-    # Alter the last value to match the total
-    d = sum(vals) - real_tot
-    n = len(vals)
-    pairs = []
-    for i in range(n):
-        pairs.append((vals[i], vals[i] - raw_vals[i]))
+    dss = [items]
+    for alt_tot, base in zip(alt_tots, alt_bases):
+        alt_items = [Value(x.raw * alt_tot / tot) for x in items]
+        dss.append(alt_items)
+        r1, r2 = alter(alt_items)
+        if base != 1:
+            r1 /= base
+            r2 /= base
+            for x in alt_items:
+                x.cost /= base
+                x.raw /= base
+        results.append(render_pair(r1, r1 - r2))
 
-    if d:
-        assert d <= n
-        for i in sorted(range(n), key=lambda i: vals[i] - raw_vals[i])[-d:]:
-            p = pairs[i]
-            pairs[i] = (p[0] - 1, p[1] - 1)
-
-    assert real_tot == sum(v[0] if isinstance(v, tuple) else v for v in pairs)
-
-    d = tot - real_tot
-    pairs.append((f'= {real_tot}', -d))
-    return '\n'.join(map(render_val, pairs))
+    res = [' | '.join(str(dss[j][i]) for j in range(len(dss))) for i in range(len(items))]
+    res.append('= ' + ' | '.join(results))
+    return '\n'.join(res)
 
 
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
