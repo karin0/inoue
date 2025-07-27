@@ -8,7 +8,7 @@ from collections import defaultdict
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler
 
-USER_ID = 545183649
+USER_ID = os.environ['USER_ID']
 
 
 def get_logger(name):
