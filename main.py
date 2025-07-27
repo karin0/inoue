@@ -74,7 +74,7 @@ def alter(items: list[Value], real_tot: int):
     d = sum(item.cost for item in items) - real_tot
     n = len(items)
     if d:
-        assert -n < d < n
+        assert -n <= d <= n
         t = sorted(items, key=lambda x: x.adj)
         if d > 0:
             for x in t[-d:]:
@@ -97,7 +97,7 @@ def _handle(text: str):
         parts = line.split()
         if not parts:
             continue
-        if len(parts) == 2 and not parts[0].isdigit():
+        if len(parts) == 2 and not parts[0][0].isdigit():
             cmd, arg = parts
             if cmd == '=':
                 if the_real_tot:
