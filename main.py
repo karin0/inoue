@@ -2,6 +2,9 @@ import os
 import logging
 import functools
 from math import floor
+from typing import Hashable
+from collections import defaultdict
+
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler
 
@@ -52,9 +55,10 @@ def render_pair(x, y) -> str:
 
 
 class Value:
-    def __init__(self, raw: float):
+    def __init__(self, raw: float, kind: Hashable = None):
         self.raw = raw
         self.cost = round(raw)
+        self.kind = kind  # Total cost is floor-ed for each group by kind
 
     @property
     def adj(self):
@@ -63,14 +67,10 @@ class Value:
     def __str__(self):
         return render_pair(self.cost, self.adj)
 
+    __repr__ = __str__
 
-def alter(items: list[Value], real_tot: int | None = None) -> tuple[int, float]:
-    tot = sum(item.raw for item in items)
-    if real_tot:
-        assert real_tot == floor(tot)
-    else:
-        real_tot = floor(tot)
 
+def alter(items: list[Value], real_tot: int):
     # Alter the last value to match the total
     d = sum(item.cost for item in items) - real_tot
     n = len(items)
@@ -85,15 +85,10 @@ def alter(items: list[Value], real_tot: int | None = None) -> tuple[int, float]:
                 x.cost += 1
 
     assert real_tot == sum(item.cost for item in items)
-    return real_tot, tot
-
-
-def cny_rounder(x: float) -> float:
-    return round(x * 100)
 
 
 def _handle(text: str):
-    real_tot: int | None = None
+    the_real_tot: int | None = None
     tax: float = 1.08
     items: list[Value] = []
     alt_tots: list[float] = []
@@ -106,9 +101,9 @@ def _handle(text: str):
         if len(parts) == 2 and not parts[0].isdigit():
             cmd, arg = parts
             if cmd == '=':
-                if real_tot:
+                if the_real_tot:
                     raise SyntaxError('Unexpected "=" command')
-                real_tot = int(arg)
+                the_real_tot = int(arg)
             elif cmd.startswith('t'):
                 tax = calc(arg)
             elif cmd.startswith('a'):
@@ -124,20 +119,37 @@ def _handle(text: str):
             else:
                 raise SyntaxError(f'Unknown command: {cmd}')
             continue
-        v = calc(parts[0]) * tax if len(parts) == 1 else functools.reduce(lambda x, y: x * y, map(calc, parts))
-        items.append(Value(v))
+
+        if len(parts) == 1:
+            v = calc(parts[0]) * tax
+            items.append(Value(v, tax))
+        else:
+            v = functools.reduce(lambda x, y: x * y, map(calc, parts))
+            items.append(Value(v, parts[1]))
 
     if not items:
         raise ValueError('No values provided')
 
-    real_tot, tot = alter(items, real_tot)
+    tot = sum(item.raw for item in items)
+
+    tot_dict = defaultdict(float)
+    for item in items:
+        tot_dict[item.kind] += item.raw
+    real_tot = sum(floor(v) for v in tot_dict.values())
+
+    if the_real_tot is not None and the_real_tot != real_tot:
+        raise ValueError(f'{the_real_tot} != {real_tot}')
+
+    alter(items, real_tot)
     results = [render_pair(real_tot, real_tot - tot)]
 
     dss = [items]
     for alt_tot, base in zip(alt_tots, alt_bases):
         alt_items = [Value(x.raw * alt_tot / tot) for x in items]
         dss.append(alt_items)
-        r1, r2 = alter(alt_items)
+        alter(alt_items, alt_tot)
+        r1 = alt_tot
+        r2 = sum(x.raw for x in alt_items)
         if base != 1:
             r1 /= base
             r2 /= base
