@@ -8,7 +8,7 @@ from collections import defaultdict
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler
 
-USER_ID = os.environ['USER_ID']
+USER_ID = int(os.environ['USER_ID'])
 
 
 def get_logger(name):
@@ -58,7 +58,7 @@ class Value:
     def __init__(self, raw: float, kind: Hashable = None):
         self.raw = raw
         self.cost = round(raw)
-        self.kind = kind  # Total cost is floor-ed for each group by kind
+        self.kind = kind  # Total cost is rounded for each group by kind
 
     @property
     def adj(self):
@@ -71,7 +71,6 @@ class Value:
 
 
 def alter(items: list[Value], real_tot: int):
-    # Alter the last value to match the total
     d = sum(item.cost for item in items) - real_tot
     n = len(items)
     if d:
@@ -121,16 +120,12 @@ def _handle(text: str):
             continue
 
         if len(parts) == 1:
-            v = calc(parts[0]) * tax
-            items.append(Value(v, tax))
+            items.append(Value(calc(parts[0]) * tax, tax))
         else:
-            v = functools.reduce(lambda x, y: x * y, map(calc, parts))
-            items.append(Value(v, parts[1]))
+            items.append(Value(functools.reduce(lambda x, y: x * y, map(calc, parts)), parts[1]))
 
     if not items:
         raise ValueError('No values provided')
-
-    tot = sum(item.raw for item in items)
 
     tot_dict = defaultdict(float)
     for item in items:
@@ -141,11 +136,11 @@ def _handle(text: str):
         raise ValueError(f'{the_real_tot} != {real_tot}')
 
     alter(items, real_tot)
-    results = [render_pair(real_tot, real_tot - tot)]
+    results = [render_pair(real_tot, real_tot - sum(item.raw for item in items))]
 
     dss = [items]
     for alt_tot, base in zip(alt_tots, alt_bases):
-        alt_items = [Value(x.raw * alt_tot / tot) for x in items]
+        alt_items = [Value(x.cost * alt_tot / real_tot) for x in items]
         dss.append(alt_items)
         alter(alt_items, alt_tot)
         r1 = alt_tot
@@ -196,6 +191,7 @@ def main():
     log.info('Starting Inoue bot...')
     application.run_polling()
     log.info('Inoue Bot stopped.')
+
 
 if __name__ == '__main__':
     main()
