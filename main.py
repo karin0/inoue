@@ -2,11 +2,21 @@ import os
 import logging
 import functools
 from math import floor
-from typing import Hashable
+from typing import Callable, Coroutine, Hashable
 from collections import defaultdict
 
-from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler
+from telegram import Update, Bot
+from telegram.ext import (
+    ApplicationBuilder,
+    ContextTypes,
+    MessageHandler,
+    CommandHandler,
+    CallbackQueryHandler,
+    Application,
+)
+
+from run import *
+from rg import handle_rg, handle_start, handle_callback
 
 USER_ID = int(os.environ['USER_ID'])
 
@@ -154,43 +164,87 @@ def _handle(text: str):
         results.append(f'{tot} (x{tot / real_tot:.6f})')
         dss.append(alt_items)
 
-    res = [' | '.join(str(dss[j][i]) for j in range(len(dss))) for i in range(len(items))]
+    res = [
+        ' | '.join(str(dss[j][i]) for j in range(len(dss))) for i in range(len(items))
+    ]
     res.append('= ' + ' | '.join(results))
     return '\n'.join(res)
 
 
-async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message
-    if not msg or not msg.text or not msg.from_user or not update.effective_chat:
-        raise ValueError('Invalid message')
+def auth(
+    func: Callable[[Update, ContextTypes.DEFAULT_TYPE], Coroutine],
+) -> Callable[[Update, ContextTypes.DEFAULT_TYPE], Coroutine]:
+    @functools.wraps(func)
+    async def wrapper(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        msg = update.message
+        if not update.effective_user or not update.effective_chat:
+            raise ValueError('Invalid message')
 
-    text = msg.text.strip()
-    rendered_text = text.replace('\n', ' ').replace('\r', ' ')
-    if len(rendered_text) > 30:
-        rendered_text = rendered_text[:27]
-    user = msg.from_user
+        user = update.effective_user
+        if msg:
+            text = msg.text.strip().replace('\n', ' ').replace('\r', ' ')
+            if len(text) > 30:
+                text = text[:30] + '...'
 
-    log.info('%s (%s %s): %s', user.full_name, user.name, user.id, rendered_text)
-    if user.id != USER_ID:
-        log.info('Drop message from unknown user')
-        return
+            log.info('%s (%s %s): %s', user.full_name, user.name, user.id, text)
+        elif update.callback_query:
+            text = update.callback_query.data
+            log.info(
+                '%s (%s %s): callback %s', user.full_name, user.name, user.id, text
+            )
+        else:
+            log.info('%s (%s %s): ? %s', user.full_name, user.name, user.id, update)
 
-    try:
-        r = _handle(text)
-    except Exception as e:
-        r = f'{type(e).__name__}: {str(e)}'
-        log.exception(r)
+        if user.id != USER_ID:
+            log.info('Drop message from unknown user')
+            return
 
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=r)
+        try:
+            return await func(update, ctx)
+        except Exception as e:
+            r = f'{type(e).__name__}: {str(e)}'
+            log.exception('%s', r)
+            if msg:
+                await msg.reply_text(r, do_quote=True)
+
+    return wrapper
+
+
+@auth
+async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if text.startswith('/'):
+        return await handle_cmd(update, text[1:].strip())
+    if '\n' not in text:
+        return await handle_rg(update, ctx)
+    await update.message.reply_text(_handle(text), do_quote=True)
+
+
+async def post_init(app: Application) -> None:
+    bot: Bot = app.bot
+    await bot.set_my_commands(
+        (
+            ('start', 'start'),
+            ('run', 'run'),
+            ('update', 'update'),
+            ('rg', 'rg'),
+        )
+    )
 
 
 def main():
     token = os.environ['TELEGRAM_BOT_TOKEN']
-    application = ApplicationBuilder().token(token).build()
+    app = ApplicationBuilder().token(token).post_init(post_init).build()
 
-    application.add_handler(MessageHandler(None, handle))
+    app.add_handler(CommandHandler('start', auth(handle_start)))
+    app.add_handler(CommandHandler('run', auth(handle_run)))
+    app.add_handler(CommandHandler('update', auth(handle_update)))
+    app.add_handler(CommandHandler('rg', auth(handle_rg)))
+    app.add_handler(CallbackQueryHandler(auth(handle_callback)))
+    app.add_handler(MessageHandler(None, handle_msg))
+
     log.info('Starting Inoue bot...')
-    application.run_polling()
+    app.run_polling()
     log.info('Inoue Bot stopped.')
 
 
