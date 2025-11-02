@@ -189,6 +189,8 @@ async def handle_rg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not arg:
         return await update.message.reply_text('Provide a keyword.', do_quote=True)
 
+    cwd_offset = '' if update.message.text.startswith('/rg') else '2'
+
     child = await asyncio.create_subprocess_exec(
         'rg',
         '-m',
@@ -197,7 +199,7 @@ async def handle_rg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         'path',
         '--json',
         arg,
-        cwd='/data/app/gmact/out2',
+        cwd='/data/app/gmact/out' + cwd_offset,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
