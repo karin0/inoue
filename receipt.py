@@ -54,7 +54,7 @@ def alter(items: list[Value], real_tot: int):
     assert real_tot == sum(item.cost for item in items)
 
 
-def render_calc(text: str):
+def render_receipt(text: str):
     the_real_tot: int | None = None
     tax: float = 1.08
     items: list[Value] = []

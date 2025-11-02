@@ -2,21 +2,29 @@ import os
 import functools
 from typing import Callable, Coroutine
 
-from telegram import Update, Bot
+from telegram import InlineQueryResultArticle, InputTextMessageContent, Update, Bot
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
     MessageHandler,
     CommandHandler,
     CallbackQueryHandler,
+    InlineQueryHandler,
     Application,
 )
 
 from util import log, shorten
-from calc import render_calc
+from receipt import render_receipt
 from run import handle_run, handle_cmd, handle_update
 from rg import handle_rg, handle_rg_callback, handle_start
-from render import handle_render, handle_doc, init_render, handle_render_callback
+from render import (
+    handle_render,
+    handle_doc,
+    handle_render_inline_query,
+    init_render,
+    handle_render_callback,
+    close_render,
+)
 
 USER_ID = int(os.environ['USER_ID'])
 CHAN_ID = int(os.environ['CHAN_ID'])
@@ -52,6 +60,12 @@ def auth(
                 src,
                 shorten(update.edited_channel_post.text),
             )
+        elif update.inline_query:
+            log.info(
+                '%s: inline query %s',
+                src,
+                shorten(update.inline_query.query),
+            )
         else:
             log.info('%s: unknown: %s', src, update)
 
@@ -70,7 +84,6 @@ def auth(
     return wrapper
 
 
-@auth
 async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         if post := update.edited_channel_post or update.channel_post:
@@ -85,7 +98,7 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await handle_cmd(update, text[1:].strip())
     if '\n' not in text:
         return await handle_rg(update, ctx)
-    await update.message.reply_text(render_calc(text), do_quote=True)
+    await update.message.reply_text(render_receipt(text), do_quote=True)
 
 
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -97,6 +110,15 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await handle_rg_callback(data)
     elif data.startswith(':'):
         await handle_render_callback(update, ctx, data)
+
+
+async def handle_inline_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.inline_query
+    log.info(
+        'Inline query from %s: %s', query.from_user.full_name, shorten(query.query)
+    )
+    if query and (text := query.query.strip()):
+        return await handle_render_inline_query(query, text)
 
 
 async def post_init(app: Application) -> None:
@@ -114,9 +136,19 @@ async def post_init(app: Application) -> None:
     init_render('doc.db')
 
 
+async def post_stop(_: Application) -> None:
+    close_render()
+    log.info('Database closed.')
+
+
 def main():
-    token = os.environ['TELEGRAM_BOT_TOKEN']
-    app = ApplicationBuilder().token(token).post_init(post_init).build()
+    app = (
+        ApplicationBuilder()
+        .token(os.environ['TELEGRAM_BOT_TOKEN'])
+        .post_init(post_init)
+        .post_stop(post_stop)
+        .build()
+    )
 
     app.add_handler(CommandHandler('start', auth(handle_start)))
     app.add_handler(CommandHandler('run', auth(handle_run)))
@@ -125,7 +157,8 @@ def main():
     app.add_handler(CommandHandler('render', auth(handle_render)))
 
     app.add_handler(CallbackQueryHandler(auth(handle_callback)))
-    app.add_handler(MessageHandler(None, handle_msg))
+    app.add_handler(InlineQueryHandler(auth(handle_inline_query)))
+    app.add_handler(MessageHandler(None, auth(handle_msg)))
 
     log.info('Starting Inoue bot...')
     app.run_polling()

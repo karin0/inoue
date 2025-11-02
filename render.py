@@ -3,6 +3,9 @@ import atexit
 import dbm.sqlite3
 
 from telegram import (
+    InlineQuery,
+    InlineQueryResultArticle,
+    InputTextMessageContent,
     Update,
     Message,
     InlineKeyboardMarkup,
@@ -22,9 +25,17 @@ def init_render(file):
     atexit.register(db.close)
 
 
+def close_render():
+    global db
+    if db is not None:
+        db.close()
+        atexit.unregister(db.close)
+        db = None
+
+
 def make_markup(data: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup.from_button(
-        InlineKeyboardButton(text='Refresh', callback_data=data)
+        InlineKeyboardButton(text='Refresh: ' + data[1:], callback_data=data)
     )
 
 
@@ -36,6 +47,22 @@ def render_text(text: str, ctx: dict[str]) -> str:
 
     log.info('rendered %d -> %d', len(text), len(result))
     return result
+
+
+def render_text_markup(text: str) -> tuple[str, InlineKeyboardMarkup | None]:
+    ctx = {}
+    result = render_text(text, ctx)
+
+    if ':db' in ctx and (
+        InlineKeyboardButton.MIN_CALLBACK_DATA
+        <= len(text) + 1
+        <= InlineKeyboardButton.MAX_CALLBACK_DATA
+    ):
+        markup = make_markup(':' + text)
+    else:
+        markup = None
+
+    return result, markup
 
 
 async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
@@ -58,33 +85,43 @@ async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
             'Specify text or reply to a message to render.', do_quote=True
         )
 
-    ctx = {}
-    result = render_text(text, ctx)
-
-    if ':db' in ctx and (
-        InlineKeyboardButton.MIN_CALLBACK_DATA
-        <= len(text) + 1
-        <= InlineKeyboardButton.MAX_CALLBACK_DATA
-    ):
-        markup = make_markup(':' + text)
-    else:
-        markup = None
-
+    result, markup = render_text_markup(text)
     return await msg.reply_text(result, reply_markup=markup, do_quote=True)
 
 
+async def handle_render_inline_query(query: InlineQuery, text: str):
+    result, markup = render_text_markup(text)
+    await query.answer(
+        [
+            InlineQueryResultArticle(
+                id='1',
+                title=f'Render: {len(result)}',
+                input_message_content=InputTextMessageContent(result),
+                reply_markup=markup,
+            )
+        ]
+    )
+
+
 async def handle_render_callback(
-    update: Update, bot_ctx: ContextTypes.DEFAULT_TYPE, data: str
+    update: Update, ctx: ContextTypes.DEFAULT_TYPE, data: str
 ):
     result = render_text(data[1:], {})
 
     try:
-        await bot_ctx.bot.edit_message_text(
-            text=result,
-            chat_id=update.effective_chat.id,
-            message_id=update.callback_query.message.message_id,
-            reply_markup=make_markup(data),
-        )
+        if update.callback_query.inline_message_id:
+            await ctx.bot.edit_message_text(
+                text=result,
+                inline_message_id=update.callback_query.inline_message_id,
+                reply_markup=make_markup(data),
+            )
+        else:
+            await ctx.bot.edit_message_text(
+                text=result,
+                chat_id=update.effective_chat.id,
+                message_id=update.callback_query.message.message_id,
+                reply_markup=make_markup(data),
+            )
     except BadRequest as e:
         if 'Message is not modified' not in str(e):
             raise
