@@ -9,7 +9,7 @@ from telegram.constants import ChatAction
 
 
 def get_arg(update: Update) -> str:
-    s = update.message.text
+    s = (update.message or update.edited_message).text
     if not s.startswith('/'):
         return s.strip()
     try:

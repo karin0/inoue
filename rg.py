@@ -175,18 +175,13 @@ async def handle_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    callback = update.callback_query
-    await callback.answer()
-
-    data = callback.data
-    if data.startswith('rg_back_'):
-        i = int(data[data.rindex('_') + 1 :])
-        query = QUERIES[int(i)]
-        await query.message.edit_text(
-            query.menu_text,
-            entities=query.menu_entities,
-        )
+async def handle_rg_callback(data: str):
+    i = int(data[data.rindex('_') + 1 :])
+    query = QUERIES[int(i)]
+    await query.message.edit_text(
+        query.menu_text,
+        entities=query.menu_entities,
+    )
 
 
 async def handle_rg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
