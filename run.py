@@ -7,15 +7,7 @@ from telegram import Message, Update
 from telegram.ext import ContextTypes
 from telegram.constants import ChatAction
 
-
-def get_arg(update: Update) -> str:
-    s = (update.message or update.edited_message).text
-    if not s.startswith('/'):
-        return s.strip()
-    try:
-        return s[s.index(' ') + 1 :].strip()
-    except ValueError:
-        return ''
+from util import get_arg
 
 
 async def handle_run(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

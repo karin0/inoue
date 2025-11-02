@@ -11,7 +11,7 @@ from telegram import (
 from telegram.ext import ContextTypes
 from telegram.error import BadRequest
 
-from run import get_arg
+from util import get_arg, shorten, log
 
 db = None
 
@@ -34,13 +34,7 @@ def render_text(text: str, ctx: dict[str]) -> str:
     if errors:
         result += f'\n\n---\n\n' + '\n'.join(errors)
 
-    print(
-        'rendered',
-        len(text),
-        '->',
-        len(result),
-        f'({len(result.encode("utf-8"))} bytes)',
-    )
+    log.info('rendered %d -> %d', len(text), len(result))
     return result
 
 
@@ -223,9 +217,4 @@ async def handle_doc(msg: Message):
 
         db['n:' + id] = name
 
-        if len(text) > 30:
-            display_text = text[:30] + '...'
-        else:
-            display_text = text
-
-        print('doc', name, id, display_text)
+        log.info('doc %s %s %s', name, id, shorten(text))
