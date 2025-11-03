@@ -103,13 +103,14 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     callback = update.callback_query
-    await callback.answer()
-
     data = callback.data
-    if data.startswith('rg_back_'):
-        await handle_rg_callback(data)
-    elif data.startswith(':'):
-        await handle_render_callback(update, ctx, data)
+    try:
+        if data.startswith('rg_back_'):
+            await handle_rg_callback(data)
+        elif data.startswith(':'):
+            await handle_render_callback(update, ctx, data)
+    finally:
+        await callback.answer()
 
 
 async def handle_inline_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

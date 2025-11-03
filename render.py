@@ -22,15 +22,15 @@ db = None
 def init_render(file):
     global db
     db = dbm.sqlite3.open(file, flag='c')
-    atexit.register(db.close)
+    atexit.register(close_render)
 
 
 def close_render():
     global db
     if db is not None:
         db.close()
-        atexit.unregister(db.close)
         db = None
+        atexit.unregister(close_render)
 
 
 def make_markup(data: str) -> InlineKeyboardMarkup:
@@ -130,7 +130,7 @@ async def handle_render_callback(
 reg = re.compile(r'{(.+?)}', re.DOTALL)
 
 
-def render(text: str, ctx: dict[str], vis_: set[str] | None, errors: list[str]) -> str:
+def render(text: str, ctx: dict[str], vis: set[str] | None, errors: list[str]) -> str:
     def repl(m: re.Match) -> str:
         cmd = m[1].strip()
         if not cmd:
@@ -144,7 +144,8 @@ def render(text: str, ctx: dict[str], vis_: set[str] | None, errors: list[str]) 
                 val = cond[t + 1 :].strip()
                 test = str(ctx.get(key)) == val
             else:
-                test = bool(ctx.get(cond))
+                val = ctx.get(cond)
+                test = val and val != '0'
 
             # Prefer doc expansion for ?:
             if (q := cmd.find(':', p + 2)) != -1:
@@ -163,8 +164,12 @@ def render(text: str, ctx: dict[str], vis_: set[str] | None, errors: list[str]) 
             if not cmd:
                 continue
 
+            # Literal: {`raw}
+            elif cmd[0] == '`':
+                return cmd[1:]
+
             # Db name set: {name:}
-            if cmd[-1] == ':':
+            elif cmd[-1] == ':':
                 pass
 
             # Context set: {key=value}
@@ -193,17 +198,17 @@ def render(text: str, ctx: dict[str], vis_: set[str] | None, errors: list[str]) 
                 ctx[':db'] = True
                 key = cmd[1:].strip()
 
-                vis = vis_
+                nonlocal vis
                 if vis is None:
                     vis = set()
                 elif key in vis:
-                    errors.append('circular: ' + key)
+                    errors.append('circular: ' + cmd)
                     return ''
 
                 try:
                     doc = db[key].decode('utf-8')
                 except KeyError:
-                    errors.append('undefined: ' + key)
+                    errors.append('undefined: ' + cmd)
                     return ''
 
                 vis.add(key)
@@ -211,20 +216,16 @@ def render(text: str, ctx: dict[str], vis_: set[str] | None, errors: list[str]) 
                 vis.remove(key)
                 return r
 
-            # Literal: {`raw}
-            elif cmd[0] == '`':
-                return cmd[1:]
-
-            # Context get: {$key} or {key} (if no condition)
+            # Context get: {$key} or {key} (w/o condition)
             elif cmd[0] == '$' or not cond:
                 key = cmd.lstrip('$').strip()
                 try:
                     return str(ctx[key])
                 except KeyError:
-                    ctx.setdefault(':undefined', []).append(key)
+                    errors.append('undefined: ' + cmd)
                     return ''
 
-            # Literal: {raw} (if condition present)
+            # Literal: {raw} (when condition)
             else:
                 return cmd
 
@@ -238,20 +239,24 @@ reg_name = re.compile(r'{(.+?):}')
 
 async def handle_doc(msg: Message):
     text = msg.text
-    if not text:
+    if not text or not (text := text.strip()):
         return await msg.reply_text('No text to process.', do_quote=True)
 
-    text = text.strip()
+    id = str(msg.message_id)
+    name_key = 'n:' + id
 
-    if m := reg_name.search(text):
-        name = m[1].strip()
-        id = str(msg.message_id)
-
+    if (m := reg_name.search(text)) and (name := m[1].strip()):
         db[name] = text
 
-        if (old_name := db.get('n:' + id)) and old_name.decode('utf-8') != name:
+        if (old_name := db.get(name_key)) and old_name.decode('utf-8') != name:
             del db[old_name]
 
-        db['n:' + id] = name
+        db[name_key] = name
 
         log.info('doc %s %s %s', name, id, shorten(text))
+        await msg.set_reaction('❤', True)
+
+    elif old_name := db.get(name_key):
+        del db[old_name], db[name_key]
+        log.info('rm doc %s %s', old_name, id)
+        await msg.set_reaction()
