@@ -7,7 +7,7 @@ from telegram import Message, Update
 from telegram.ext import ContextTypes
 from telegram.constants import ChatAction
 
-from util import get_arg
+from util import get_arg, MAX_TEXT_LENGTH
 
 
 async def handle_run(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -79,14 +79,14 @@ async def _handle_cmd(update: Update, bin, *args, **kwargs):
                 new = dec.decode(chunks, final=eof)
 
             if new:
-                if len(new) > 4096:
+                if len(new) > MAX_TEXT_LENGTH:
                     msg = None
-                    text = new[:4096]
-                    left = new[4096:]
+                    text = new[:MAX_TEXT_LENGTH]
+                    left = new[MAX_TEXT_LENGTH:]
                 else:
                     text += new
 
-                    if len(text) > 4096:
+                    if len(text) > MAX_TEXT_LENGTH:
                         msg = None
                         text = new
 

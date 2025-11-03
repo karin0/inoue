@@ -1,10 +1,18 @@
 import os
+import asyncio
 import logging
 
-from telegram import Update
+from telegram import Update, Bot
+from telegram.constants import MessageLimit
 
 
-def get_logger(name):
+USER_ID = int(os.environ['USER_ID'])
+CHAN_ID = int(os.environ['CHAN_ID'])
+
+MAX_TEXT_LENGTH = MessageLimit.MAX_TEXT_LENGTH
+
+
+def _get_logger(name):
     if os.environ.get('DEBUG') == '1':
         level = logging.DEBUG
     else:
@@ -26,7 +34,8 @@ def get_logger(name):
     return logger
 
 
-log = get_logger('inoue')
+log = _get_logger('inoue')
+log2 = logging.getLogger('inoue.notify')
 
 
 def get_arg(update: Update) -> str:
@@ -46,3 +55,29 @@ def shorten(s: str | None) -> str:
     if len(s) > 30:
         return s[:30] + '...'
     return s
+
+
+def truncate_text(s: str) -> str:
+    s = s.strip()
+    if len(s) > MAX_TEXT_LENGTH:
+        s = s[: MAX_TEXT_LENGTH - 12] + '\n[truncated]'
+    return s
+
+
+bot = None
+
+
+def init_util(b: Bot):
+    global bot
+    bot = b
+
+
+class NotifyHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        if bot is not None:
+            msg = truncate_text(self.format(record))
+            asyncio.create_task(bot.send_message(USER_ID, msg))
+
+
+log2.setLevel(logging.INFO)
+log2.addHandler(NotifyHandler())

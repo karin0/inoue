@@ -2,7 +2,7 @@ import os
 import functools
 from typing import Callable, Coroutine
 
-from telegram import InlineQueryResultArticle, InputTextMessageContent, Update, Bot
+from telegram import Update, Bot
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
@@ -13,7 +13,7 @@ from telegram.ext import (
     Application,
 )
 
-from util import log, shorten
+from util import log, log2, shorten, USER_ID, CHAN_ID, init_util
 from receipt import render_receipt
 from run import handle_run, handle_cmd, handle_update
 from rg import handle_rg, handle_rg_callback, handle_start
@@ -25,9 +25,6 @@ from render import (
     handle_render_callback,
     close_render,
 )
-
-USER_ID = int(os.environ['USER_ID'])
-CHAN_ID = int(os.environ['CHAN_ID'])
 
 
 def auth(
@@ -70,14 +67,14 @@ def auth(
             log.info('%s: unknown: %s', src, update)
 
         if not valid:
-            log.info('Drop message from unknown chat')
+            log2.warning('Drop message from unknown chat: %s', src)
             return
 
         try:
             return await func(update, ctx)
         except Exception as e:
             r = f'{type(e).__name__}: {str(e)}'
-            log.exception('%s', r)
+            log2.exception('%s', r)
             if msg:
                 await msg.reply_text(r, do_quote=True)
 
@@ -105,10 +102,15 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     callback = update.callback_query
     data = callback.data
     try:
-        if data.startswith('rg_back_'):
-            await handle_rg_callback(data)
-        elif data.startswith(':'):
-            await handle_render_callback(update, ctx, data)
+        if data:
+            if data.startswith('rg_back_'):
+                await handle_rg_callback(data)
+            elif data[0] in ':-+':
+                await handle_render_callback(update, ctx, data)
+            else:
+                log2.warning('bad callback: %s', data)
+        else:
+            log2.warning('empty callback')
     finally:
         await callback.answer()
 
@@ -133,8 +135,9 @@ async def post_init(app: Application) -> None:
             ('rg', 'rg'),
         )
     )
-    await bot.send_message(USER_ID, 'Inoue bot started.')
     init_render('doc.db')
+    init_util(bot)
+    await bot.send_message(USER_ID, 'Inoue bot started.')
 
 
 async def post_stop(_: Application) -> None:

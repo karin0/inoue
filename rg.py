@@ -15,7 +15,7 @@ from telegram import (
 from telegram.ext import ContextTypes
 from telegram.constants import MessageEntityType
 
-from run import get_arg
+from util import get_arg, MAX_TEXT_LENGTH, truncate_text
 
 type Segment = Sequence['Segment'] | str | 'Style' | 'Link'
 
@@ -159,8 +159,7 @@ async def handle_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     _, i, j, k = arg.split('_')
     query = QUERIES[int(i)]
     text = query.files[int(j)].matches[int(k)].text
-    if len(text) > 4096:
-        text = text[:4084] + '\n[truncated]'
+    text = truncate_text(text)
 
     await asyncio.gather(
         msg.delete(),
@@ -253,8 +252,8 @@ async def handle_rg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     render_segment(segments, ba, entities)
 
     text = ba.decode('utf-16-le')
-    if len(text) > 4096:
-        n = 4084
+    if len(text) > MAX_TEXT_LENGTH:
+        n = MAX_TEXT_LENGTH - 12
         text = text[:n] + '\n[truncated]'
         final_entities = []
         n = len(text.encode('utf-16-le')) >> 1

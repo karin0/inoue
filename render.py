@@ -1,6 +1,7 @@
 import re
 import atexit
 import dbm.sqlite3
+from collections import UserDict
 
 from telegram import (
     InlineQuery,
@@ -14,7 +15,7 @@ from telegram import (
 from telegram.ext import ContextTypes
 from telegram.error import BadRequest
 
-from util import get_arg, shorten, log
+from util import get_arg, shorten, truncate_text, log, log2
 
 db = None
 
@@ -33,36 +34,82 @@ def close_render():
         atexit.unregister(close_render)
 
 
-def make_markup(data: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup.from_button(
-        InlineKeyboardButton(text='Refresh: ' + data[1:], callback_data=data)
-    )
+def make_markup(
+    text: str, ctx: dict[str], prev_flags: dict[str, bool] | None
+) -> InlineKeyboardMarkup | None:
+    # query data: ('-'|'+' <flag-key>)* ':' <text>
+    # where '-' means 0, '+' means 1
+
+    size = len(text) + 1
+    if prev_flags:
+        size += sum(len(k) + 1 for k in prev_flags.keys())
+
+    if size > InlineKeyboardButton.MAX_CALLBACK_DATA:
+        return None
+
+    flags = {}
+    for k, v in ctx.items():
+        if v == '0':
+            v = False
+        elif v == '1':
+            v = True
+        else:
+            continue
+
+        if size + len(k) + 1 <= InlineKeyboardButton.MAX_CALLBACK_DATA:
+            flags[k] = v
+
+    if prev_flags:
+        flags.update(prev_flags)
+
+    if not (':db' in ctx or flags):
+        return None
+
+    row = [InlineKeyboardButton(text='Refresh: ' + text, callback_data=':' + text)]
+    for k, v in flags.items():
+        hit = False
+        data = (
+            ''.join(
+                ('+' if (((hit := True) and not vv) if k == kk else vv) else '-') + kk
+                for kk, vv in prev_flags.items()
+            )
+            if prev_flags
+            else ''
+        )
+        data += ((('-' if v else '+') + k + ':') if not hit else ':') + text
+        row.append(
+            InlineKeyboardButton(text=k + '=' + ('1' if v else '0'), callback_data=data)
+        )
+
+    return InlineKeyboardMarkup.from_row(row)
 
 
-def render_text(text: str, ctx: dict[str]) -> str:
+class OverriddenDict(UserDict):
+    def __init__(self, overrides: dict[str, str]):
+        super().__init__()
+        self.overrides = overrides
+
+    def __getitem__(self, key: str) -> str:
+        if key in self.overrides:
+            return self.overrides[key]
+        return super().__getitem__(key)
+
+
+def render_text(
+    text: str, flags: dict[str, bool] | None = None
+) -> tuple[str, InlineKeyboardMarkup | None]:
+    if flags:
+        ctx = OverriddenDict({k: ('1' if v else '0') for k, v in flags.items()})
+    else:
+        ctx = {}
+
     errors = []
     result = render(text, ctx, None, errors) or '[empty]'
     if errors:
         result += f'\n\n---\n\n' + '\n'.join(errors)
 
     log.info('rendered %d -> %d', len(text), len(result))
-    return result
-
-
-def render_text_markup(text: str) -> tuple[str, InlineKeyboardMarkup | None]:
-    ctx = {}
-    result = render_text(text, ctx)
-
-    if ':db' in ctx and (
-        InlineKeyboardButton.MIN_CALLBACK_DATA
-        <= len(text) + 1
-        <= InlineKeyboardButton.MAX_CALLBACK_DATA
-    ):
-        markup = make_markup(':' + text)
-    else:
-        markup = None
-
-    return result, markup
+    return truncate_text(result), make_markup(text, ctx, flags)
 
 
 async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
@@ -85,12 +132,12 @@ async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
             'Specify text or reply to a message to render.', do_quote=True
         )
 
-    result, markup = render_text_markup(text)
+    result, markup = render_text(text)
     return await msg.reply_text(result, reply_markup=markup, do_quote=True)
 
 
 async def handle_render_inline_query(query: InlineQuery, text: str):
-    result, markup = render_text_markup(text)
+    result, markup = render_text(text)
     await query.answer(
         [
             InlineQueryResultArticle(
@@ -106,21 +153,36 @@ async def handle_render_inline_query(query: InlineQuery, text: str):
 async def handle_render_callback(
     update: Update, ctx: ContextTypes.DEFAULT_TYPE, data: str
 ):
-    result = render_text(data[1:], {})
+    flags = {}
+    i = 0
+    while i < len(data):
+        sign = data[i]
+        if sign == ':':
+            break
+
+        i += 1
+        j = i
+        while j < len(data) and data[j] not in '-+:':
+            j += 1
+        key = data[i:j]
+        flags[key] = sign == '+'
+        i = j
+
+    result, markup = render_text(data[i + 1 :], flags)
 
     try:
         if update.callback_query.inline_message_id:
             await ctx.bot.edit_message_text(
                 text=result,
                 inline_message_id=update.callback_query.inline_message_id,
-                reply_markup=make_markup(data),
+                reply_markup=markup,
             )
         else:
             await ctx.bot.edit_message_text(
                 text=result,
                 chat_id=update.effective_chat.id,
                 message_id=update.callback_query.message.message_id,
-                reply_markup=make_markup(data),
+                reply_markup=markup,
             )
     except BadRequest as e:
         if 'Message is not modified' not in str(e):
@@ -130,7 +192,12 @@ async def handle_render_callback(
 reg = re.compile(r'{(.+?)}', re.DOTALL)
 
 
-def render(text: str, ctx: dict[str], vis: set[str] | None, errors: list[str]) -> str:
+def render(
+    text: str,
+    ctx: dict[str],
+    vis: set[str] | None,
+    errors: list[str],
+) -> str:
     def repl(m: re.Match) -> str:
         cmd = m[1].strip()
         if not cmd:
@@ -219,11 +286,12 @@ def render(text: str, ctx: dict[str], vis: set[str] | None, errors: list[str]) -
             # Context get: {$key} or {key} (w/o condition)
             elif cmd[0] == '$' or not cond:
                 key = cmd.lstrip('$').strip()
-                try:
-                    return str(ctx[key])
-                except KeyError:
+
+                if (val := ctx.get(key)) is None:
                     errors.append('undefined: ' + cmd)
                     return ''
+
+                return str(val)
 
             # Literal: {raw} (when condition)
             else:
@@ -248,15 +316,20 @@ async def handle_doc(msg: Message):
     if (m := reg_name.search(text)) and (name := m[1].strip()):
         db[name] = text
 
-        if (old_name := db.get(name_key)) and old_name.decode('utf-8') != name:
+        if (old_name := db.get(name_key)) and (
+            old_name := old_name.decode('utf-8')
+        ) != name:
+            log2.info('rename doc %s -> %s %s %s', old_name, name, id, shorten(text))
             del db[old_name]
+        else:
+            log2.info('update doc %s %s %s', name, id, shorten(text))
 
         db[name_key] = name
 
-        log.info('doc %s %s %s', name, id, shorten(text))
         await msg.set_reaction('❤', True)
 
     elif old_name := db.get(name_key):
         del db[old_name], db[name_key]
-        log.info('rm doc %s %s', old_name, id)
+        log2.info('delete doc %s %s', old_name, id)
+
         await msg.set_reaction()
