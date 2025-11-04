@@ -14,6 +14,7 @@ from telegram import (
 )
 from telegram.ext import ContextTypes
 from telegram.error import BadRequest
+from telegram.constants import ReactionEmoji
 
 from util import get_arg, shorten, truncate_text, log, log2
 
@@ -42,7 +43,7 @@ def make_markup(
 
     size = len(text) + 1
     if prev_flags:
-        size += sum(len(k) + 1 for k in prev_flags.keys())
+        size += sum(len(k) for k in prev_flags.keys()) + len(prev_flags)
 
     if size > InlineKeyboardButton.MAX_CALLBACK_DATA:
         return None
@@ -65,21 +66,41 @@ def make_markup(
     if not (':db' in ctx or flags):
         return None
 
-    row = [InlineKeyboardButton(text='Refresh: ' + text, callback_data=':' + text)]
-    for k, v in flags.items():
-        hit = False
-        data = (
-            ''.join(
-                ('+' if (((hit := True) and not vv) if k == kk else vv) else '-') + kk
-                for kk, vv in prev_flags.items()
+    if flags:
+        row = [
+            InlineKeyboardButton(text='⏪ ' + shorten(text), callback_data=':' + text)
+        ]
+        for k, v in flags.items():
+            hit = False
+            data = (
+                ''.join(
+                    ('+' if (((hit := True) and not vv) if k == kk else vv) else '-')
+                    + kk
+                    for kk, vv in prev_flags.items()
+                )
+                if prev_flags
+                else ''
             )
-            if prev_flags
-            else ''
-        )
-        data += ((('-' if v else '+') + k + ':') if not hit else ':') + text
+            data += ((('-' if v else '+') + k + ':') if not hit else ':') + text
+            row.append(
+                InlineKeyboardButton(
+                    text=k + '=' + ('1' if v else '0'), callback_data=data
+                )
+            )
         row.append(
-            InlineKeyboardButton(text=k + '=' + ('1' if v else '0'), callback_data=data)
+            InlineKeyboardButton(
+                text='🔄',
+                callback_data=(
+                    ''.join(('+' if v else '-') + k for k, v in prev_flags.items())
+                    + ':'
+                    + text
+                ),
+            )
         )
+    else:
+        row = [
+            InlineKeyboardButton(text='🔄 ' + shorten(text), callback_data=':' + text)
+        ]
 
     return InlineKeyboardMarkup.from_row(row)
 
@@ -326,7 +347,7 @@ async def handle_doc(msg: Message):
 
         db[name_key] = name
 
-        await msg.set_reaction('❤', True)
+        await msg.set_reaction(ReactionEmoji.RED_HEART, True)
 
     elif old_name := db.get(name_key):
         del db[old_name], db[name_key]
