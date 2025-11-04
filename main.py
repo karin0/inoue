@@ -124,20 +124,18 @@ async def handle_inline_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await handle_render_inline_query(query, text)
 
 
+commands = tuple(
+    (f.__name__[f.__name__.index('_') + 1 :], f)
+    for f in [handle_start, handle_run, handle_update, handle_rg, handle_render]
+)
+
+
 async def post_init(app: Application) -> None:
     bot: Bot = app.bot
-    await bot.set_my_commands(
-        (
-            ('render', 'render'),
-            ('start', 'start'),
-            ('run', 'run'),
-            ('update', 'update'),
-            ('rg', 'rg'),
-        )
-    )
     init_render('doc.db')
     init_util(bot)
-    await bot.send_message(USER_ID, 'Inoue bot started.')
+    await bot.set_my_commands(tuple((s, s) for s, _ in commands))
+    log2.info('Sendai initialized.')
 
 
 async def post_stop(_: Application) -> None:
@@ -154,19 +152,16 @@ def main():
         .build()
     )
 
-    app.add_handler(CommandHandler('start', auth(handle_start)))
-    app.add_handler(CommandHandler('run', auth(handle_run)))
-    app.add_handler(CommandHandler('update', auth(handle_update)))
-    app.add_handler(CommandHandler('rg', auth(handle_rg)))
-    app.add_handler(CommandHandler('render', auth(handle_render)))
+    for name, func in commands:
+        app.add_handler(CommandHandler(name, auth(func)))
 
     app.add_handler(CallbackQueryHandler(auth(handle_callback)))
     app.add_handler(InlineQueryHandler(auth(handle_inline_query)))
     app.add_handler(MessageHandler(None, auth(handle_msg)))
 
-    log.info('Starting Inoue bot...')
+    log.info('Starting Sendai...')
     app.run_polling()
-    log.info('Inoue Bot stopped.')
+    log.info('Sendai stopped.')
 
 
 if __name__ == '__main__':

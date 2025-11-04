@@ -15,7 +15,7 @@ from telegram import (
 from telegram.ext import ContextTypes
 from telegram.constants import MessageEntityType
 
-from util import get_arg, MAX_TEXT_LENGTH, truncate_text
+from util import get_arg, MAX_TEXT_LENGTH, truncate_text, BOT_NAME
 
 type Segment = Sequence['Segment'] | str | 'Style' | 'Link'
 
@@ -106,7 +106,7 @@ class RGQuery:
             f.render(segments, i, idx)
 
 
-URL_BASE = 'https://t.me/inoue_the_bot?start=rg_'
+URL_BASE = 'https://t.me/' + BOT_NAME + '?start=rg_'
 QUERIES: list[RGQuery] = []
 QUERY_LIMIT = 10
 QUERY_IDX = 0
