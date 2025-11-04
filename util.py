@@ -83,8 +83,8 @@ async def do_notify(text: str):
             traceback.print_exc()
 
 
-def get_arg(update: Update) -> str:
-    s = (update.message or update.edited_message).text
+def get_arg() -> str:
+    s = msg.get().text
     if not s.startswith('/'):
         return s.strip()
     try:

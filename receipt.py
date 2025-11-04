@@ -3,11 +3,11 @@ from math import floor
 from typing import Hashable
 from collections import defaultdict
 
+from arithmetic_eval import evaluate
+
 
 def calc(s: str) -> float:
-    if s == 'x':
-        return 1.1
-    return eval(s)
+    return evaluate(s, {'x': 1.1})
 
 
 def render_sign(v: float | int) -> str:
@@ -58,8 +58,7 @@ def render_receipt(text: str):
     the_real_tot: int | None = None
     tax: float = 1.08
     items: list[Value] = []
-    alt_tots: list[float] = []
-    alt_bases: list[int] = []
+    alts: list[tuple[float, int]] = []
 
     for line in text.splitlines():
         parts = line.split()
@@ -76,13 +75,11 @@ def render_receipt(text: str):
             elif cmd.startswith('a'):
                 # Find the precision of the argument
                 p = arg.find('.')
-                if p >= 0:
+                if p >= 0 and all(i == p or c.isdigit() for i, c in enumerate(arg)):
                     base = 10 ** (len(arg) - p - 1)
-                    alt_bases.append(base)
-                    alt_tots.append(int(calc(arg) * base))
+                    alts.append((int(calc(arg) * base), base))
                 else:
-                    alt_bases.append(1)
-                    alt_tots.append(calc(arg))
+                    alts.append((int(calc(arg)), 1))
             else:
                 raise SyntaxError(f'Unknown command: {cmd}')
             continue
@@ -101,29 +98,26 @@ def render_receipt(text: str):
         tot_dict[item.kind] += item.raw
     real_tot = sum(floor(v) for v in tot_dict.values())
 
-    if not real_tot:
-        raise ValueError('You are free!')
-
-    if the_real_tot is not None and the_real_tot != real_tot:
-        raise ValueError(f'{the_real_tot} != {real_tot}')
-
     alter(items, real_tot)
-    results = [render_pair(real_tot, real_tot - sum(item.raw for item in items))]
+    tots = [render_pair(real_tot, real_tot - sum(item.raw for item in items))]
 
     dss = [items]
-    for tot, base in zip(alt_tots, alt_bases):
-        alt_items = [Value(x.cost * tot / real_tot) for x in items]
-        alter(alt_items, tot)
-        if base != 1:
-            tot /= base
-            for x in alt_items:
-                x.cost /= base
-                x.raw /= base
-        results.append(f'{tot} (x{tot / real_tot:.6f})')
-        dss.append(alt_items)
+    if real_tot:
+        for tot, base in alts:
+            alt_items = [Value(x.cost * tot / real_tot) for x in items]
+            alter(alt_items, tot)
+            if base != 1:
+                tot /= base
+                for x in alt_items:
+                    x.cost /= base
+                    x.raw /= base
+            tots.append(f'{tot} (x{tot / real_tot:.3f})')
+            dss.append(alt_items)
 
-    res = [
-        ' | '.join(str(dss[j][i]) for j in range(len(dss))) for i in range(len(items))
-    ]
-    res.append('= ' + ' | '.join(results))
+    res = [' |\t'.join(str(x) for x in row) for row in zip(*dss)]
+    res.append('= ' + ' |\t'.join(tots))
+
+    if the_real_tot is not None and the_real_tot != real_tot:
+        res.append(f'⚠️ {the_real_tot} (expected) != {real_tot}')
+
     return '\n'.join(res)

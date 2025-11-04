@@ -151,7 +151,7 @@ def render_segment(seg: Segment, out: bytearray, entities: list[MessageEntity]):
 
 
 async def handle_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    arg = get_arg(update)
+    arg = get_arg()
     msg: Message = update.message
     if not (arg and arg.startswith('rg_')):
         return await msg.reply_text('Hello!', do_quote=True)
@@ -184,7 +184,7 @@ async def handle_rg_callback(data: str):
 
 
 async def handle_rg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    arg = get_arg(update)
+    arg = get_arg()
     if not arg:
         return await update.message.reply_text('Provide a keyword.', do_quote=True)
 
@@ -209,13 +209,7 @@ async def handle_rg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         async for line in child.stdout:
             if line:
-                try:
-                    line = json.loads(line)
-                except json.JSONDecodeError:
-                    return await update.message.reply_text(
-                        'Error decoding JSON!', do_quote=True
-                    )
-
+                line = json.loads(line)
                 match line['type']:
                     case 'begin':
                         file = RGFile(matches=[], path=line['data']['path']['text'])

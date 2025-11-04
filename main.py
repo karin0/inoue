@@ -14,6 +14,7 @@ from telegram.ext import (
 )
 
 from util import log, shorten, USER_ID, CHAN_ID, init_util, set_msg
+from motto import greeting
 from receipt import render_receipt
 from run import handle_run, handle_cmd, handle_update
 from rg import handle_rg, handle_rg_callback, handle_start
@@ -82,10 +83,13 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not (text and text.strip()):
         with open('out.ogg', 'rb') as f:
             return await update.message.reply_voice(f, do_quote=True)
+
     if text.startswith('/'):
         return await handle_cmd(update, text[1:].strip())
+
     if '\n' not in text:
         return await handle_rg(update, ctx)
+
     await update.message.reply_text(render_receipt(text), do_quote=True)
 
 
@@ -109,14 +113,24 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def handle_inline_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.inline_query
     data = query.query.strip()
-    log.info('Inline query from %s: %s', query.from_user.full_name, shorten(data))
     if query and data:
-        return await handle_render_inline_query(query, data)
+        await handle_render_inline_query(query, data)
+
+
+async def handle_greet(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(greeting(), do_quote=True)
 
 
 commands = tuple(
     (f.__name__[f.__name__.index('_') + 1 :], f)
-    for f in [handle_start, handle_run, handle_update, handle_rg, handle_render]
+    for f in [
+        handle_start,
+        handle_greet,
+        handle_run,
+        handle_update,
+        handle_rg,
+        handle_render,
+    ]
 )
 
 
@@ -125,7 +139,7 @@ async def post_init(app: Application) -> None:
     init_render('doc.db')
     init_util(bot)
     await bot.set_my_commands(tuple((s, s) for s, _ in commands))
-    log.warning('Sendai initialized.')
+    log.warning('Sendai initialized: ' + greeting())
 
 
 async def post_stop(_: Application) -> None:

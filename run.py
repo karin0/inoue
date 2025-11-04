@@ -11,7 +11,7 @@ from util import get_arg, MAX_TEXT_LENGTH
 
 
 async def handle_run(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if cmd := get_arg(update):
+    if cmd := get_arg():
         await handle_cmd(update, cmd)
     else:
         await update.message.reply_text('Provide a command to run.', do_quote=True)

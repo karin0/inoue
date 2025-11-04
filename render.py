@@ -68,7 +68,10 @@ def make_markup(
 
     if flags:
         row = [
-            InlineKeyboardButton(text='⏪ ' + shorten(text), callback_data=':' + text)
+            InlineKeyboardButton(
+                text=('⏪ ' if prev_flags else '🔄 ') + shorten(text),
+                callback_data=':' + text,
+            )
         ]
         for k, v in flags.items():
             hit = False
@@ -87,16 +90,17 @@ def make_markup(
                     text=k + '=' + ('1' if v else '0'), callback_data=data
                 )
             )
-        row.append(
-            InlineKeyboardButton(
-                text='🔄',
-                callback_data=(
-                    ''.join(('+' if v else '-') + k for k, v in prev_flags.items())
-                    + ':'
-                    + text
-                ),
+        if prev_flags:
+            row.append(
+                InlineKeyboardButton(
+                    text='🔄',
+                    callback_data=(
+                        ''.join(('+' if v else '-') + k for k, v in prev_flags.items())
+                        + ':'
+                        + text
+                    ),
+                )
             )
-        )
     else:
         row = [
             InlineKeyboardButton(text='🔄 ' + shorten(text), callback_data=':' + text)
@@ -111,8 +115,8 @@ class OverriddenDict(UserDict):
         self.overrides = overrides
 
     def __getitem__(self, key: str) -> str:
-        if key in self.overrides:
-            return self.overrides[key]
+        if (v := self.overrides.get(key)) is not None:
+            return v
         return super().__getitem__(key)
 
 
@@ -136,7 +140,7 @@ def render_text(
 async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
     msg = update.message or update.edited_message
     target = msg.reply_to_message
-    arg = get_arg(update)
+    arg = get_arg()
 
     if target:
         text = (target.text or target.caption).strip()
