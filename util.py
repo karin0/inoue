@@ -5,7 +5,7 @@ import traceback
 
 from contextvars import ContextVar
 
-from telegram import Message, Update, Bot
+from telegram import Message, Bot
 from telegram.constants import MessageLimit
 
 USER_ID = int(os.environ['USER_ID'])
@@ -67,10 +67,10 @@ def set_msg(m: Message | None):
         log.warning('Bad msg set: %s', m)
 
 
-async def do_notify(text: str):
+async def do_notify(text: str, **kwargs):
     if m := msg.get(None):
         try:
-            return await m.reply_text(text, do_quote=True)
+            return await m.reply_text(text, do_quote=True, **kwargs)
         except Exception as e:
             traceback.print_exc()
             text += f'\nreply_text: {type(e).__name__}: {e}'
@@ -78,7 +78,7 @@ async def do_notify(text: str):
 
     if bot:
         try:
-            await bot.send_message(USER_ID, text)
+            await bot.send_message(USER_ID, text, **kwargs)
         except Exception:
             traceback.print_exc()
 
@@ -91,6 +91,11 @@ def get_arg() -> str:
         return s[s.index(' ') + 1 :].strip()
     except ValueError:
         return ''
+
+
+def get_msg_url(msg_id) -> str:
+    chat_id = str(CHAN_ID).removeprefix('-100')
+    return f'https://t.me/c/{chat_id}/{msg_id}'
 
 
 def shorten(s: str | None) -> str:

@@ -1,4 +1,5 @@
 import os
+import asyncio
 import functools
 from typing import Callable, Coroutine
 
@@ -96,17 +97,24 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     callback = update.callback_query
     data = callback.data
-    try:
-        if data:
-            if data.startswith('rg_back_'):
-                await handle_rg_callback(data)
-            elif data[0] in ':-+':
-                await handle_render_callback(update, ctx, data)
-            else:
-                log.warning('bad callback: %s', data)
+    fut = None
+    if data:
+        if data.startswith('rg_back_'):
+            fut = handle_rg_callback(data)
+        elif data[0] in ':-+':
+            fut = handle_render_callback(update, ctx, data)
         else:
-            log.warning('empty callback')
-    finally:
+            log.warning('bad callback: %s', data)
+    else:
+        log.warning('empty callback')
+
+    if fut:
+        try:
+            await asyncio.gather(fut, callback.answer())
+        except Exception:
+            await callback.answer()
+            raise
+    else:
         await callback.answer()
 
 
@@ -139,7 +147,7 @@ async def post_init(app: Application) -> None:
     init_render('doc.db')
     init_util(bot)
     await bot.set_my_commands(tuple((s, s) for s, _ in commands))
-    log.warning('Sendai initialized: ' + greeting())
+    log.warning('Sendai initiated: ' + greeting())
 
 
 async def post_stop(_: Application) -> None:

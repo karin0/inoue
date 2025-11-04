@@ -1,6 +1,8 @@
 import re
 import atexit
+import asyncio
 import dbm.sqlite3
+
 from collections import UserDict
 
 from telegram import (
@@ -14,9 +16,10 @@ from telegram import (
 )
 from telegram.ext import ContextTypes
 from telegram.error import BadRequest
+from telegram.helpers import escape_markdown
 from telegram.constants import ReactionEmoji
 
-from util import get_arg, shorten, truncate_text, log
+from util import log, get_arg, shorten, truncate_text, do_notify, get_msg_url
 
 db = None
 
@@ -25,6 +28,7 @@ def init_render(file):
     global db
     db = dbm.sqlite3.open(file, flag='c')
     atexit.register(close_render)
+    check_integrity()
 
 
 def close_render():
@@ -36,14 +40,14 @@ def close_render():
 
 
 def make_markup(
-    text: str, ctx: dict[str], prev_flags: dict[str, bool] | None
+    text: str, ctx: dict[str], state: dict[str, bool] | None
 ) -> InlineKeyboardMarkup | None:
     # query data: ('-'|'+' <flag-key>)* ':' <text>
     # where '-' means 0, '+' means 1
 
     size = len(text) + 1
-    if prev_flags:
-        size += sum(len(k) for k in prev_flags.keys()) + len(prev_flags)
+    if state:
+        size += sum(len(k) for k in state.keys()) + len(state)
 
     if size > InlineKeyboardButton.MAX_CALLBACK_DATA:
         return None
@@ -60,51 +64,42 @@ def make_markup(
         if size + len(k) + 1 <= InlineKeyboardButton.MAX_CALLBACK_DATA:
             flags[k] = v
 
-    if prev_flags:
-        flags.update(prev_flags)
+    if state:
+        flags.update(state)
 
-    if not (':db' in ctx or flags):
+    if (doc_id := ctx.get(':db')) is None and not flags:
         return None
 
+    row = [
+        InlineKeyboardButton(
+            ('⏪ ' if state else '🔄 ') + shorten(text), callback_data=':' + text
+        )
+    ]
+
     if flags:
-        row = [
-            InlineKeyboardButton(
-                text=('⏪ ' if prev_flags else '🔄 ') + shorten(text),
-                callback_data=':' + text,
-            )
-        ]
+        if state is None:
+            state = {}
+
+        def push_button(name: str):
+            data = ''.join(('-+'[v] + k) for k, v in state.items()) + ':' + text
+            row.append(InlineKeyboardButton(name, callback_data=data))
+
         for k, v in flags.items():
-            hit = False
-            data = (
-                ''.join(
-                    ('+' if (((hit := True) and not vv) if k == kk else vv) else '-')
-                    + kk
-                    for kk, vv in prev_flags.items()
-                )
-                if prev_flags
-                else ''
-            )
-            data += ((('-' if v else '+') + k + ':') if not hit else ':') + text
-            row.append(
-                InlineKeyboardButton(
-                    text=k + '=' + ('1' if v else '0'), callback_data=data
-                )
-            )
-        if prev_flags:
-            row.append(
-                InlineKeyboardButton(
-                    text='🔄',
-                    callback_data=(
-                        ''.join(('+' if v else '-') + k for k, v in prev_flags.items())
-                        + ':'
-                        + text
-                    ),
-                )
-            )
-    else:
-        row = [
-            InlineKeyboardButton(text='🔄 ' + shorten(text), callback_data=':' + text)
-        ]
+            old = k in state
+            state[k] = not v
+
+            push_button(k + (':=' if old else '=') + '01'[v])
+
+            if old:
+                state[k] = v
+            else:
+                del state[k]
+
+        if state:
+            push_button('🔄')
+
+    if doc_id:
+        row.append(InlineKeyboardButton('📄', get_msg_url(doc_id)))
 
     return InlineKeyboardMarkup.from_row(row)
 
@@ -119,12 +114,15 @@ class OverriddenDict(UserDict):
             return v
         return super().__getitem__(key)
 
+    # __setitem__ is not overridden, so we can still have the natural order
+    # of the flags being inserted when iterated by `make_markup`.
+
 
 def render_text(
     text: str, flags: dict[str, bool] | None = None
 ) -> tuple[str, InlineKeyboardMarkup | None]:
     if flags:
-        ctx = OverriddenDict({k: ('1' if v else '0') for k, v in flags.items()})
+        ctx = OverriddenDict({k: '01'[v] for k, v in flags.items()})
     else:
         ctx = {}
 
@@ -287,7 +285,6 @@ def render(
 
             # Db doc get: {:name}
             elif cmd[0] == ':':
-                ctx[':db'] = True
                 key = cmd[1:].strip()
 
                 nonlocal vis
@@ -300,8 +297,12 @@ def render(
                 try:
                     doc = db[key].decode('utf-8')
                 except KeyError:
+                    ctx.setdefault(':db', '')
                     errors.append('undefined: ' + cmd)
                     return ''
+
+                if not ctx.get(':db'):
+                    ctx[':db'] = db['i:' + key].decode('utf-8')
 
                 vis.add(key)
                 r = render(doc, ctx, vis, errors)
@@ -327,34 +328,115 @@ def render(
     return reg.sub(repl, text).strip()
 
 
-reg_name = re.compile(r'{(.+?):}')
+reg_name = re.compile(r'{([\w\-]+?):}')
+
+
+def escape(s: str) -> str:
+    return '\(`' + escape_markdown(s, version=2) + '`\)'
 
 
 async def handle_doc(msg: Message):
-    text = msg.text
-    if not text or not (text := text.strip()):
-        return await msg.reply_text('No text to process.', do_quote=True)
+    if not (text := msg.text) or not (text := text.strip()):
+        return
 
     id = str(msg.message_id)
-    name_key = 'n:' + id
+    n_key = 'n:' + id
+    info = None
+    reaction = None
 
     if (m := reg_name.search(text)) and (name := m[1].strip()):
+        short = shorten(text)
+
+        if old_name := db.get(n_key):
+            if (old_name := old_name.decode('utf-8')) != name:
+                del db['i:' + old_name]
+                old_text = db.pop(old_name)
+                db[n_key] = name
+
+                log.info('renamed doc %s: %s -> %s (%s)', id, old_name, name, short)
+                old_text = shorten(old_text.decode('utf-8'))
+                info = rf'renamed doc {id}: {old_name} {escape(old_text)} \-\> [{name} {escape(short)}]({get_msg_url(id)})'
+            else:
+                log.info('updated doc %s: %s (%s)', id, name, short)
+                info = f'updated doc [{id}: {name} {escape(short)}]({get_msg_url(id)})'
+        else:
+            db[n_key] = name
+
+            log.info('new doc %s: %s (%s)', id, name, short)
+            info = f'new doc [{id}: {name} {escape(short)}]({get_msg_url(id)})'
+
+        if old_id := db.get(i_key := 'i:' + name):
+            if (old_id := old_id.decode('utf-8')) != id:
+                del db['n:' + old_id]
+                db[i_key] = id
+
+                log.info('unlinked doc %s: %s -> %s', name, old_id, id)
+
+                old_text = shorten(db.pop(name).decode('utf-8'))
+                info2 = rf'unlinked doc {name}: [{old_id} {escape(old_text)}]({get_msg_url(old_id)}) \-\> [{id}]({get_msg_url(id)})'
+                info = (info + '\n' + info2) if info else info2
+        else:
+            db[i_key] = id
+
         db[name] = text
 
-        if (old_name := db.get(name_key)) and (
-            old_name := old_name.decode('utf-8')
-        ) != name:
-            log.warning('rename doc %s -> %s %s %s', old_name, name, id, shorten(text))
-            del db[old_name]
+        reaction = (ReactionEmoji.RED_HEART, True)
+
+    elif old_name := db.get(n_key):
+        del db[n_key], db[b'i:' + old_name]
+        old_text = db.pop(old_name)
+
+        old_name = old_name.decode('utf-8')
+        old_text = shorten(old_text.decode('utf-8'))
+
+        log.warning('deleted doc %s: %s (%s)', id, old_name, old_text)
+        info = f'deleted doc [{id}]({get_msg_url(id)}): {old_name} {escape(old_text)}'
+
+        reaction = ()
+
+    if reaction is not None:
+        await asyncio.gather(
+            do_notify(info, parse_mode='MarkdownV2'), msg.set_reaction(*reaction)
+        )
+
+
+def check_integrity(check: bool = True, fix: bool = False):
+    for k in tuple(db.keys()):
+        v = db[k]
+        if k.startswith(b'n:'):
+            log.debug('index: %s %s', k, v)
+            id = k[2:]
+            name = v
+            i_key = b'i:' + name
+
+            if fix:
+                if (old_id := db.get(i_key)) == id:
+                    pass
+                elif old_id is None or (old_id := int(old_id.decode('utf-8'))) < int(
+                    id.decode('utf-8')
+                ):
+                    log.error('inconsistent index: %s = %s -> %s', i_key, old_id, id)
+                    db[i_key] = id
+                elif old_id > id:
+                    log.error(
+                        'inconsistent index: %s = %s > %s (del)', i_key, old_id, id
+                    )
+                    del db[k]
+                    continue
+
+                if name not in db:
+                    log.error('inconsistent index: no doc for %s %s (del)', id, name)
+                    del db[k], db[i_key]
+
+            elif check:
+                assert db[i_key] == id
+                assert name in db
+
+        elif k.startswith(b'i:'):
+            log.debug('index: %s %s', k, v)
+            if check:
+                assert db[b'n:' + v] == k[2:]
         else:
-            log.warning('update doc %s %s %s', name, id, shorten(text))
-
-        db[name_key] = name
-
-        await msg.set_reaction(ReactionEmoji.RED_HEART, True)
-
-    elif old_name := db.get(name_key):
-        del db[old_name], db[name_key]
-        log.warning('delete doc %s %s', old_name, id)
-
-        await msg.set_reaction()
+            log.debug('doc: %s %s', k, shorten(v.decode('utf-8')))
+            if check:
+                assert db[b'n:' + db[b'i:' + k]] == k
