@@ -1,16 +1,23 @@
 import os
 import asyncio
 import logging
+import traceback
 
-from telegram import Update, Bot
+from contextvars import ContextVar
+
+from telegram import Message, Update, Bot
 from telegram.constants import MessageLimit
-
 
 USER_ID = int(os.environ['USER_ID'])
 CHAN_ID = int(os.environ['CHAN_ID'])
 BOT_NAME = os.environ['BOT_NAME']
 
 MAX_TEXT_LENGTH = MessageLimit.MAX_TEXT_LENGTH
+
+
+class NotifyHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        asyncio.create_task(do_notify(self.format(record)))
 
 
 def _get_logger(name):
@@ -28,33 +35,52 @@ def _get_logger(name):
     logger.setLevel(level)
     logger.handlers.clear()
     logger.propagate = False
+
     h = logging.StreamHandler()
     h.setLevel(level)
     h.setFormatter(logging.Formatter(fmt))
     logger.addHandler(h)
+
+    h = NotifyHandler()
+    h.setLevel(logging.WARNING)
+    logger.addHandler(h)
+
     return logger
-
-
-bot = None
-
-
-class NotifyHandler(logging.Handler):
-    def emit(self, record: logging.LogRecord) -> None:
-        if bot is not None:
-            msg = truncate_text(self.format(record))
-            asyncio.create_task(bot.send_message(USER_ID, msg))
 
 
 log = _get_logger('sendai')
 
-log2 = logging.getLogger('sendai.notify')
-log2.setLevel(logging.INFO)
-log2.addHandler(NotifyHandler())
+bot = None
+msg: ContextVar[Message] = ContextVar('msg')
 
 
 def init_util(b: Bot):
     global bot
     bot = b
+
+
+def set_msg(m: Message | None):
+    if not m or m.chat.id == USER_ID:
+        msg.set(m)
+    else:
+        msg.set(None)
+        log.warning('Bad msg set: %s', m)
+
+
+async def do_notify(text: str):
+    if m := msg.get(None):
+        try:
+            return await m.reply_text(text, do_quote=True)
+        except Exception as e:
+            traceback.print_exc()
+            text += f'\nreply_text: {type(e).__name__}: {e}'
+            text = truncate_text(text)
+
+    if bot:
+        try:
+            await bot.send_message(USER_ID, text)
+        except Exception:
+            traceback.print_exc()
 
 
 def get_arg(update: Update) -> str:

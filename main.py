@@ -13,7 +13,7 @@ from telegram.ext import (
     Application,
 )
 
-from util import log, log2, shorten, USER_ID, CHAN_ID, init_util
+from util import log, shorten, USER_ID, CHAN_ID, init_util, set_msg
 from receipt import render_receipt
 from run import handle_run, handle_cmd, handle_update
 from rg import handle_rg, handle_rg_callback, handle_start
@@ -32,51 +32,42 @@ def auth(
 ) -> Callable[[Update, ContextTypes.DEFAULT_TYPE], Coroutine]:
     @functools.wraps(func)
     async def wrapper(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        user = update.effective_user
-        if user:
+        if user := update.effective_user:
             src = f'{user.full_name} ({user.name} {user.id})'
             valid = user.id == USER_ID
-        else:
-            chat = update.effective_chat
-            if not chat:
-                raise ValueError('Invalid message')
-            src = f'Chat {chat.id} ({chat.type})'
+        elif chat := update.effective_chat:
+            src = f'{chat.type} ({chat.id})'
             valid = chat.id == CHAN_ID
+        else:
+            src = 'Unknown source'
+            valid = False
 
         if msg := update.message:
-            log.info('%s: %s', src, shorten(msg.text))
-        elif update.callback_query:
-            log.info('%s: callback %s', src, shorten(update.callback_query.data))
-        elif update.channel_post:
-            log.info('%s: channel post %s', src, shorten(update.channel_post.text))
-        elif update.edited_message:
-            log.info('%s: edited %s', src, shorten(update.edited_message.text))
-        elif update.edited_channel_post:
-            log.info(
-                '%s: edited post %s',
-                src,
-                shorten(update.edited_channel_post.text),
-            )
-        elif update.inline_query:
-            log.info(
-                '%s: inline query %s',
-                src,
-                shorten(update.inline_query.query),
-            )
+            log.info('%s: msg %s', src, shorten(msg.text))
+        elif msg := update.edited_message:
+            log.info('%s: edited %s', src, shorten(msg.text))
+        elif item := update.channel_post:
+            log.info('%s: channel post %s', src, shorten(item.text))
+        elif item := update.edited_channel_post:
+            log.info('%s: edited post %s', src, shorten(item.text))
+        elif item := update.callback_query:
+            msg = update.callback_query.message
+            log.info('%s: callback %s', src, shorten(item.data))
+        elif item := update.inline_query:
+            log.info('%s: inline %s', src, shorten(item.query))
         else:
             log.info('%s: unknown: %s', src, update)
 
         if not valid:
-            log2.warning('Drop message from unknown chat: %s', src)
+            log.warning('Drop unauthorized update from %s', src)
             return
+
+        set_msg(msg)
 
         try:
             return await func(update, ctx)
         except Exception as e:
-            r = f'{type(e).__name__}: {str(e)}'
-            log2.exception('%s', r)
-            if msg:
-                await msg.reply_text(r, do_quote=True)
+            log.exception('%s: %s: %s', func.__name__, type(e).__name__, e)
 
     return wrapper
 
@@ -108,20 +99,19 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             elif data[0] in ':-+':
                 await handle_render_callback(update, ctx, data)
             else:
-                log2.warning('bad callback: %s', data)
+                log.warning('bad callback: %s', data)
         else:
-            log2.warning('empty callback')
+            log.warning('empty callback')
     finally:
         await callback.answer()
 
 
 async def handle_inline_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.inline_query
-    log.info(
-        'Inline query from %s: %s', query.from_user.full_name, shorten(query.query)
-    )
-    if query and (text := query.query.strip()):
-        return await handle_render_inline_query(query, text)
+    data = query.query.strip()
+    log.info('Inline query from %s: %s', query.from_user.full_name, shorten(data))
+    if query and data:
+        return await handle_render_inline_query(query, data)
 
 
 commands = tuple(
@@ -135,7 +125,7 @@ async def post_init(app: Application) -> None:
     init_render('doc.db')
     init_util(bot)
     await bot.set_my_commands(tuple((s, s) for s, _ in commands))
-    log2.info('Sendai initialized.')
+    log.warning('Sendai initialized.')
 
 
 async def post_stop(_: Application) -> None:

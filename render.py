@@ -16,7 +16,7 @@ from telegram.ext import ContextTypes
 from telegram.error import BadRequest
 from telegram.constants import ReactionEmoji
 
-from util import get_arg, shorten, truncate_text, log, log2
+from util import get_arg, shorten, truncate_text, log
 
 db = None
 
@@ -340,10 +340,10 @@ async def handle_doc(msg: Message):
         if (old_name := db.get(name_key)) and (
             old_name := old_name.decode('utf-8')
         ) != name:
-            log2.info('rename doc %s -> %s %s %s', old_name, name, id, shorten(text))
+            log.warning('rename doc %s -> %s %s %s', old_name, name, id, shorten(text))
             del db[old_name]
         else:
-            log2.info('update doc %s %s %s', name, id, shorten(text))
+            log.warning('update doc %s %s %s', name, id, shorten(text))
 
         db[name_key] = name
 
@@ -351,6 +351,6 @@ async def handle_doc(msg: Message):
 
     elif old_name := db.get(name_key):
         del db[old_name], db[name_key]
-        log2.info('delete doc %s %s', old_name, id)
+        log.warning('delete doc %s %s', old_name, id)
 
         await msg.set_reaction()
