@@ -3,8 +3,11 @@ from sqlite3 import connect, Connection
 
 
 class DataStore:
-    def __init__(self, file: str):
-        self.conn: Connection = connect(file, autocommit=False)
+    def __init__(self):
+        self.conn: Connection | None = None
+
+    def connect(self, file: str):
+        self.conn = connect(file, autocommit=False)
         atexit.register(self.conn.close)
 
         with self.conn:
@@ -17,9 +20,14 @@ class DataStore:
             )
 
     def close(self):
-        f = self.conn.close
-        f()
+        c = self.conn
+        self.conn = None
+        (f := c.close)()
         atexit.unregister(f)
+
+    def summary(self) -> str:
+        n = self.conn.execute('SELECT COUNT(*) FROM Doc').fetchone()[0]
+        return f'{n} docs'
 
     def get_doc(self, name: str) -> tuple[int, str] | None:
         cursor = self.conn.execute('SELECT id, text FROM Doc WHERE name = ?', (name,))
@@ -53,3 +61,6 @@ class DataStore:
                 self.conn.execute('DELETE FROM Doc WHERE id = ?;', (id,))
 
         return row
+
+
+db = DataStore()

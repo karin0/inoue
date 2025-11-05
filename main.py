@@ -14,7 +14,17 @@ from telegram.ext import (
     Application,
 )
 
-from util import log, shorten, USER_ID, CHAN_ID, init_util, set_msg, get_msg
+from util import (
+    log,
+    shorten,
+    USER_ID,
+    CHAN_ID,
+    init_util,
+    set_msg,
+    get_msg,
+    do_notify,
+    escape,
+)
 from motto import greeting
 from receipt import render_receipt
 from run import handle_run, handle_cmd, handle_update
@@ -23,10 +33,10 @@ from render import (
     handle_render,
     handle_doc,
     handle_render_inline_query,
-    init_render,
     handle_render_callback,
-    close_render,
+    CALLBACK_SIGNS,
 )
+from db import db
 
 
 def auth(
@@ -101,7 +111,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data:
         if data.startswith('rg_back_'):
             fut = handle_rg_callback(data)
-        elif data[0] in ':-+':
+        elif data[0] in CALLBACK_SIGNS:
             fut = handle_render_callback(update, ctx, data)
         else:
             log.warning('bad callback: %s', data)
@@ -144,14 +154,19 @@ commands = tuple(
 
 async def post_init(app: Application) -> None:
     bot: Bot = app.bot
-    init_render('doc.db')
     init_util(bot)
+    db.connect('sendai.db')
+    s = db.summary()
     await bot.set_my_commands(tuple((s, s) for s, _ in commands))
-    log.warning('Sendai initiated: ' + greeting())
+    await do_notify(
+        f'{escape(greeting())}\n```\nSendai initiated: {escape(s)}\n```',
+        parse_mode='MarkdownV2',
+    )
+    log.info('Sendai initiated: %s', s)
 
 
 async def post_stop(_: Application) -> None:
-    close_render()
+    db.close()
     log.info('Database closed.')
 
 

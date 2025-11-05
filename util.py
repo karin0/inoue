@@ -7,6 +7,7 @@ from contextvars import ContextVar
 
 from telegram import Message, Bot, Update
 from telegram.constants import MessageLimit
+from telegram.helpers import escape_markdown
 
 USER_ID = int(os.environ['USER_ID'])
 CHAN_ID = int(os.environ['CHAN_ID'])
@@ -124,3 +125,7 @@ def truncate_text(s: str) -> str:
     if len(s) > MAX_TEXT_LENGTH:
         s = s[: MAX_TEXT_LENGTH - 12] + '\n[truncated]'
     return s
+
+
+def escape(s: str) -> str:
+    return escape_markdown(s, version=2)

@@ -15,32 +15,28 @@ from telegram import (
 )
 from telegram.ext import ContextTypes
 from telegram.error import BadRequest
-from telegram.helpers import escape_markdown
 from telegram.constants import ReactionEmoji
 
-from util import get_msg_arg, log, shorten, truncate_text, do_notify, get_msg_url
-from db import DataStore
+from util import (
+    MAX_TEXT_LENGTH,
+    get_msg_arg,
+    log,
+    shorten,
+    truncate_text,
+    escape,
+    do_notify,
+    get_msg_url,
+)
+from db import db
 
-db: DataStore | None = None
-
-
-def init_render(file):
-    global db
-    db = DataStore(file)
-
-
-def close_render():
-    global db
-    if db is not None:
-        db.close()
-        db = None
+CALLBACK_SIGNS = '/+:'
 
 
 def make_markup(
     text: str, ctx: dict[str], state: dict[str, bool] | None
 ) -> InlineKeyboardMarkup | None:
-    # query data: ('-'|'+' <flag-key>)* ':' <text>
-    # where '-' means 0, '+' means 1
+    # query data: ('/'|'+' <flag-key>)* ':' <text>
+    # where '/' means 0, '+' means 1
 
     size = len(text) + 1
     if state:
@@ -78,7 +74,9 @@ def make_markup(
             state = {}
 
         def push_button(name: str):
-            data = ''.join(('-+'[v] + k) for k, v in state.items()) + ':' + text
+            data = (
+                ''.join((CALLBACK_SIGNS[v] + k) for k, v in state.items()) + ':' + text
+            )
             row.append(InlineKeyboardButton(name, callback_data=data))
 
         for k, v in flags.items():
@@ -117,7 +115,7 @@ class OverriddenDict(UserDict):
 
 def render_text(
     text: str, flags: dict[str, bool] | None = None
-) -> tuple[str, InlineKeyboardMarkup | None]:
+) -> tuple[str, InlineKeyboardMarkup | None, str | None]:
     if flags:
         ctx = OverriddenDict({k: '01'[v] for k, v in flags.items()})
     else:
@@ -128,8 +126,17 @@ def render_text(
     if errors:
         result += f'\n\n---\n\n' + '\n'.join(errors)
 
+    result = truncate_text(result)
+    parse_mode = None
+    do_pre = ctx.get('_pre')
+    if do_pre and do_pre != '0' and len(result) + 8 <= MAX_TEXT_LENGTH:
+        result2 = f'```\n{escape(result)}\n```'
+        if len(result2) <= MAX_TEXT_LENGTH:
+            result = result2
+            parse_mode = 'MarkdownV2'
+
     log.info('rendered %d -> %d', len(text), len(result))
-    return truncate_text(result), make_markup(text, ctx, flags)
+    return truncate_text(result), make_markup(text, ctx, flags), parse_mode
 
 
 async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
@@ -151,18 +158,22 @@ async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
             'Specify text or reply to a message to render.', do_quote=True
         )
 
-    result, markup = render_text(text)
-    return await msg.reply_text(result, reply_markup=markup, do_quote=True)
+    result, markup, parse_mode = render_text(text)
+    return await msg.reply_text(
+        result, reply_markup=markup, parse_mode=parse_mode, do_quote=True
+    )
 
 
 async def handle_render_inline_query(query: InlineQuery, text: str):
-    result, markup = render_text(text)
+    result, markup, parse_mode = render_text(text)
     await query.answer(
         [
             InlineQueryResultArticle(
                 id='1',
                 title=f'Render: {len(result)}',
-                input_message_content=InputTextMessageContent(result),
+                input_message_content=InputTextMessageContent(
+                    result, parse_mode=parse_mode
+                ),
                 reply_markup=markup,
             )
         ]
@@ -181,13 +192,13 @@ async def handle_render_callback(
 
         i += 1
         j = i
-        while j < len(data) and data[j] not in '-+:':
+        while j < len(data) and data[j] not in CALLBACK_SIGNS:
             j += 1
         key = data[i:j]
-        flags[key] = sign == '+'
+        flags[key] = sign == CALLBACK_SIGNS[True]
         i = j
 
-    result, markup = render_text(data[i + 1 :], flags)
+    result, markup, parse_mode = render_text(data[i + 1 :], flags)
 
     try:
         if update.callback_query.inline_message_id:
@@ -195,6 +206,7 @@ async def handle_render_callback(
                 text=result,
                 inline_message_id=update.callback_query.inline_message_id,
                 reply_markup=markup,
+                parse_mode=parse_mode,
             )
         else:
             await ctx.bot.edit_message_text(
@@ -202,6 +214,7 @@ async def handle_render_callback(
                 chat_id=update.effective_chat.id,
                 message_id=update.callback_query.message.message_id,
                 reply_markup=markup,
+                parse_mode=parse_mode,
             )
     except BadRequest as e:
         if 'Message is not modified' not in str(e):
@@ -327,10 +340,6 @@ def render(
 reg_name = re.compile(r'{([\w\-]+?):}')
 
 
-def escape(s: str) -> str:
-    return escape_markdown(s, version=2)
-
-
 def _report(
     out: list[str], action: str, id: int | None, name: str | None, text: str | None
 ):
@@ -402,4 +411,3 @@ async def handle_doc(msg: Message):
         ),
         msg.set_reaction(*reaction),
     )
-    
