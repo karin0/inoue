@@ -15,7 +15,8 @@ from telegram import (
 from telegram.ext import ContextTypes
 from telegram.constants import MessageEntityType
 
-from util import get_arg, MAX_TEXT_LENGTH, truncate_text, BOT_NAME
+from util import MAX_TEXT_LENGTH, get_msg_arg, truncate_text, BOT_NAME
+from motto import greeting
 
 type Segment = Sequence['Segment'] | str | 'Style' | 'Link'
 
@@ -151,10 +152,9 @@ def render_segment(seg: Segment, out: bytearray, entities: list[MessageEntity]):
 
 
 async def handle_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    arg = get_arg()
-    msg: Message = update.message
+    msg, arg = get_msg_arg(update)
     if not (arg and arg.startswith('rg_')):
-        return await msg.reply_text('Hello!', do_quote=True)
+        return await msg.reply_text(greeting(), do_quote=True)
 
     _, i, j, k = arg.split('_')
     query = QUERIES[int(i)]
@@ -184,11 +184,11 @@ async def handle_rg_callback(data: str):
 
 
 async def handle_rg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    arg = get_arg()
+    msg, arg = get_msg_arg(update)
     if not arg:
-        return await update.message.reply_text('Provide a keyword.', do_quote=True)
+        return await msg.reply_text('Provide a keyword.', do_quote=True)
 
-    cwd_offset = '' if update.message.text.startswith('/rg') else '2'
+    cwd_offset = '' if msg.text.startswith('/rg') else '2'
 
     child = await asyncio.create_subprocess_exec(
         'rg',
@@ -235,14 +235,14 @@ async def handle_rg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await child.wait()
 
     if not query.files:
-        return await update.message.reply_text('No matches.', do_quote=True)
+        return await msg.reply_text('No matches.', do_quote=True)
 
     idx = push_query(query)
     segments = []
     query.render(segments, idx)
 
     ba = bytearray()
-    entities = []
+    entities: list[MessageEntity] = []
     render_segment(segments, ba, entities)
 
     text = ba.decode('utf-16-le')
@@ -265,6 +265,4 @@ async def handle_rg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     query.menu_text = text
     query.menu_entities = entities
-    query.message = await update.message.reply_text(
-        text, entities=entities, do_quote=True
-    )
+    query.message = await msg.reply_text(text, entities=entities, do_quote=True)

@@ -5,7 +5,7 @@ import traceback
 
 from contextvars import ContextVar
 
-from telegram import Message, Bot
+from telegram import Message, Bot, Update
 from telegram.constants import MessageLimit
 
 USER_ID = int(os.environ['USER_ID'])
@@ -83,14 +83,26 @@ async def do_notify(text: str, **kwargs):
             traceback.print_exc()
 
 
-def get_arg() -> str:
-    s = msg.get().text
+def get_msg(update: Update | None) -> Message:
+    if update is None:
+        return msg.get()
+
+    if m := update.message or update.edited_message:
+        return m
+
+    raise ValueError('No message')
+
+
+def get_msg_arg(update: Update | None) -> tuple[Message, str]:
+    m = get_msg(update)
+    s = m.text
+
     if not s.startswith('/'):
-        return s.strip()
+        return m, s.strip()
     try:
-        return s[s.index(' ') + 1 :].strip()
+        return m, s[s.index(' ') + 1 :].strip()
     except ValueError:
-        return ''
+        return m, ''
 
 
 def get_msg_url(msg_id) -> str:

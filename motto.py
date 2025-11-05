@@ -3,7 +3,7 @@ import re
 import random
 from typing import Iterable
 
-from util import truncate_text
+from util import truncate_text, log
 
 
 def sentences() -> Iterable[str]:
@@ -31,7 +31,9 @@ SENTENCES = tuple(truncate_text(s) for s in set(s for s in sentences() if len(s)
 
 
 def greeting() -> str:
-    return random.choice(SENTENCES)
+    s = random.choice(SENTENCES)
+    log.info('greeting: %s', s)
+    return s
 
 
 def cnt():

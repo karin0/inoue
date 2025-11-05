@@ -7,14 +7,15 @@ from telegram import Message, Update
 from telegram.ext import ContextTypes
 from telegram.constants import ChatAction
 
-from util import get_arg, MAX_TEXT_LENGTH
+from util import get_msg, get_msg_arg, MAX_TEXT_LENGTH
 
 
 async def handle_run(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if cmd := get_arg():
+    msg, cmd = get_msg_arg(update)
+    if cmd:
         await handle_cmd(update, cmd)
     else:
-        await update.message.reply_text('Provide a command to run.', do_quote=True)
+        await msg.reply_text('Provide a command to run.', do_quote=True)
 
 
 async def handle_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -110,10 +111,11 @@ async def _handle_cmd(update: Update, bin, *args, **kwargs):
     q_err = asyncio.Queue()
     asyncio.create_task(producer(q_err, child.stderr))
 
+    msg = get_msg(update)
     r1, r2 = await asyncio.gather(
-        consumer(q, functools.partial(update.message.reply_text, do_quote=True)),
-        consumer(q_err, update.message.reply_text),
+        consumer(q, functools.partial(msg.reply_text, do_quote=True)),
+        consumer(q_err, msg.reply_text),
     )
     r = await child.wait()
     if r or not (r1 or r2):
-        await update.message.reply_text(f'{child.pid} exited with {r}', do_quote=True)
+        await msg.reply_text(f'{child.pid} exited with {r}', do_quote=True)

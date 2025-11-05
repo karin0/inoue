@@ -19,7 +19,7 @@ from telegram.error import BadRequest
 from telegram.helpers import escape_markdown
 from telegram.constants import ReactionEmoji
 
-from util import log, get_arg, shorten, truncate_text, do_notify, get_msg_url
+from util import get_msg_arg, log, shorten, truncate_text, do_notify, get_msg_url
 
 db = None
 
@@ -136,9 +136,8 @@ def render_text(
 
 
 async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
-    msg = update.message or update.edited_message
+    msg, arg = get_msg_arg(update)
     target = msg.reply_to_message
-    arg = get_arg()
 
     if target:
         text = (target.text or target.caption).strip()
@@ -332,7 +331,7 @@ reg_name = re.compile(r'{([\w\-]+?):}')
 
 
 def escape(s: str) -> str:
-    return '\(`' + escape_markdown(s, version=2) + '`\)'
+    return r'\(`' + escape_markdown(s, version=2) + r'`\)'
 
 
 async def handle_doc(msg: Message):

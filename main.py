@@ -14,7 +14,7 @@ from telegram.ext import (
     Application,
 )
 
-from util import log, shorten, USER_ID, CHAN_ID, init_util, set_msg
+from util import log, shorten, USER_ID, CHAN_ID, init_util, set_msg, get_msg
 from motto import greeting
 from receipt import render_receipt
 from run import handle_run, handle_cmd, handle_update
@@ -126,7 +126,7 @@ async def handle_inline_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_greet(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(greeting(), do_quote=True)
+    await get_msg(update).reply_text(greeting(), do_quote=True)
 
 
 commands = tuple(
