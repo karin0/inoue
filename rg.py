@@ -1,3 +1,4 @@
+import os
 import asyncio
 import subprocess
 import dataclasses
@@ -107,6 +108,7 @@ class RGQuery:
             f.render(segments, i, idx)
 
 
+CWD = os.environ['RG_CWD']
 URL_BASE = 'https://t.me/' + BOT_NAME + '?start=rg_'
 QUERIES: list[RGQuery] = []
 QUERY_LIMIT = 10
@@ -198,7 +200,7 @@ async def handle_rg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         'path',
         '--json',
         arg,
-        cwd='/data/app/gmact/out' + cwd_offset,
+        cwd=CWD + cwd_offset,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,

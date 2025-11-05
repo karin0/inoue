@@ -1,13 +1,17 @@
+import os
 import asyncio
 import codecs
-import functools
 import subprocess
+
+from asyncio.subprocess import Process
 
 from telegram import Message, Update
 from telegram.ext import ContextTypes
 from telegram.constants import ChatAction
 
 from util import get_msg, get_msg_arg, MAX_TEXT_LENGTH
+
+UPDATE_CWD = os.environ['UPDATE_CWD']
 
 
 async def handle_run(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -19,14 +23,15 @@ async def handle_run(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await _handle_cmd(update, './run.sh', cwd='/data/app/gmact')
+    await _handle_cmd(update, './run.sh', cwd=UPDATE_CWD)
 
 
 async def handle_cmd(update: Update, cmd: str):
     return await _handle_cmd(update, 'bash', '-c', cmd)
 
 
-async def _handle_cmd(update: Update, bin, *args, **kwargs):
+async def _handle_cmd(update: Update, bin: str, *args, **kwargs):
+    msg = get_msg(update)
     child = await asyncio.create_subprocess_exec(
         bin,
         *args,
@@ -36,86 +41,105 @@ async def _handle_cmd(update: Update, bin, *args, **kwargs):
         stderr=subprocess.PIPE,
     )
 
+    evt = asyncio.Event()
+
     async def action():
-        await asyncio.sleep(0.2)
-        if child.returncode is None:
-            await update.effective_chat.send_chat_action(ChatAction.TYPING)
+        await asyncio.sleep(0.3)
+        while child and child.returncode is None:
+            nonlocal evt
+            await msg.reply_chat_action(ChatAction.TYPING)
+            if evt:
+                futs = (
+                    asyncio.create_task(evt.wait()),
+                    asyncio.create_task(asyncio.sleep(3)),
+                )
+                await asyncio.wait(futs, return_when=asyncio.FIRST_COMPLETED)
+                if evt.is_set():
+                    evt = None
+            else:
+                await asyncio.sleep(3)
 
     asyncio.create_task(action())
 
-    async def producer(q, pipe):
-        async for line in pipe:
-            q.put_nowait(line)
-        q.put_nowait(None)
+    try:
+        return await __handle_cmd(msg, child, evt)
+    finally:
+        child = None
 
-    async def consumer(q, send):
-        msg: Message | None = None
-        text = ''
-        dec = codecs.getincrementaldecoder('utf-8')('replace')
-        left = None
 
-        while True:
-            eof = False
-            if left:
-                new = left
-                left = None
-            else:
-                t = await q.get()
-                if t is None:
-                    break
+async def producer(q, pipe):
+    async for line in pipe:
+        q.put_nowait(line)
+    q.put_nowait(None)
 
-                chunks = bytearray(t)
-                await asyncio.sleep(0.01)
-                try:
-                    while True:
-                        # print('got', chunks)
-                        t = q.get_nowait()
-                        if t is None:
-                            eof = True
-                            break
-                        chunks.extend(t)
-                except asyncio.QueueEmpty:
-                    pass
 
-                new = dec.decode(chunks, final=eof)
+async def consumer(q, send, arg):
+    msg: Message | None = None
+    text = ''
+    dec = codecs.getincrementaldecoder('utf-8')('replace')
+    left = None
 
-            if new:
-                if len(new) > MAX_TEXT_LENGTH:
-                    msg = None
-                    text = new[:MAX_TEXT_LENGTH]
-                    left = new[MAX_TEXT_LENGTH:]
-                else:
-                    text += new
-
-                    if len(text) > MAX_TEXT_LENGTH:
-                        msg = None
-                        text = new
-
-                if msg:
-                    await msg.edit_text(text)
-                else:
-                    msg = await send(text)
-
-            if eof:
+    while True:
+        eof = False
+        if left:
+            new = left
+            left = None
+        else:
+            t = await q.get()
+            if t is None:
                 break
 
-            asyncio.create_task(
-                update.effective_chat.send_chat_action(ChatAction.TYPING)
-            )
+            chunks = bytearray(t)
+            await asyncio.sleep(0.01)
+            try:
+                while True:
+                    t = q.get_nowait()
+                    if t is None:
+                        eof = True
+                        break
+                    chunks.extend(t)
+            except asyncio.QueueEmpty:
+                pass
 
-        return text
+            new = dec.decode(chunks, final=eof)
 
+        if new:
+            if len(new) > MAX_TEXT_LENGTH:
+                msg = None
+                text = new[:MAX_TEXT_LENGTH]
+                left = new[MAX_TEXT_LENGTH:]
+            else:
+                text += new
+
+                if len(text) > MAX_TEXT_LENGTH:
+                    msg = None
+                    text = new
+
+            if msg:
+                await msg.edit_text(text)
+            else:
+                msg = await send(text, arg)
+
+        if eof:
+            break
+
+
+async def __handle_cmd(msg: Message, child: Process, evt: asyncio.Event):
     q = asyncio.Queue()
     asyncio.create_task(producer(q, child.stdout))
 
     q_err = asyncio.Queue()
     asyncio.create_task(producer(q_err, child.stderr))
 
-    msg = get_msg(update)
-    r1, r2 = await asyncio.gather(
-        consumer(q, functools.partial(msg.reply_text, do_quote=True)),
-        consumer(q_err, msg.reply_text),
-    )
+    async def send(text, do_quote):
+        nonlocal evt
+        r = await msg.reply_text(text, do_quote=do_quote)
+        if evt:
+            evt.set()
+            evt = None
+        return r
+
+    await asyncio.gather(consumer(q, send, True), consumer(q_err, send, False))
     r = await child.wait()
-    if r or not (r1 or r2):
+    if r or evt:
         await msg.reply_text(f'{child.pid} exited with {r}', do_quote=True)
