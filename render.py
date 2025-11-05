@@ -236,9 +236,9 @@ def render(
             return m[0]
 
         # Conditional: {cond ? true-directive : false-directive} (false part optional)
-        if (p := cmd.find('?')) != -1:
+        if (p := cmd.find('?', 1)) >= 0:
             cond = cmd[:p].strip()
-            if (t := cond.find('=')) != -1:
+            if (t := cond.find('=', 1)) >= 0:
                 key = cond[:t].strip()
                 val = cond[t + 1 :].strip()
                 test = str(ctx.get(key)) == val
@@ -246,7 +246,7 @@ def render(
                 val = ctx.get(cond)
                 test = val and val != '0'
 
-            # Prefer doc expansion for ?:
+            # Prefer doc expansion for ?:<doc>
             if (q := cmd.find(':', p + 2)) != -1:
                 cmd = cmd[p + 1 : q].strip() if test else cmd[q + 1 :].strip()
             elif test:
@@ -272,11 +272,11 @@ def render(
                 pass
 
             # Context set: {key=value}
-            elif (p := cmd.find('=')) != -1:
+            elif (p := cmd.find('=', 1)) >= 0:
                 ctx[cmd[:p].strip()] = cmd[p + 1 :].strip()
 
             # Context swap: {key1^key2}
-            elif (p := cmd.find('^')) != -1:
+            elif (p := cmd.find('^', 1)) >= 0:
                 key1 = cmd[:p].strip()
                 key2 = cmd[p + 1 :].strip()
                 val1 = ctx.get(key1)
