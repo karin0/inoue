@@ -32,7 +32,7 @@ SENTENCES = tuple(truncate_text(s) for s in set(s for s in sentences() if len(s)
 
 def greeting() -> str:
     s = random.choice(SENTENCES)
-    log.info('greeting: %s', s)
+    log.info('motto: %s', s)
     return s
 
 
