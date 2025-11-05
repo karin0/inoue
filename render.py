@@ -1,7 +1,6 @@
 import re
 import atexit
 import asyncio
-import dbm.sqlite3
 
 from collections import UserDict
 
@@ -20,15 +19,14 @@ from telegram.helpers import escape_markdown
 from telegram.constants import ReactionEmoji
 
 from util import get_msg_arg, log, shorten, truncate_text, do_notify, get_msg_url
+from db import DataStore
 
-db = None
+db: DataStore | None = None
 
 
 def init_render(file):
     global db
-    db = dbm.sqlite3.open(file, flag='c')
-    atexit.register(close_render)
-    check_integrity()
+    db = DataStore(file)
 
 
 def close_render():
@@ -36,7 +34,6 @@ def close_render():
     if db is not None:
         db.close()
         db = None
-        atexit.unregister(close_render)
 
 
 def make_markup(
@@ -293,15 +290,15 @@ def render(
                     errors.append('circular: ' + cmd)
                     return ''
 
-                try:
-                    doc = db[key].decode('utf-8')
-                except KeyError:
+                if doc_row := db.get_doc(key):
+                    doc_id, doc = doc_row
+                else:
                     ctx.setdefault(':db', '')
                     errors.append('undefined: ' + cmd)
                     return ''
 
                 if not ctx.get(':db'):
-                    ctx[':db'] = db['i:' + key].decode('utf-8')
+                    ctx[':db'] = doc_id
 
                 vis.add(key)
                 r = render(doc, ctx, vis, errors)
@@ -331,111 +328,78 @@ reg_name = re.compile(r'{([\w\-]+?):}')
 
 
 def escape(s: str) -> str:
-    return r'\(`' + escape_markdown(s, version=2) + r'`\)'
+    return escape_markdown(s, version=2)
+
+
+def _report(
+    out: list[str], action: str, id: int | None, name: str | None, text: str | None
+):
+    parts = []
+    if id is not None:
+        parts.append(f'{id}:')
+
+    if name is not None:
+        parts.append(name)
+
+    if text is not None:
+        short = shorten(text)
+        parts.append(f'({short})')
+        log_info = ' '.join(parts)
+        msg_info = escape(' '.join(parts[:-1])) + rf' \(`{escape(short)}`\)'
+    else:
+        log_info = msg_info = ' '.join(parts)
+
+    log.info('%s %s', action, log_info)
+
+    if id is not None:
+        msg_info = f'[{msg_info}]({get_msg_url(id)})'
+
+    out.append(f'{escape(action)} {msg_info}')
 
 
 async def handle_doc(msg: Message):
     if not (text := msg.text) or not (text := text.strip()):
         return
 
-    id = str(msg.message_id)
-    n_key = 'n:' + id
-    info = None
-    reaction = None
+    id = msg.message_id
+    info = []
 
     if (m := reg_name.search(text)) and (name := m[1].strip()):
-        short = shorten(text)
+        old_by_id, old_by_name = db.save_doc(id, name, text)
 
-        if old_name := db.get(n_key):
-            if (old_name := old_name.decode('utf-8')) != name:
-                del db['i:' + old_name]
-                old_text = db.pop(old_name)
-                db[n_key] = name
-
-                log.info('renamed doc %s: %s -> %s (%s)', id, old_name, name, short)
-                old_text = shorten(old_text.decode('utf-8'))
-                info = rf'renamed doc {id}: {old_name} {escape(old_text)} \-\> [{name} {escape(short)}]({get_msg_url(id)})'
+        action = 'new doc:'
+        if old_by_id:
+            old_name, old_text = old_by_id
+            if old_name == name:
+                if old_text == text:
+                    old_text = None
+                _report(info, 'updated doc:', None, None, old_text)
             else:
-                log.info('updated doc %s: %s (%s)', id, name, short)
-                info = f'updated doc [{id}: {name} {escape(short)}]({get_msg_url(id)})'
-        else:
-            db[n_key] = name
+                _report(info, 'renamed doc:', None, old_name, old_text)
+            action = '->'
 
-            log.info('new doc %s: %s (%s)', id, name, short)
-            info = f'new doc [{id}: {name} {escape(short)}]({get_msg_url(id)})'
+        if old_by_name:
+            old_id, old_text = old_by_name
+            if old_text == text:
+                old_text = None
+            _report(info, 'relinked doc:', old_id, None, old_text)
+            assert old_id != id
+            action = '->'
 
-        if old_id := db.get(i_key := 'i:' + name):
-            if (old_id := old_id.decode('utf-8')) != id:
-                del db['n:' + old_id]
-                db[i_key] = id
-
-                log.info('unlinked doc %s: %s -> %s', name, old_id, id)
-
-                old_text = shorten(db.pop(name).decode('utf-8'))
-                info2 = rf'unlinked doc {name}: [{old_id} {escape(old_text)}]({get_msg_url(old_id)}) \-\> [{id}]({get_msg_url(id)})'
-                info = (info + '\n' + info2) if info else info2
-        else:
-            db[i_key] = id
-
-        db[name] = text
-
+        _report(info, action, id, name, text)
         reaction = (ReactionEmoji.RED_HEART, True)
 
-    elif old_name := db.get(n_key):
-        del db[n_key], db[b'i:' + old_name]
-        old_text = db.pop(old_name)
-
-        old_name = old_name.decode('utf-8')
-        old_text = shorten(old_text.decode('utf-8'))
-
-        log.warning('deleted doc %s: %s (%s)', id, old_name, old_text)
-        info = f'deleted doc [{id}]({get_msg_url(id)}): {old_name} {escape(old_text)}'
-
+    elif old_row := db.delete_doc(id):
+        _report(info, 'deleted doc:', id, *old_row)
         reaction = ()
+    else:
+        return
 
-    if reaction is not None:
-        await asyncio.gather(
-            do_notify(info, parse_mode='MarkdownV2'), msg.set_reaction(*reaction)
-        )
-
-
-def check_integrity(check: bool = True, fix: bool = False):
-    for k in tuple(db.keys()):
-        v = db[k]
-        if k.startswith(b'n:'):
-            log.debug('index: %s %s', k, v)
-            id = k[2:]
-            name = v
-            i_key = b'i:' + name
-
-            if fix:
-                if (old_id := db.get(i_key)) == id:
-                    pass
-                elif old_id is None or (old_id := int(old_id.decode('utf-8'))) < int(
-                    id.decode('utf-8')
-                ):
-                    log.error('inconsistent index: %s = %s -> %s', i_key, old_id, id)
-                    db[i_key] = id
-                elif old_id > id:
-                    log.error(
-                        'inconsistent index: %s = %s > %s (del)', i_key, old_id, id
-                    )
-                    del db[k]
-                    continue
-
-                if name not in db:
-                    log.error('inconsistent index: no doc for %s %s (del)', id, name)
-                    del db[k], db[i_key]
-
-            elif check:
-                assert db[i_key] == id
-                assert name in db
-
-        elif k.startswith(b'i:'):
-            log.debug('index: %s %s', k, v)
-            if check:
-                assert db[b'n:' + v] == k[2:]
-        else:
-            log.debug('doc: %s %s', k, shorten(v.decode('utf-8')))
-            if check:
-                assert db[b'n:' + db[b'i:' + k]] == k
+    await asyncio.gather(
+        do_notify(
+            truncate_text(('\n' if len(info) > 2 else ' ').join(info)),
+            parse_mode='MarkdownV2',
+        ),
+        msg.set_reaction(*reaction),
+    )
+    
