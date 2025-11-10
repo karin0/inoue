@@ -7,6 +7,7 @@ class DataStore:
         self.conn: Connection | None = None
 
     def connect(self, file: str):
+        assert self.conn is None
         self.conn = connect(file, autocommit=False)
         atexit.register(self.conn.close)
 
@@ -33,6 +34,7 @@ class DataStore:
         cursor = self.conn.execute('SELECT id, text FROM Doc WHERE name = ?', (name,))
         return cursor.fetchone()
 
+    # Works like INSERT OR REPLACE, but returns the replaced records.
     def save_doc(
         self, id: int, name: str, text: str
     ) -> tuple[tuple[str, str] | None, tuple[int, str] | None]:
