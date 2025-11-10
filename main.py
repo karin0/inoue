@@ -20,7 +20,7 @@ from util import (
     USER_ID,
     CHAN_ID,
     init_util,
-    set_msg,
+    use_msg,
     get_msg,
     do_notify,
     escape,
@@ -70,16 +70,15 @@ def auth(
         else:
             log.info('%s: unknown: %s', src, update)
 
-        if not valid:
-            log.warning('Drop unauthorized update from %s', src)
-            return
+        with use_msg(msg if valid else None) as msg:
+            if not valid:
+                log.warning('Drop unauthorized update from %s: %s', src, update)
+                return
 
-        set_msg(msg)
-
-        try:
-            return await func(update, ctx)
-        except Exception as e:
-            log.exception('%s: %s: %s', func.__name__, type(e).__name__, e)
+            try:
+                return await func(update, ctx)
+            except Exception as e:
+                log.exception('%s: %s: %s', func.__name__, type(e).__name__, e)
 
     return wrapper
 

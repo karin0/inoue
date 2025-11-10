@@ -3,6 +3,7 @@ import asyncio
 import logging
 import traceback
 
+from contextlib import contextmanager
 from contextvars import ContextVar
 
 from telegram import Message, Bot, Update
@@ -60,12 +61,17 @@ def init_util(b: Bot):
     bot = b
 
 
-def set_msg(m: Message | None):
-    if not m or m.chat.id == USER_ID:
-        msg.set(m)
-    else:
-        msg.set(None)
-        log.warning('Bad msg set: %s', m)
+@contextmanager
+def use_msg(m: Message | None):
+    if m and m.chat.id != USER_ID:
+        log.warning('Bad use_msg: %s', m)
+        m = None
+
+    token = msg.set(m)
+    try:
+        yield m
+    finally:
+        msg.reset(token)
 
 
 async def do_notify(text: str, **kwargs):
