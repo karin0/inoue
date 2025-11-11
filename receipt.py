@@ -98,6 +98,18 @@ def render_receipt(text: str):
         tot_dict[item.kind] += item.raw
     real_tot = sum(floor(v) for v in tot_dict.values())
 
+    warn = None
+    ext_idx = None
+    if the_real_tot is not None and the_real_tot != real_tot:
+        if the_real_tot > real_tot:
+            ext_idx = len(items)
+            delta = the_real_tot - real_tot
+            items.append(Value(delta))
+            warn = f'⚠️ {the_real_tot} (expected) > {real_tot}, added {delta}'
+            real_tot = the_real_tot
+        else:
+            warn = f'❌ {the_real_tot} (expected) < {real_tot}'
+
     alter(items, real_tot)
     tots = [render_pair(real_tot, real_tot - sum(item.raw for item in items))]
 
@@ -115,9 +127,11 @@ def render_receipt(text: str):
             dss.append(alt_items)
 
     res = [' |\t'.join(str(x) for x in row) for row in zip(*dss)]
-    res.append('= ' + ' |\t'.join(tots))
+    if ext_idx is not None:
+        res[ext_idx] += '  🚨'
+    res.append('= ' + ' |\t'.join(tots) + '  #inoue')
 
-    if the_real_tot is not None and the_real_tot != real_tot:
-        res.append(f'⚠️ {the_real_tot} (expected) != {real_tot}')
+    if warn:
+        res.append(warn)
 
     return '\n'.join(res)
