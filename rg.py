@@ -16,7 +16,7 @@ from telegram import (
 from telegram.ext import ContextTypes
 from telegram.constants import MessageEntityType
 
-from util import MAX_TEXT_LENGTH, get_msg_arg, truncate_text, BOT_NAME
+from util import get_msg_arg, truncate_text, reply_text, BOT_NAME, MAX_TEXT_LENGTH
 from motto import greeting
 
 type Segment = Sequence['Segment'] | str | 'Style' | 'Link'
@@ -188,7 +188,7 @@ async def handle_rg_callback(data: str):
 async def handle_rg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg, arg = get_msg_arg(update)
     if not arg:
-        return await msg.reply_text('Provide a keyword.', do_quote=True)
+        return await reply_text(msg, 'Provide a keyword.')
 
     cwd_offset = '' if msg.text.startswith('/rg') else '2'
 
@@ -237,7 +237,7 @@ async def handle_rg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await child.wait()
 
     if not query.files:
-        return await msg.reply_text('No matches.', do_quote=True)
+        return await reply_text(msg, 'No matches.')
 
     idx = push_query(query)
     segments = []
@@ -267,4 +267,4 @@ async def handle_rg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     query.menu_text = text
     query.menu_entities = entities
-    query.message = await msg.reply_text(text, entities=entities, do_quote=True)
+    query.message = await reply_text(msg, text, entities=entities)

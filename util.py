@@ -2,11 +2,13 @@ import os
 import asyncio
 import logging
 import traceback
+import functools
 
+from typing import Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-from telegram import Message, Bot, Update
+from telegram import Message, Bot, MessageEntity, InlineKeyboardMarkup, Update
 from telegram.constants import MessageLimit
 from telegram.helpers import escape_markdown
 
@@ -18,8 +20,24 @@ MAX_TEXT_LENGTH = MessageLimit.MAX_TEXT_LENGTH
 
 
 class NotifyHandler(logging.Handler):
+    def __init__(self):
+        super().__init__(logging.WARNING)
+        self._revocable = False
+
     def emit(self, record: logging.LogRecord) -> None:
-        asyncio.create_task(do_notify(self.format(record)))
+        asyncio.create_task(do_notify(self.format(record), revocable=self._revocable))
+
+    @contextmanager
+    def revocable(self):
+        self._revocable = True
+        try:
+            yield
+        finally:
+            self._revocable = False
+
+
+_notify_handler = NotifyHandler()
+notify_revocable = _notify_handler.revocable
 
 
 def _get_logger(name):
@@ -43,9 +61,7 @@ def _get_logger(name):
     h.setFormatter(logging.Formatter(fmt))
     logger.addHandler(h)
 
-    h = NotifyHandler()
-    h.setLevel(logging.WARNING)
-    logger.addHandler(h)
+    logger.addHandler(_notify_handler)
 
     return logger
 
@@ -53,7 +69,8 @@ def _get_logger(name):
 log = _get_logger('sendai')
 
 bot = None
-msg: ContextVar[Message] = ContextVar('msg')
+
+msg: ContextVar[Message | None] = ContextVar('msg')
 
 
 def init_util(b: Bot):
@@ -74,10 +91,13 @@ def use_msg(m: Message | None):
         msg.reset(token)
 
 
-async def do_notify(text: str, **kwargs):
+async def do_notify(text: str, *, revocable: bool = False, **kwargs):
     if m := msg.get(None):
         try:
-            return await m.reply_text(text, do_quote=True, **kwargs)
+            if revocable:
+                return await reply_text(m, text, **kwargs)
+            else:
+                return await m.reply_text(text, **kwargs)
         except Exception as e:
             traceback.print_exc()
             text += f'\nreply_text: {type(e).__name__}: {e}'
@@ -90,17 +110,22 @@ async def do_notify(text: str, **kwargs):
             traceback.print_exc()
 
 
-def get_msg(update: Update | None) -> Message:
-    if update is None:
-        return msg.get()
+type MessageSource = Message | Update | None
 
-    if m := update.message or update.edited_message:
-        return m
+
+def get_msg(update: MessageSource) -> Message:
+    if isinstance(update, Update):
+        if m := update.effective_message:
+            return m
+    elif update is None:
+        return msg.get()
+    else:
+        return update
 
     raise ValueError('No message')
 
 
-def get_msg_arg(update: Update | None) -> tuple[Message, str]:
+def get_msg_arg(update: MessageSource) -> tuple[Message, str]:
     m = get_msg(update)
     s = m.text
 
@@ -115,6 +140,52 @@ def get_msg_arg(update: Update | None) -> tuple[Message, str]:
 def get_msg_url(msg_id) -> str:
     chat_id = str(CHAN_ID).removeprefix('-100')
     return f'https://t.me/c/{chat_id}/{msg_id}'
+
+
+# A temporary buffer to populate lru_cache
+_the_response: Message | None = None
+
+
+@functools.lru_cache
+def _get_response(msg_id: int) -> Message:
+    if not _the_response:
+        raise KeyError(msg_id)
+
+    assert _the_response.reply_to_message.message_id == msg_id
+    return _the_response
+
+
+async def reply_text(
+    update: MessageSource,
+    text: str,
+    parse_mode: str | None = None,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    entities: Sequence[MessageEntity] | None = None,
+) -> Message:
+    m = get_msg(update)
+    msg_id = m.message_id
+    try:
+        resp = _get_response(msg_id)
+    except KeyError:
+        resp = await m.reply_text(
+            text,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup,
+            entities=entities,
+            do_quote=True,
+        )
+
+        # Save resp to cache
+        global _the_response
+        _the_response = resp
+        _get_response(msg_id)
+        _the_response = None
+    else:
+        resp = await resp.edit_text(
+            text, parse_mode=parse_mode, reply_markup=reply_markup, entities=entities
+        )
+        assert isinstance(resp, Message)
+    return resp
 
 
 def shorten(s: str | None) -> str:

@@ -16,6 +16,7 @@ from telegram.ext import (
 
 from util import (
     log,
+    reply_text,
     shorten,
     USER_ID,
     CHAN_ID,
@@ -23,6 +24,7 @@ from util import (
     use_msg,
     get_msg,
     do_notify,
+    notify_revocable,
     escape,
 )
 from motto import greeting
@@ -54,6 +56,8 @@ def auth(
             src = 'Unknown source'
             valid = False
 
+        log.debug('Entering %s from %s: %s', func.__name__, src, update)
+
         if msg := update.message:
             log.info('%s: msg %s', src, shorten(msg.text))
         elif msg := update.edited_message:
@@ -70,29 +74,35 @@ def auth(
         else:
             log.info('%s: unknown: %s', src, update)
 
-        with use_msg(msg if valid else None) as msg:
-            if not valid:
-                log.warning('Drop unauthorized update from %s: %s', src, update)
-                return
+        if msg != update.effective_message:
+            log.warning('Message mismatch: %s vs %s', msg, update.effective_message)
 
+        if not valid:
+            log.warning('Drop unauthorized update from %s: %s', src, update)
+            return
+
+        with use_msg(msg) as msg:
             try:
                 return await func(update, ctx)
             except Exception as e:
-                log.exception('%s: %s: %s', func.__name__, type(e).__name__, e)
+                with notify_revocable():
+                    # Can be overridden by edited successful responses later
+                    log.exception('%s: %s: %s', func.__name__, type(e).__name__, e)
 
     return wrapper
 
 
 async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not update.message:
-        if post := update.edited_channel_post or update.channel_post:
-            return await handle_doc(post)
+    if post := update.edited_channel_post or update.channel_post:
+        return await handle_doc(post)
+
+    if not (msg := get_msg(update)):
         return
 
-    text = update.message.text
+    text = msg.text
     if not (text and text.strip()):
         with open('out.ogg', 'rb') as f:
-            return await update.message.reply_voice(f, do_quote=True)
+            return await msg.reply_voice(f, do_quote=True)
 
     if text.startswith('/'):
         return await handle_cmd(update, text[1:].strip())
@@ -100,7 +110,7 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if '\n' not in text:
         return await handle_rg(update, ctx)
 
-    await update.message.reply_text(render_receipt(text), do_quote=True)
+    await reply_text(update, render_receipt(text))
 
 
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

@@ -21,6 +21,7 @@ from util import (
     MAX_TEXT_LENGTH,
     get_msg_arg,
     log,
+    reply_text,
     shorten,
     truncate_text,
     escape,
@@ -146,7 +147,7 @@ async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
     if target:
         text = (target.text or target.caption).strip()
         if not text:
-            return await msg.reply_text('No text to render.', do_quote=True)
+            return await reply_text(msg, 'No text to render.')
 
         if arg:
             # Include context set by arg
@@ -154,14 +155,10 @@ async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
     elif arg:
         text = arg
     else:
-        return await msg.reply_text(
-            'Specify text or reply to a message to render.', do_quote=True
-        )
+        return await reply_text(msg, 'Specify text or reply to a message to render.')
 
     result, markup, parse_mode = render_text(text)
-    return await msg.reply_text(
-        result, reply_markup=markup, parse_mode=parse_mode, do_quote=True
-    )
+    return await reply_text(msg, result, reply_markup=markup, parse_mode=parse_mode)
 
 
 async def handle_render_inline_query(query: InlineQuery, text: str):
