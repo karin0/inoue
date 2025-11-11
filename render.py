@@ -1,5 +1,4 @@
 import re
-import atexit
 import asyncio
 
 from collections import UserDict

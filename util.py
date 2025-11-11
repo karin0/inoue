@@ -2,11 +2,11 @@ import os
 import asyncio
 import logging
 import traceback
-import functools
 
 from typing import Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
+from collections import OrderedDict
 
 from telegram import Message, Bot, MessageEntity, InlineKeyboardMarkup, Update
 from telegram.constants import MessageLimit
@@ -18,6 +18,9 @@ BOT_NAME = os.environ['BOT_NAME']
 
 MAX_TEXT_LENGTH = MessageLimit.MAX_TEXT_LENGTH
 
+msg: ContextVar[Message | None] = ContextVar('msg')
+bot: Bot = None
+
 
 class NotifyHandler(logging.Handler):
     def __init__(self):
@@ -25,15 +28,19 @@ class NotifyHandler(logging.Handler):
         self._revocable = False
 
     def emit(self, record: logging.LogRecord) -> None:
-        asyncio.create_task(do_notify(self.format(record), revocable=self._revocable))
+        text = self.format(record)
+        # Fetch the context before yielding to async code
+        m = msg.get(None)
+        asyncio.create_task(do_notify(text, message=m, revocable=self._revocable))
 
     @contextmanager
     def revocable(self):
+        old = self._revocable
         self._revocable = True
         try:
             yield
         finally:
-            self._revocable = False
+            self._revocable = old
 
 
 _notify_handler = NotifyHandler()
@@ -68,10 +75,6 @@ def _get_logger(name):
 
 log = _get_logger('sendai')
 
-bot = None
-
-msg: ContextVar[Message | None] = ContextVar('msg')
-
 
 def init_util(b: Bot):
     global bot
@@ -91,13 +94,15 @@ def use_msg(m: Message | None):
         msg.reset(token)
 
 
-async def do_notify(text: str, *, revocable: bool = False, **kwargs):
-    if m := msg.get(None):
+async def do_notify(
+    text: str, *, message: Message | None = None, revocable: bool = False, **kwargs
+):
+    if m := message or msg.get(None):
         try:
             if revocable:
                 return await reply_text(m, text, **kwargs)
             else:
-                return await m.reply_text(text, **kwargs)
+                return await m.reply_text(text, do_quote=True, **kwargs)
         except Exception as e:
             traceback.print_exc()
             text += f'\nreply_text: {type(e).__name__}: {e}'
@@ -115,7 +120,9 @@ type MessageSource = Message | Update | None
 
 def get_msg(update: MessageSource) -> Message:
     if isinstance(update, Update):
-        if m := update.effective_message:
+        # Unlike update.effective_message, channel posts and callback queries
+        # are ignored here.
+        if m := update.message or update.edited_message:
             return m
     elif update is None:
         return msg.get()
@@ -142,17 +149,8 @@ def get_msg_url(msg_id) -> str:
     return f'https://t.me/c/{chat_id}/{msg_id}'
 
 
-# A temporary buffer to populate lru_cache
-_the_response: Message | None = None
-
-
-@functools.lru_cache
-def _get_response(msg_id: int) -> Message:
-    if not _the_response:
-        raise KeyError(msg_id)
-
-    assert _the_response.reply_to_message.message_id == msg_id
-    return _the_response
+_resp_lru = OrderedDict()
+_resp_lru_maxsize = 128
 
 
 async def reply_text(
@@ -163,10 +161,9 @@ async def reply_text(
     entities: Sequence[MessageEntity] | None = None,
 ) -> Message:
     m = get_msg(update)
-    msg_id = m.message_id
-    try:
-        resp = _get_response(msg_id)
-    except KeyError:
+
+    # Can only be called when `msg_id` is missing in the cache
+    async def _do_reply_text():
         resp = await m.reply_text(
             text,
             parse_mode=parse_mode,
@@ -175,16 +172,40 @@ async def reply_text(
             do_quote=True,
         )
 
-        # Save resp to cache
-        global _the_response
-        _the_response = resp
-        _get_response(msg_id)
-        _the_response = None
-    else:
-        resp = await resp.edit_text(
-            text, parse_mode=parse_mode, reply_markup=reply_markup, entities=entities
+        while len(_resp_lru) >= _resp_lru_maxsize:
+            _resp_lru.popitem(last=False)
+        _resp_lru[msg_id] = resp.message_id
+
+        return resp
+
+    msg_id = m.message_id
+    resp_msg_id = _resp_lru.get(msg_id)
+
+    if resp_msg_id is None:
+        return await _do_reply_text()
+
+    try:
+        resp = await bot.edit_message_text(
+            text,
+            m.chat.id,
+            resp_msg_id,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup,
+            entities=entities,
         )
-        assert isinstance(resp, Message)
+    except Exception as e:
+        # Cache expired, remove it first for other coroutines.
+        # We don't bypass 'Message is not modified' here, as the user side cannot
+        # distinguish whether the message is being updated.
+        _resp_lru.pop(msg_id, None)
+
+        fmt = 'Failed to edit response: %s -> %s: %s: %s'
+        log.warning(fmt, msg_id, resp_msg_id, type(e).__name__, e)
+
+        return await _do_reply_text()
+
+    assert isinstance(resp, Message)
+    _resp_lru.move_to_end(msg_id)
     return resp
 
 

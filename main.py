@@ -74,19 +74,20 @@ def auth(
         else:
             log.info('%s: unknown: %s', src, update)
 
-        if msg != update.effective_message:
-            log.warning('Message mismatch: %s vs %s', msg, update.effective_message)
+        item = msg or item
+        if item != update.effective_message:
+            log.warning('Message mismatch: %s vs %s', item, update.effective_message)
 
         if not valid:
             log.warning('Drop unauthorized update from %s: %s', src, update)
             return
 
-        with use_msg(msg) as msg:
+        with use_msg(msg):
             try:
                 return await func(update, ctx)
             except Exception as e:
                 with notify_revocable():
-                    # Can be overridden by edited successful responses later
+                    # Can be edited to successful responses later after user edits
                     log.exception('%s: %s: %s', func.__name__, type(e).__name__, e)
 
     return wrapper
