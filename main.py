@@ -28,7 +28,7 @@ from util import (
     escape,
 )
 from motto import greeting
-from receipt import render_receipt
+from inoue import render_receipt
 from run import handle_run, handle_cmd, handle_update
 from rg import handle_rg, handle_rg_callback, handle_start
 from render import (
