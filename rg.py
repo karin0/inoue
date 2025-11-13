@@ -1,10 +1,11 @@
 import os
 import asyncio
-import subprocess
 import dataclasses
 import json
+import mmap
 import functools
 from typing import Sequence
+from subprocess import DEVNULL, PIPE
 
 from telegram import (
     MessageEntity,
@@ -16,7 +17,7 @@ from telegram import (
 from telegram.ext import ContextTypes
 from telegram.constants import MessageEntityType
 
-from util import get_msg_arg, truncate_text, reply_text, BOT_NAME, MAX_TEXT_LENGTH
+from util import get_msg_arg, truncate_text, reply_text, log, BOT_NAME, MAX_TEXT_LENGTH
 from motto import greeting
 
 type Segment = Sequence['Segment'] | str | 'Style' | 'Link'
@@ -37,14 +38,52 @@ class Link:
 Bold = functools.partial(Style, type=MessageEntityType.BOLD)
 Underline = functools.partial(Style, type=MessageEntityType.UNDERLINE)
 
+# >>> 2026-01-02 15:04:05 (1)
+SECTION_SEP = b'>>> 202'
+SECTION_SEP_OFFSET = 2
+
 
 @dataclasses.dataclass
 class RGMatch:
     text: str
     line_number: int
+    absolute_offset: int
     match: str
     # start: int
     # end: int
+
+    def show(self, path: str) -> str:
+        with open(path, 'rb') as fp:
+            with mmap.mmap(fp.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                off = self.absolute_offset
+
+                # One character takes up to 4 bytes in UTF-8.
+                SECTION_TEXT_LIMIT = MAX_TEXT_LENGTH << 2
+                SECTION_FIND_LIMIT = SECTION_TEXT_LIMIT + SECTION_SEP_OFFSET
+
+                bound = max(0, off - SECTION_FIND_LIMIT)
+                section_start = mm.rfind(SECTION_SEP, bound, off)
+
+                bound = (
+                    off if section_start < 0 else section_start
+                ) + SECTION_FIND_LIMIT
+
+                section_end = mm.find(SECTION_SEP, off, bound)
+
+                if section_end < 0:
+                    section_end = min(mm.size(), bound)
+
+                if section_start < 0:
+                    section_start = max(0, section_end - SECTION_TEXT_LIMIT)
+                else:
+                    section_start += SECTION_SEP_OFFSET
+
+                return (
+                    mm[section_start:section_end]
+                    .decode('utf-8', errors='replace')
+                    .strip('�')
+                    .strip()
+                )
 
     def render(self, segments: list[Segment], i: int, j: int, k: int):
         kw = self.match
@@ -99,6 +138,7 @@ class RGFile:
 @dataclasses.dataclass
 class RGQuery:
     files: Sequence[RGFile]
+    cwd: str
     message: Message | None = None
     menu_text: str = ''
     menu_entities: Sequence[MessageEntity] = ()
@@ -160,7 +200,8 @@ async def handle_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     _, i, j, k = arg.split('_')
     query = QUERIES[int(i)]
-    text = query.files[int(j)].matches[int(k)].text
+    file = query.files[int(j)]
+    text = file.matches[int(k)].show(os.path.join(query.cwd, file.path))
     text = truncate_text(text)
 
     await asyncio.gather(
@@ -185,28 +226,13 @@ async def handle_rg_callback(data: str):
     )
 
 
-async def handle_rg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    msg, arg = get_msg_arg(update)
-    if not arg:
-        return await reply_text(msg, 'Provide a keyword.')
-
-    cwd_offset = '' if msg.text.startswith('/rg') else '2'
-
+async def _run_rg(arg: str, cwd: str) -> RGQuery:
+    cmd = ('rg', '-m', str(MATCH_LIMIT), '--sortr', 'path', '--json', arg)
     child = await asyncio.create_subprocess_exec(
-        'rg',
-        '-m',
-        str(MATCH_LIMIT),
-        '--sortr',
-        'path',
-        '--json',
-        arg,
-        cwd=CWD + cwd_offset,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
+        *cmd, stdin=DEVNULL, stdout=PIPE, stderr=DEVNULL, cwd=cwd
     )
 
-    query = RGQuery(files=[])
+    query = RGQuery(files=[], cwd=cwd)
     cnt = 0
     try:
         async for line in child.stdout:
@@ -223,6 +249,7 @@ async def handle_rg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                             RGMatch(
                                 text=data['lines']['text'].strip(),
                                 line_number=data['line_number'],
+                                absolute_offset=data['absolute_offset'],
                                 match=match['match']['text'],
                                 # start=match['start'],
                                 # end=match['end'],
@@ -234,7 +261,18 @@ async def handle_rg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     finally:
         # child.stdout.feed_eof()
         await child.stdout.read()
-        await child.wait()
+        if r := await child.wait():
+            log.warning('rg exited with code %d', r)
+
+    return query
+
+
+async def handle_rg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg, arg = get_msg_arg(update)
+    if not arg:
+        return await reply_text(msg, 'Provide a keyword.')
+
+    query = await _run_rg(arg, CWD + ('' if msg.text.startswith('/rg') else '2'))
 
     if not query.files:
         return await reply_text(msg, 'No matches.')
