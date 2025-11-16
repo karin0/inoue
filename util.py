@@ -19,15 +19,18 @@ BOT_NAME = os.environ['BOT_NAME']
 MAX_TEXT_LENGTH = MessageLimit.MAX_TEXT_LENGTH
 
 msg: ContextVar[Message | None] = ContextVar('msg')
-bot: Bot = None
+bot: Bot | None = None
 
 
 class NotifyHandler(logging.Handler):
     def __init__(self):
         super().__init__(logging.WARNING)
         self._revocable = False
+        self._suppressed = False
 
     def emit(self, record: logging.LogRecord) -> None:
+        if self._suppressed:
+            return
         text = self.format(record)
         # Fetch the context before yielding to async code
         m = msg.get(None)
@@ -42,9 +45,17 @@ class NotifyHandler(logging.Handler):
         finally:
             self._revocable = old
 
+    @contextmanager
+    def suppress(self):
+        old = self._suppressed
+        self._suppressed = True
+        try:
+            yield
+        finally:
+            self._suppressed = old
 
-_notify_handler = NotifyHandler()
-notify_revocable = _notify_handler.revocable
+
+notify = NotifyHandler()
 
 
 def _get_logger(name):
@@ -68,7 +79,7 @@ def _get_logger(name):
     h.setFormatter(logging.Formatter(fmt))
     logger.addHandler(h)
 
-    logger.addHandler(_notify_handler)
+    logger.addHandler(notify)
 
     return logger
 

@@ -1,6 +1,7 @@
 import os
 import asyncio
 import functools
+from pydoc import text
 from typing import Callable, Coroutine
 
 from telegram import Update, Bot
@@ -13,6 +14,7 @@ from telegram.ext import (
     InlineQueryHandler,
     Application,
 )
+from telegram.error import NetworkError
 
 from util import (
     log,
@@ -24,7 +26,7 @@ from util import (
     use_msg,
     get_msg,
     do_notify,
-    notify_revocable,
+    notify,
     escape,
 )
 from motto import greeting
@@ -86,7 +88,7 @@ def auth(
             try:
                 return await func(update, ctx)
             except Exception as e:
-                with notify_revocable():
+                with notify.revocable():
                     # Can be edited to successful responses later after user edits
                     log.exception('%s: %s: %s', func.__name__, type(e).__name__, e)
 
@@ -180,6 +182,19 @@ async def post_stop(_: Application) -> None:
     log.info('Database closed.')
 
 
+async def handle_error(update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    e = context.error
+    if isinstance(e, NetworkError):
+        with notify.suppress():
+            log.error('Network error in update %s: %s: %s', update, type(e).__name__, e)
+    elif isinstance(e, Exception):
+        log.error(
+            'Exception in update %s: %s: %s', update, type(e).__name__, e, exc_info=e
+        )
+    else:
+        log.error('Unknown error in update %s: %s', update, e)
+
+
 def main():
     app = (
         ApplicationBuilder()
@@ -188,6 +203,7 @@ def main():
         .post_stop(post_stop)
         .build()
     )
+    app.add_error_handler(handle_error)
 
     for name, func in commands:
         app.add_handler(CommandHandler(name, auth(func)))
