@@ -4,7 +4,7 @@ import dataclasses
 import json
 import mmap
 import functools
-from typing import Sequence
+from typing import Iterable, Sequence
 from subprocess import DEVNULL, PIPE
 
 from telegram import (
@@ -17,7 +17,16 @@ from telegram import (
 from telegram.ext import ContextTypes
 from telegram.constants import MessageEntityType
 
-from util import get_msg_arg, truncate_text, reply_text, log, BOT_NAME, MAX_TEXT_LENGTH
+from util import (
+    escape,
+    get_msg_arg,
+    truncate_text,
+    reply_text,
+    log,
+    notify,
+    BOT_NAME,
+    MAX_TEXT_LENGTH,
+)
 from motto import greeting
 
 type Segment = Sequence['Segment'] | str | 'Style' | 'Link'
@@ -35,8 +44,52 @@ class Link:
     url: str
 
 
+def get_length(s: Segment) -> int:
+    if isinstance(s, Style) or isinstance(s, Link):
+        return get_length(s.inner)
+    elif isinstance(s, str):
+        return len(s)
+    else:
+        return sum(get_length(item) for item in s)
+
+
 Bold = functools.partial(Style, type=MessageEntityType.BOLD)
 Underline = functools.partial(Style, type=MessageEntityType.UNDERLINE)
+
+
+class LengthExceeded(Exception):
+    pass
+
+
+class Formatter:
+    def __init__(self):
+        self.segments: list[Segment] = []
+        self.length = 0
+        self.saved_idx = None
+        self.saved_length = None
+
+    def append(self, seg: Segment):
+        new_len = self.length + get_length(seg)
+        if new_len > MAX_TEXT_LENGTH:
+            raise LengthExceeded()
+        self.segments.append(seg)
+        self.length = new_len
+
+    def __enter__(self):
+        # This is only used in `RGFile.render_from`, so no need to be reentrant
+        # with stacks.
+        self.saved_idx = len(self.segments)
+        self.saved_length = self.length
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if exc_type:
+            self.segments[self.saved_idx :] = []
+            self.length = self.saved_length
+            self.saved_idx = self.saved_length = None
+            if (t := MAX_TEXT_LENGTH - self.length) > 0:
+                self.append('[truncated]'[:t])
+
 
 # >>> 2026-01-02 15:04:05 (1)
 SECTION_SEP = b'>>> 202'
@@ -52,7 +105,7 @@ class RGMatch:
     # start: int
     # end: int
 
-    def show(self, path: str) -> str:
+    def show(self, path: str) -> tuple[str, bool]:
         with open(path, 'rb') as fp:
             with mmap.mmap(fp.fileno(), 0, access=mmap.ACCESS_READ) as mm:
                 off = self.absolute_offset
@@ -73,19 +126,20 @@ class RGMatch:
                 if section_end < 0:
                     section_end = min(mm.size(), bound)
 
-                if section_start < 0:
-                    section_start = max(0, section_end - SECTION_TEXT_LIMIT)
-                else:
+                if hit := section_start >= 0:
                     section_start += SECTION_SEP_OFFSET
+                else:
+                    section_start = max(0, section_end - SECTION_TEXT_LIMIT)
 
                 return (
                     mm[section_start:section_end]
                     .decode('utf-8', errors='replace')
                     .strip('�')
-                    .strip()
+                    .strip(),
+                    hit,
                 )
 
-    def render(self, segments: list[Segment], i: int, j: int, k: int):
+    def render(self, segments: Formatter, i: int, j: int, k: int):
         kw = self.match
         s = self.text
 
@@ -128,24 +182,37 @@ class RGFile:
     matches: list[RGMatch]
     path: str
 
-    def render(self, segments: list[Segment], i: int, j: int):
-        segments.append(Bold(self.path))
-        segments.append('\n')
-        for idx, m in enumerate(self.matches):
-            m.render(segments, i, j, idx)
+    def render(
+        self, segments: Formatter, i: int, j: int, match_offset: int
+    ) -> Iterable[tuple[int, int]]:
+        with segments:
+            segments.append(Bold(self.path))
+            segments.append('\n')
+        for idx, m in enumerate(self.matches[match_offset:]):
+            yield (j, idx + match_offset)
+            with segments:
+                m.render(segments, i, j, idx + match_offset)
 
 
 @dataclasses.dataclass
 class RGQuery:
     files: Sequence[RGFile]
     cwd: str
+    match_cnt: int = 0
+    page_num: int = 0
+    page_offsets: list[tuple[int, int, int]] = dataclasses.field(default_factory=list)
     message: Message | None = None
-    menu_text: str = ''
-    menu_entities: Sequence[MessageEntity] = ()
 
-    def render(self, segments: list[Segment], i: int):
-        for idx, f in enumerate(self.files):
-            f.render(segments, i, idx)
+    def render(
+        self, segments: Formatter, i: int, file_offset: int, match_offset: int
+    ) -> Iterable[tuple[int, int]]:
+        assert file_offset >= 0 and match_offset >= 0
+        assert file_offset < len(self.files)
+        for idx, f in enumerate(self.files[file_offset:]):
+            yield from f.render(
+                segments, i, idx + file_offset, match_offset if idx == 0 else 0
+            )
+        yield (-1, -1)
 
 
 CWD = os.environ['RG_CWD']
@@ -153,7 +220,8 @@ URL_BASE = 'https://t.me/' + BOT_NAME + '?start=rg_'
 QUERIES: list[RGQuery] = []
 QUERY_LIMIT = 10
 QUERY_IDX = 0
-MATCH_LIMIT = 10
+MATCH_LIMIT = 300
+PAGE_LIMIT = 10
 
 
 def push_query(q: RGQuery):
@@ -201,29 +269,54 @@ async def handle_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     _, i, j, k = arg.split('_')
     query = QUERIES[int(i)]
     file = query.files[int(j)]
-    text = file.matches[int(k)].show(os.path.join(query.cwd, file.path))
+    text, hit = file.matches[int(k)].show(os.path.join(query.cwd, file.path))
     text = truncate_text(text)
+    parse_mode = None
+    if len(text) + 7 <= MAX_TEXT_LENGTH and hit and (p := text.find('\n')) >= 0:
+        header = text[:p].strip()
+        body = text[p + 1 :].strip()
+        new_text = escape(header) + '\n```' + escape(body) + '```'
+        if len(new_text) <= MAX_TEXT_LENGTH:
+            text = new_text
+            parse_mode = 'MarkdownV2'
 
     await asyncio.gather(
         msg.delete(),
         query.message.edit_text(
             text,
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(text='Back', callback_data=f'rg_back_{i}')],
-                ]
+            reply_markup=InlineKeyboardMarkup.from_button(
+                InlineKeyboardButton(
+                    text='Back',
+                    callback_data=f'rg_back_{i}',
+                )
             ),
+            parse_mode=parse_mode,
         ),
     )
 
 
 async def handle_rg_callback(data: str):
-    i = int(data[data.rindex('_') + 1 :])
-    query = QUERIES[int(i)]
-    await query.message.edit_text(
-        query.menu_text,
-        entities=query.menu_entities,
-    )
+    _, cmd, *args = data.split('_')
+    match cmd:
+        case 'back':
+            idx = int(args[0])
+            query = QUERIES[idx]
+            page_num = query.page_num
+        case 'page':
+            idx = int(args[0])
+            page_num = int(args[1])
+            query = QUERIES[idx]
+            query.page_num = page_num
+        case _:
+            raise ValueError('bad rg callback: ' + data)
+
+    if page_num == 0:
+        offsets = (0, 0, 0)
+    else:
+        offsets = query.page_offsets[page_num - 1]
+
+    text, entities, markup = render_query_menu(query, idx, *offsets)
+    await query.message.edit_text(text, entities=entities, reply_markup=markup)
 
 
 async def _run_rg(arg: str, cwd: str) -> RGQuery:
@@ -262,28 +355,82 @@ async def _run_rg(arg: str, cwd: str) -> RGQuery:
         # child.stdout.feed_eof()
         await child.stdout.read()
         if r := await child.wait():
-            log.warning('rg exited with code %d', r)
+            with notify.suppress():
+                log.warning('rg exited with code %d', r)
 
+    query.match_cnt = cnt
     return query
 
 
-async def handle_rg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    msg, arg = get_msg_arg(update)
-    if not arg:
-        return await reply_text(msg, 'Provide a keyword.')
+def render_query_menu(
+    query: RGQuery,
+    idx: int,
+    file_offset: int,
+    match_offset: int,
+    total_offset: int,
+) -> tuple[str, Sequence[MessageEntity]]:
+    fmt = Formatter()
+    cnt = -1
+    try:
+        for offset in query.render(fmt, idx, file_offset, match_offset):
+            cnt += 1
+            if cnt >= PAGE_LIMIT:
+                break
+    except LengthExceeded:
+        pass
 
-    query = await _run_rg(arg, CWD + ('' if msg.text.startswith('/rg') else '2'))
+    total = total_offset + cnt
+    page_num = query.page_num
+    if len(query.page_offsets) == page_num:
+        r = (*offset, total)
+        log.info('rg: page %d for %d: %s', page_num, idx, r)
+        query.page_offsets.append(r)
 
-    if not query.files:
-        return await reply_text(msg, 'No matches.')
+    if total < query.match_cnt or page_num > 0:
+        row = []
+        if page_num > 0:
+            row.append(
+                InlineKeyboardButton(
+                    text='Prev',
+                    callback_data=f'rg_page_{idx}_{page_num - 1}',
+                )
+            )
+        else:
+            row.append(
+                InlineKeyboardButton(
+                    text=' ',
+                    callback_data='noop',
+                )
+            )
 
-    idx = push_query(query)
-    segments = []
-    query.render(segments, idx)
+        row.append(
+            InlineKeyboardButton(
+                text=f'{total} / {query.match_cnt} ({page_num})',
+                callback_data='noop',
+            )
+        )
+
+        if total < query.match_cnt:
+            row.append(
+                InlineKeyboardButton(
+                    text='Next', callback_data=f'rg_page_{idx}_{page_num + 1}'
+                )
+            )
+        else:
+            row.append(
+                InlineKeyboardButton(
+                    text=' ',
+                    callback_data='noop',
+                )
+            )
+
+        markup = InlineKeyboardMarkup.from_row(row)
+    else:
+        markup = None
 
     ba = bytearray()
     entities: list[MessageEntity] = []
-    render_segment(segments, ba, entities)
+    render_segment(fmt.segments, ba, entities)
 
     text = ba.decode('utf-16-le')
     if len(text) > MAX_TEXT_LENGTH:
@@ -303,6 +450,19 @@ async def handle_rg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 final_entities.append(ent)
         entities = final_entities
 
-    query.menu_text = text
-    query.menu_entities = entities
-    query.message = await reply_text(msg, text, entities=entities)
+    return text, entities, markup
+
+
+async def handle_rg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg, arg = get_msg_arg(update)
+    if not arg:
+        return await reply_text(msg, 'Provide a keyword.')
+
+    query = await _run_rg(arg, CWD + ('' if msg.text.startswith('/rg') else '2'))
+
+    if not query.files:
+        return await reply_text(msg, 'No matches.')
+
+    idx = push_query(query)
+    text, entities, markup = render_query_menu(query, idx, 0, 0, 0)
+    query.message = await reply_text(msg, text, entities=entities, reply_markup=markup)

@@ -121,11 +121,11 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     data = callback.data
     fut = None
     if data:
-        if data.startswith('rg_back_'):
+        if data.startswith('rg_'):
             fut = handle_rg_callback(data)
         elif data[0] in CALLBACK_SIGNS:
             fut = handle_render_callback(update, ctx, data)
-        else:
+        elif data != 'noop':
             log.warning('bad callback: %s', data)
     else:
         log.warning('empty callback')

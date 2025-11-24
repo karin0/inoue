@@ -31,7 +31,7 @@ class NotifyHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         if self._suppressed:
             return
-        text = self.format(record)
+        text = truncate_text(self.format(record))
         # Fetch the context before yielding to async code
         m = msg.get(None)
         asyncio.create_task(do_notify(text, message=m, revocable=self._revocable))
