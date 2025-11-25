@@ -4,6 +4,7 @@ import codecs
 import subprocess
 
 from asyncio.subprocess import Process
+from typing import Awaitable, Callable, TypeVar
 
 from telegram import Message, Update
 from telegram.ext import ContextTypes
@@ -67,13 +68,20 @@ async def _handle_cmd(update: Update, bin: str, *args, **kwargs):
         child = None
 
 
-async def producer(q, pipe):
-    async for line in pipe:
-        q.put_nowait(line)
-    q.put_nowait(None)
+async def producer(q: asyncio.Queue, pipe: asyncio.StreamReader):
+    while True:
+        chunk = await pipe.read(4096)
+        if not chunk:
+            return q.put_nowait(None)
+        q.put_nowait(chunk)
 
 
-async def consumer(q, send, arg):
+T = TypeVar('T')
+
+
+async def consumer(
+    q: asyncio.Queue, send: Callable[[str, T], Awaitable[Message]], arg: T
+):
     msg: Message | None = None
     text = ''
     dec = codecs.getincrementaldecoder('utf-8')('replace')
