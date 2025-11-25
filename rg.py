@@ -4,6 +4,7 @@ import dataclasses
 import json
 import mmap
 import functools
+import itertools
 from typing import Iterable, Sequence
 from subprocess import DEVNULL, PIPE
 
@@ -84,10 +85,11 @@ class Formatter:
 
     def __exit__(self, exc_type, exc_value, traceback):
         if exc_type:
+            assert exc_type in (LengthExceeded, GeneratorExit)
             self.segments[self.saved_idx :] = []
             self.length = self.saved_length
             self.saved_idx = self.saved_length = None
-            if (t := MAX_TEXT_LENGTH - self.length) > 0:
+            if exc_type is LengthExceeded and (t := MAX_TEXT_LENGTH - self.length) > 0:
                 self.append('[truncated]'[:t])
 
 
@@ -188,10 +190,10 @@ class RGFile:
         with segments:
             segments.append(Bold(self.path))
             segments.append('\n')
-        for idx, m in enumerate(self.matches[match_offset:]):
-            yield (j, idx + match_offset)
-            with segments:
+            for idx, m in enumerate(self.matches[match_offset:]):
+                yield (j, idx + match_offset)
                 m.render(segments, i, j, idx + match_offset)
+                segments.__enter__()  # Checkpoint before any potential LengthExceeded
 
 
 @dataclasses.dataclass
@@ -220,7 +222,7 @@ URL_BASE = 'https://t.me/' + BOT_NAME + '?start=rg_'
 QUERIES: list[RGQuery] = []
 QUERY_LIMIT = 10
 QUERY_IDX = 0
-MATCH_LIMIT = 300
+MATCH_LIMIT = 500
 PAGE_LIMIT = 10
 
 
@@ -297,6 +299,7 @@ async def handle_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def handle_rg_callback(data: str):
     _, cmd, *args = data.split('_')
+    list_pages = False
     match cmd:
         case 'back':
             idx = int(args[0])
@@ -306,16 +309,17 @@ async def handle_rg_callback(data: str):
             idx = int(args[0])
             page_num = int(args[1])
             query = QUERIES[idx]
-            query.page_num = page_num
+        case 'list':
+            idx = int(args[0])
+            query = QUERIES[idx]
+            page_num = query.page_num
+            list_pages = True
         case _:
             raise ValueError('bad rg callback: ' + data)
 
-    if page_num == 0:
-        offsets = (0, 0, 0)
-    else:
-        offsets = query.page_offsets[page_num - 1]
-
-    text, entities, markup = render_query_menu(query, idx, *offsets)
+    text, entities, markup = render_query_menu(
+        query, idx, page_num=page_num, list_pages=list_pages
+    )
     await query.message.edit_text(text, entities=entities, reply_markup=markup)
 
 
@@ -362,67 +366,113 @@ async def _run_rg(arg: str, cwd: str) -> RGQuery:
     return query
 
 
-def render_query_menu(
+def render_page(
     query: RGQuery,
     idx: int,
-    file_offset: int,
-    match_offset: int,
-    total_offset: int,
-) -> tuple[str, Sequence[MessageEntity]]:
+    page_num: int = 0,  # must be an existing or next page ( `<= len(page_offsets)`)
+) -> Formatter:
+    if page_num == 0:
+        offsets = (0, 0, 0)
+    else:
+        offsets = query.page_offsets[page_num - 1]
+    *render_offset, total_offset = offsets
+
     fmt = Formatter()
-    cnt = -1
+
+    # This yields at least one item, and each item indicates the match that
+    # *will* be rendered in the next iteration, except the final (-1, -1).
+    #
+    # This should hold for all the 3 cases of stopping: (-1, -1), `LengthExceeded`,
+    # and `PAGE_LIMIT` exceeded.
+    #
+    # Assuming `PAGE_LIMIT` and `MAX_TEXT_LENGTH` are resonably large, we won't
+    # end up with an empty page that blocks navigation, since the length of each
+    # match is limited in `RGMatch.render`. Therefore, the final `page_offset`
+    # will always point to (-1, -1, cnt).
+    it = query.render(fmt, idx, *render_offset)
+    it = itertools.islice(it, PAGE_LIMIT + 1)
+
     try:
-        for offset in query.render(fmt, idx, file_offset, match_offset):
-            cnt += 1
-            if cnt >= PAGE_LIMIT:
-                break
+        total = total_offset - 1
+        for offset in it:
+            total += 1
     except LengthExceeded:
         pass
 
-    total = total_offset + cnt
-    page_num = query.page_num
-    if len(query.page_offsets) == page_num:
-        r = (*offset, total)
-        log.info('rg: page %d for %d: %s', page_num, idx, r)
-        query.page_offsets.append(r)
+    assert total >= total_offset
 
-    if total < query.match_cnt or page_num > 0:
+    offset = (*offset, total)
+    if len(query.page_offsets) == page_num:
+        log.info('rg: page %d for %d: %s', page_num, idx, offset)
+        query.page_offsets.append(offset)
+    else:
+        assert query.page_offsets[page_num] == offset
+
+    return fmt
+
+
+def button(text: str, callback_data: str = 'noop') -> InlineKeyboardButton:
+    return InlineKeyboardButton(text=text, callback_data=callback_data)
+
+
+def render_query_menu(
+    query: RGQuery,
+    idx: int,
+    page_num: int = 0,
+    list_pages: bool = False,
+) -> tuple[str, Sequence[MessageEntity]]:
+    if page_num >= len(query.page_offsets):
+        while True:
+            next_pn = len(query.page_offsets)
+            fmt = render_page(query, idx, next_pn)
+            off0, off1, total = query.page_offsets[next_pn]
+            if off0 < 0 or page_num == next_pn:
+                page_num = next_pn
+                break
+    else:
+        fmt = render_page(query, idx, page_num)
+        off0, off1, total = query.page_offsets[page_num]
+
+    if off0 < 0:
+        assert (off0, off1, total) == (-1, -1, query.match_cnt)
+    else:
+        assert off1 >= 0
+
+    query.page_num = page_num
+
+    if list_pages:
+        row = []
+        for pn, (_, _, off) in enumerate(query.page_offsets):
+            if pn == page_num:
+                text = '📄'
+            else:
+                text = f'{off} ({pn})'
+            row.append(button(text, f'rg_page_{idx}_{pn}'))
+
+        if (left := query.match_cnt - off) > 0:
+            # Not exhausted yet.
+            guessed_max_page = pn + left // PAGE_LIMIT + 5
+            for pn in range(pn + 1, guessed_max_page):
+                row.append(button(f'? ({pn})', f'rg_page_{idx}_{pn}'))
+
+        # Group by 5 buttons per row.
+        rows = tuple(row[i : i + 5] for i in range(0, len(row), 5))
+        markup = InlineKeyboardMarkup(rows)
+    elif total < query.match_cnt or page_num > 0:
         row = []
         if page_num > 0:
-            row.append(
-                InlineKeyboardButton(
-                    text='Prev',
-                    callback_data=f'rg_page_{idx}_{page_num - 1}',
-                )
-            )
+            row.append(button('Prev', f'rg_page_{idx}_{page_num - 1}'))
         else:
-            row.append(
-                InlineKeyboardButton(
-                    text=' ',
-                    callback_data='noop',
-                )
-            )
+            row.append(button(' '))
 
         row.append(
-            InlineKeyboardButton(
-                text=f'{total} / {query.match_cnt} ({page_num})',
-                callback_data='noop',
-            )
+            button(f'{total} / {query.match_cnt} ({page_num})', f'rg_list_{idx}')
         )
 
         if total < query.match_cnt:
-            row.append(
-                InlineKeyboardButton(
-                    text='Next', callback_data=f'rg_page_{idx}_{page_num + 1}'
-                )
-            )
+            row.append(button('Next', f'rg_page_{idx}_{page_num + 1}'))
         else:
-            row.append(
-                InlineKeyboardButton(
-                    text=' ',
-                    callback_data='noop',
-                )
-            )
+            row.append(button(' '))
 
         markup = InlineKeyboardMarkup.from_row(row)
     else:
@@ -434,6 +484,7 @@ def render_query_menu(
 
     text = ba.decode('utf-16-le')
     if len(text) > MAX_TEXT_LENGTH:
+        log.error('rg: rendering exceeded max length unexpectedly: %d', len(text))
         n = MAX_TEXT_LENGTH - 12
         text = text[:n] + '\n[truncated]'
         final_entities = []
@@ -464,5 +515,5 @@ async def handle_rg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await reply_text(msg, 'No matches.')
 
     idx = push_query(query)
-    text, entities, markup = render_query_menu(query, idx, 0, 0, 0)
+    text, entities, markup = render_query_menu(query, idx)
     query.message = await reply_text(msg, text, entities=entities, reply_markup=markup)
