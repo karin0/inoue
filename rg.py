@@ -274,10 +274,10 @@ async def handle_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text, hit = file.matches[int(k)].show(os.path.join(query.cwd, file.path))
     text = truncate_text(text)
     parse_mode = None
-    if len(text) + 7 <= MAX_TEXT_LENGTH and hit and (p := text.find('\n')) >= 0:
+    if len(text) + 9 <= MAX_TEXT_LENGTH and hit and (p := text.find('\n')) >= 0:
         header = text[:p].strip()
         body = text[p + 1 :].strip()
-        new_text = escape(header) + '\n```' + escape(body) + '```'
+        new_text = escape(header) + '\n```\n' + escape(body) + '\n```'
         if len(new_text) <= MAX_TEXT_LENGTH:
             text = new_text
             parse_mode = 'MarkdownV2'
