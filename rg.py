@@ -277,10 +277,24 @@ async def handle_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if len(text) + 9 <= MAX_TEXT_LENGTH and hit and (p := text.find('\n')) >= 0:
         header = text[:p].strip()
         body = text[p + 1 :].strip()
-        new_text = escape(header) + '\n```\n' + escape(body) + '\n```'
-        if len(new_text) <= MAX_TEXT_LENGTH:
-            text = new_text
-            parse_mode = 'MarkdownV2'
+
+        header = escape(header) + '\n```\n'
+        p = body.find('\n---\n')
+        if p >= 0:  # Two-section body
+            body1 = body[:p].strip()
+            body2 = body[p + 5 :].strip()
+            new_text = header + escape(body1) + '\n```\n```\n' + escape(body2) + '\n```'
+            if len(new_text) <= MAX_TEXT_LENGTH:
+                text = new_text
+                parse_mode = 'MarkdownV2'
+            else:
+                p = -1  # Mark as undone
+
+        if p < 0:
+            new_text = header + escape(body) + '\n```'
+            if len(new_text) <= MAX_TEXT_LENGTH:
+                text = new_text
+                parse_mode = 'MarkdownV2'
 
     await asyncio.gather(
         msg.delete(),
