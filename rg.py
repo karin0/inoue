@@ -96,6 +96,55 @@ class Formatter:
 # >>> 2026-01-02 15:04:05 (1)
 SECTION_SEP = b'>>> 202'
 SECTION_SEP_OFFSET = 2
+SECTION_GAP = 24
+
+
+@dataclasses.dataclass
+class Section:
+    start: int
+    end: int
+    hit: bool
+
+    @staticmethod
+    def discover(mm: mmap.mmap, off: int) -> 'Section | None':
+        # One character takes up to 4 bytes in UTF-8.
+        SECTION_TEXT_LIMIT = MAX_TEXT_LENGTH << 2
+        SECTION_FIND_LIMIT = SECTION_TEXT_LIMIT + SECTION_SEP_OFFSET
+
+        bound = max(0, off - SECTION_FIND_LIMIT)
+        section_start = mm.rfind(SECTION_SEP, bound, off)
+
+        bound = (off if section_start < 0 else section_start) + SECTION_FIND_LIMIT
+
+        section_end = mm.find(SECTION_SEP, off, bound)
+
+        if section_end < 0:
+            section_end = min(mm.size(), bound)
+
+        if hit := section_start >= 0:
+            section_start += SECTION_SEP_OFFSET
+        else:
+            section_start = max(0, section_end - SECTION_TEXT_LIMIT)
+
+        log.info('section: %d in %d-%d (hit=%s)', off, section_start, section_end, hit)
+        if section_start < section_end:
+            return Section(start=section_start, end=section_end, hit=hit)
+
+    def decode(self, mm: mmap.mmap) -> str:
+        return (
+            mm[self.start : self.end]
+            .decode('utf-8', errors='replace')
+            .strip('�')
+            .strip()
+        )
+
+    @property
+    def next_offset(self) -> int:
+        return max(0, self.start - SECTION_SEP_OFFSET - 1)
+
+    @property
+    def prev_offset(self) -> int:
+        return self.end + SECTION_GAP
 
 
 @dataclasses.dataclass
@@ -106,40 +155,6 @@ class RGMatch:
     match: str
     # start: int
     # end: int
-
-    def show(self, path: str) -> tuple[str, bool]:
-        with open(path, 'rb') as fp:
-            with mmap.mmap(fp.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-                off = self.absolute_offset
-
-                # One character takes up to 4 bytes in UTF-8.
-                SECTION_TEXT_LIMIT = MAX_TEXT_LENGTH << 2
-                SECTION_FIND_LIMIT = SECTION_TEXT_LIMIT + SECTION_SEP_OFFSET
-
-                bound = max(0, off - SECTION_FIND_LIMIT)
-                section_start = mm.rfind(SECTION_SEP, bound, off)
-
-                bound = (
-                    off if section_start < 0 else section_start
-                ) + SECTION_FIND_LIMIT
-
-                section_end = mm.find(SECTION_SEP, off, bound)
-
-                if section_end < 0:
-                    section_end = min(mm.size(), bound)
-
-                if hit := section_start >= 0:
-                    section_start += SECTION_SEP_OFFSET
-                else:
-                    section_start = max(0, section_end - SECTION_TEXT_LIMIT)
-
-                return (
-                    mm[section_start:section_end]
-                    .decode('utf-8', errors='replace')
-                    .strip('�')
-                    .strip(),
-                    hit,
-                )
 
     def render(self, segments: Formatter, i: int, j: int, k: int):
         kw = self.match
@@ -269,12 +284,28 @@ async def handle_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await msg.reply_text(greeting(), do_quote=True)
 
     _, i, j, k = arg.split('_')
+    await asyncio.gather(msg.delete(), do_show(i, j, k, None))
+
+
+async def do_show(i: str | int, j: str | int, k: str | int | None, alt_off: int | None):
     query = QUERIES[int(i)]
     file = query.files[int(j)]
-    text, hit = file.matches[int(k)].show(os.path.join(query.cwd, file.path))
+
+    if alt_off is not None:
+        off = alt_off
+    else:
+        off = file.matches[int(k)].absolute_offset
+
+    with open(os.path.join(query.cwd, file.path), 'rb') as fp:
+        with mmap.mmap(fp.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+            if not (sect := Section.discover(mm, off)):
+                return await query.message.reply_text('Unable to show the section.')
+
+            text = sect.decode(mm)
+
     text = truncate_text(text)
     parse_mode = None
-    if len(text) + 9 <= MAX_TEXT_LENGTH and hit and (p := text.find('\n')) >= 0:
+    if len(text) + 9 <= MAX_TEXT_LENGTH and sect.hit and (p := text.find('\n')) >= 0:
         header = text[:p].strip()
         body = text[p + 1 :].strip()
 
@@ -296,18 +327,25 @@ async def handle_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 text = new_text
                 parse_mode = 'MarkdownV2'
 
-    await asyncio.gather(
-        msg.delete(),
-        query.message.edit_text(
-            text,
-            reply_markup=InlineKeyboardMarkup.from_button(
-                InlineKeyboardButton(
-                    text='Back',
-                    callback_data=f'rg_back_{i}',
-                )
-            ),
-            parse_mode=parse_mode,
+    row = [
+        InlineKeyboardButton(
+            text='Prev',
+            callback_data=f'rg_show_{i}_{j}_{sect.prev_offset}',
         ),
+        InlineKeyboardButton(
+            text='Back',
+            callback_data=f'rg_back_{i}',
+        ),
+        InlineKeyboardButton(
+            text='Next',
+            callback_data=f'rg_show_{i}_{j}_{sect.next_offset}',
+        ),
+    ]
+
+    await query.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup.from_row(row),
+        parse_mode=parse_mode,
     )
 
 
@@ -328,6 +366,11 @@ async def handle_rg_callback(data: str):
             query = QUERIES[idx]
             page_num = query.page_num
             list_pages = True
+        case 'show':
+            idx = int(args[0])
+            j = int(args[1])
+            off = int(args[2])
+            return await do_show(idx, j, None, off)
         case _:
             raise ValueError('bad rg callback: ' + data)
 
