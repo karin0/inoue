@@ -566,7 +566,20 @@ async def handle_rg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not arg:
         return await reply_text(msg, 'Provide a keyword.')
 
-    query = await _run_rg(arg, CWD + ('' if msg.text.startswith('/rg') else '2'))
+    text = msg.text.strip()
+    bare = text.removeprefix(f'/rg')
+    if bare != text:
+        if bare:
+            if (c := bare[0]).isdigit():
+                off = '' if c == '0' else c
+            else:
+                off = '4'  # Simple for /rg foo
+        else:
+            raise ValueError(text)
+    else:
+        off = '2'  # Simple Miyagi for plain text
+
+    query = await _run_rg(arg, CWD + off)
 
     if not query.files:
         return await reply_text(msg, 'No matches.')

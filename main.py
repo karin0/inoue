@@ -206,7 +206,14 @@ def main():
     app.add_error_handler(handle_error)
 
     for name, func in commands:
-        app.add_handler(CommandHandler(name, auth(func)))
+        if name == 'rg':
+            f = rg = auth(handle_rg)
+        else:
+            f = auth(func)
+        app.add_handler(CommandHandler(name, f))
+
+    for off in range(5):
+        app.add_handler(CommandHandler(f'rg{off}', rg))
 
     app.add_handler(CallbackQueryHandler(auth(handle_callback)))
     app.add_handler(InlineQueryHandler(auth(handle_inline_query)))
