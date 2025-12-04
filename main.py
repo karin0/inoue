@@ -22,7 +22,9 @@ from util import (
     shorten,
     USER_ID,
     CHAN_ID,
+    MAX_TEXT_LENGTH,
     init_util,
+    truncate_text,
     use_msg,
     get_msg,
     do_notify,
@@ -101,6 +103,14 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if not (msg := get_msg(update)):
         return
+
+    if src := msg.forward_origin:
+        # ID Bot
+        src = str(src)
+        text = '```\n' + escape(src) + '\n```'
+        if len(text) > MAX_TEXT_LENGTH:
+            return await msg.reply_text(truncate_text(src), do_quote=True)
+        return await msg.reply_text(text, parse_mode='MarkdownV2', do_quote=True)
 
     text = msg.text
     if not (text and text.strip()):
