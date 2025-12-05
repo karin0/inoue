@@ -170,6 +170,7 @@ async def reply_text(
     parse_mode: str | None = None,
     reply_markup: InlineKeyboardMarkup | None = None,
     entities: Sequence[MessageEntity] | None = None,
+    do_quote: bool = True,
 ) -> Message:
     m = get_msg(update)
 
@@ -180,7 +181,7 @@ async def reply_text(
             parse_mode=parse_mode,
             reply_markup=reply_markup,
             entities=entities,
-            do_quote=True,
+            do_quote=do_quote,
         )
 
         while len(_resp_lru) >= _resp_lru_maxsize:
@@ -210,8 +211,10 @@ async def reply_text(
         # distinguish whether the message is being updated.
         _resp_lru.pop(msg_id, None)
 
-        fmt = 'Failed to edit response: %s -> %s: %s: %s'
-        log.warning(fmt, msg_id, resp_msg_id, type(e).__name__, e)
+        e = str(e)
+        if 'Message is not modified' not in e:
+            fmt = 'Failed to edit response: %s -> %s: %s: %s'
+            log.warning(fmt, msg_id, resp_msg_id, type(e).__name__, e)
 
         return await _do_reply_text()
 
@@ -238,3 +241,10 @@ def truncate_text(s: str) -> str:
 
 def escape(s: str) -> str:
     return escape_markdown(s, version=2)
+
+
+def pre_block(s: str) -> dict:
+    text = '```\n' + escape(s) + '\n```'
+    if len(text) > MAX_TEXT_LENGTH:
+        return {'text': truncate_text(s), 'do_quote': True}
+    return {'text': text, 'parse_mode': 'MarkdownV2', 'do_quote': True}

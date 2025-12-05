@@ -1,9 +1,9 @@
-import functools
 from math import floor
 from typing import Hashable
 from collections import defaultdict
 
 from arithmetic_eval import evaluate
+from prettytable import PrettyTable
 
 
 def calc(s: str) -> float:
@@ -16,26 +16,29 @@ def render_sign(v: float | int) -> str:
     return f'{v:+.3}'
 
 
-def render_pair(x, y) -> str:
+def render_pair(x, y) -> tuple[str, str]:
     if y == 0:
-        return str(x)
-    return f'{x} ({render_sign(y)})'
+        return str(x), ''
+    return str(x), f'({render_sign(y)})'
 
 
 class Value:
-    def __init__(self, raw: float, kind: Hashable = None):
+    def __init__(self, raw: float, kind: Hashable = None, comment: str = ''):
         self.raw = raw
         self.cost = round(raw)
         self.kind = kind  # Total cost is rounded for each group by kind
+        self._comment = comment
 
     @property
     def adj(self):
         return self.cost - self.raw
 
-    def __str__(self):
-        return render_pair(self.cost, self.adj)
+    @property
+    def comment(self):
+        return f'# {self._comment}' if self._comment else ''
 
-    __repr__ = __str__
+    def render(self):
+        return render_pair(self.cost, self.adj)
 
 
 def alter(items: list[Value], real_tot: int):
@@ -61,11 +64,15 @@ def render_receipt(text: str):
     alts: list[tuple[float, int]] = []
 
     for line in text.splitlines():
-        parts = line.split()
-        if not parts:
+        comment = ''
+        if (p := line.find('#')) >= 0:
+            comment = line[p + 1 :].strip()
+            line = line[:p]
+        if not (line := line.strip()):
             continue
-        if len(parts) == 2 and not parts[0][0].isdigit():
-            cmd, arg = parts
+        cmd = line[0]
+        if not (cmd.isdigit() or cmd == '(' or cmd == '.'):
+            arg = line[1:].strip()
             if cmd == '=':
                 if the_real_tot is not None:
                     raise SyntaxError('Duplicate "="')
@@ -84,11 +91,7 @@ def render_receipt(text: str):
                 raise SyntaxError(f'Unknown command: {cmd}')
             continue
 
-        if len(parts) == 1:
-            items.append(Value(calc(parts[0]) * tax, tax))
-        else:
-            parts = tuple(calc(p) for p in parts)
-            items.append(Value(functools.reduce(lambda x, y: x * y, parts), parts[1]))
+        items.append(Value(calc(line) * tax, tax, comment))
 
     if not items:
         raise ValueError('No values provided')
@@ -111,7 +114,7 @@ def render_receipt(text: str):
             warn = f'❌ {the_real_tot} (expected) < {real_tot}'
 
     alter(items, real_tot)
-    tots = [render_pair(real_tot, real_tot - sum(item.raw for item in items))]
+    tots = list(render_pair(real_tot, real_tot - sum(item.raw for item in items)))
 
     dss = [items]
     if real_tot:
@@ -123,15 +126,36 @@ def render_receipt(text: str):
                 for x in alt_items:
                     x.cost /= base
                     x.raw /= base
-            tots.append(f'{tot} (x{tot / real_tot:.3f})')
+            tots.append(str(tot))
+            tots.append(f'(x{tot / real_tot:.3f})')
             dss.append(alt_items)
 
-    res = [' |\t'.join(str(x) for x in row) for row in zip(*dss)]
-    if ext_idx is not None:
-        res[ext_idx] += '  🚨'
-    res.append('= ' + ' |\t'.join(tots) + '  #inoue')
+    row_len = len(dss) << 1 | 1
+    fields = [str(i) for i in range(row_len)]
+    aligns = {str(i): ('l' if i & 1 else 'r') for i in range(row_len)}
+    aligns[str(row_len - 1)] = 'l'
 
+    table = PrettyTable(
+        fields, header=False, border=False, preserve_internal_border=True, align=aligns
+    )
+    for i, row in enumerate(zip(*dss)):
+        row: list[Value]
+        comment = row[0].comment
+        if i == ext_idx:
+            comment += '🚨'
+
+        r = []
+        for x in row:
+            r.extend(x.render())
+        r.append(comment)
+        table.add_row(r)
+
+    tots[0] = '= ' + tots[0]
+    tots.append('#inoue')
+    table.add_row(tots)
+
+    res = str(table)
     if warn:
-        res.append(warn)
+        res += f'\n{warn}'
 
-    return '\n'.join(res)
+    return res

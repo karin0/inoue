@@ -1,7 +1,6 @@
 import os
 import asyncio
 import functools
-from pydoc import text
 from typing import Callable, Coroutine
 
 from telegram import Update, Bot
@@ -18,13 +17,12 @@ from telegram.error import NetworkError
 
 from util import (
     log,
+    pre_block,
     reply_text,
     shorten,
     USER_ID,
     CHAN_ID,
-    MAX_TEXT_LENGTH,
     init_util,
-    truncate_text,
     use_msg,
     get_msg,
     do_notify,
@@ -106,11 +104,7 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if src := msg.forward_origin:
         # ID Bot
-        src = str(src)
-        text = '```\n' + escape(src) + '\n```'
-        if len(text) > MAX_TEXT_LENGTH:
-            return await msg.reply_text(truncate_text(src), do_quote=True)
-        return await msg.reply_text(text, parse_mode='MarkdownV2', do_quote=True)
+        return await msg.reply_text(**pre_block(str(src)))
 
     text = msg.text
     if not (text and text.strip()):
@@ -123,7 +117,7 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if '\n' not in text:
         return await handle_rg(update, ctx)
 
-    await reply_text(update, render_receipt(text))
+    await reply_text(update, **pre_block(render_receipt(text)))
 
 
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
