@@ -189,7 +189,13 @@ async def reply_text(
     allow_not_modified: bool = False,
 ) -> Message:
     m = get_msg(update)
-    key = str(m.message_id)
+    if m.chat_id == USER_ID:
+        chat_kind = 'u'
+    elif m.chat_id == GROUP_ID:
+        chat_kind = 'g'
+    else:
+        raise ValueError(f'Bad chat for {m}')
+    key = f'{chat_kind}-{m.message_id}'
 
     # Can only be called when `key` is missing in the cache.
     async def _do_reply_text():
