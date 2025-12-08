@@ -12,8 +12,11 @@ from telegram import Message, Bot, MessageEntity, InlineKeyboardMarkup, Update
 from telegram.constants import MessageLimit
 from telegram.helpers import escape_markdown
 
+from db import db
+
 USER_ID = int(os.environ['USER_ID'])
 CHAN_ID = int(os.environ['CHAN_ID'])
+GROUP_ID = int(os.environ['GROUP_ID'])
 BOT_NAME = os.environ['BOT_NAME']
 
 MAX_TEXT_LENGTH = MessageLimit.MAX_TEXT_LENGTH
@@ -95,7 +98,8 @@ def init_util(b: Bot):
 @contextmanager
 def use_msg(m: Message | None):
     if m and m.chat.id != USER_ID:
-        log.warning('Bad use_msg: %s', m)
+        if m.chat.id != GROUP_ID:
+            log.warning('Bad use_msg: %s', m)
         m = None
 
     token = msg.set(m)
@@ -156,8 +160,10 @@ def get_msg_arg(update: MessageSource) -> tuple[Message, str]:
         return m, ''
 
 
-def get_msg_url(msg_id) -> str:
-    chat_id = str(CHAN_ID).removeprefix('-100')
+def get_msg_url(msg_id, chat_id=None) -> str:
+    if chat_id is None:
+        chat_id = CHAN_ID
+    chat_id = str(chat_id).removeprefix('-100')
     return f'https://t.me/c/{chat_id}/{msg_id}'
 
 
@@ -165,21 +171,27 @@ def get_deep_link_url(arg: str) -> str:
     return f'https://t.me/{BOT_NAME}?start={arg}'
 
 
-_resp_lru = OrderedDict()
-_resp_lru_maxsize = 128
+def get_bot() -> Bot:
+    if not bot:
+        raise RuntimeError('Bot not initialized')
+    return bot
 
 
+# Note: the return value could be `None` if `allow_not_modified` is set.
 async def reply_text(
     update: MessageSource,
     text: str,
     parse_mode: str | None = None,
     reply_markup: InlineKeyboardMarkup | None = None,
+    *,
     entities: Sequence[MessageEntity] | None = None,
     do_quote: bool = True,
+    allow_not_modified: bool = False,
 ) -> Message:
     m = get_msg(update)
+    key = str(m.message_id)
 
-    # Can only be called when `msg_id` is missing in the cache
+    # Can only be called when `key` is missing in the cache.
     async def _do_reply_text():
         resp = await m.reply_text(
             text,
@@ -189,17 +201,18 @@ async def reply_text(
             do_quote=do_quote,
         )
 
-        while len(_resp_lru) >= _resp_lru_maxsize:
-            _resp_lru.popitem(last=False)
-        _resp_lru[msg_id] = resp.message_id
-
+        val = str(resp.message_id)
+        db[key] = val
+        log.debug('Sending new response: %s -> %s', key, val)
         return resp
 
-    msg_id = m.message_id
-    resp_msg_id = _resp_lru.get(msg_id)
+    resp_msg_id = db[key]
 
     if resp_msg_id is None:
         return await _do_reply_text()
+
+    resp_msg_id = int(resp_msg_id)
+    log.debug('Editing cached response: %s -> %s', key, resp_msg_id)
 
     try:
         resp = await bot.edit_message_text(
@@ -214,17 +227,20 @@ async def reply_text(
         # Cache expired, remove it first for other coroutines.
         # We don't bypass 'Message is not modified' here, as the user side cannot
         # distinguish whether the message is being updated.
-        _resp_lru.pop(msg_id, None)
+        # This behavior can be overridden by `allow_not_modified`.
+        del db[key]
 
         e = str(e)
         if 'Message is not modified' not in e:
             fmt = 'Failed to edit response: %s -> %s: %s: %s'
-            log.warning(fmt, msg_id, resp_msg_id, type(e).__name__, e)
+            log.warning(fmt, key, resp_msg_id, type(e).__name__, e)
+        elif allow_not_modified:
+            log.info('Message not modified: %s -> %s', key, resp_msg_id)
+            return None
 
         return await _do_reply_text()
 
     assert isinstance(resp, Message)
-    _resp_lru.move_to_end(msg_id)
     return resp
 
 

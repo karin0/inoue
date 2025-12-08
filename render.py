@@ -8,6 +8,7 @@ from telegram import (
     InlineQuery,
     InlineQueryResultArticle,
     InputTextMessageContent,
+    MessageOriginChannel,
     Update,
     Message,
     InlineKeyboardMarkup,
@@ -18,10 +19,10 @@ from telegram.error import BadRequest
 from telegram.constants import ReactionEmoji
 
 from util import (
+    CHAN_ID,
     log,
     get_msg_arg,
     get_msg_url,
-    get_deep_link_url,
     reply_text,
     shorten,
     truncate_text,
@@ -138,7 +139,7 @@ def render_text(
     return truncate_text(result), make_markup(text, ctx, flags), parse_mode
 
 
-async def do_render(msg: Message, arg: str):
+async def do_render(msg: Message, arg: str, allow_not_modified: bool = False):
     target = msg.reply_to_message
 
     if target:
@@ -155,7 +156,9 @@ async def do_render(msg: Message, arg: str):
         return await reply_text(msg, 'Specify text or reply to a message to render.')
 
     result, markup, parse_mode = render_text(text)
-    return await reply_text(msg, result, reply_markup=markup, parse_mode=parse_mode)
+    return await reply_text(
+        msg, result, parse_mode, markup, allow_not_modified=allow_not_modified
+    )
 
 
 async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
@@ -163,9 +166,16 @@ async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
     return await do_render(msg, arg)
 
 
-async def handle_render_start(msg: Message, arg: str):
-    name = arg[arg.index('_') + 1 :]
-    return await do_render(msg, '{:' + name + '}')
+async def handle_render_group_msg(msg: Message):
+    # This handles Doc messages that are forwarded from CHAN_ID to its discussion group.
+    if (
+        (origin := msg.forward_origin)
+        and isinstance(origin, MessageOriginChannel)
+        and origin.chat.id == CHAN_ID
+        and (doc_name := db.get_doc_name(origin.message_id))
+    ):
+        log.info('Doc in group: %s -> %s %s', msg.id, origin.message_id, doc_name)
+        await do_render(msg, '{:' + doc_name + '}', allow_not_modified=True)
 
 
 async def handle_render_inline_query(query: InlineQuery, text: str):
@@ -426,7 +436,7 @@ def _report(
     out.append(f'{escape(action)} {msg_info}')
 
 
-async def handle_doc(msg: Message):
+async def handle_render_doc(msg: Message):
     if not (text := msg.text) or not (text := text.strip()):
         return
 
@@ -457,23 +467,11 @@ async def handle_doc(msg: Message):
 
         _report(info, action, id, name, text)
         reaction = (ReactionEmoji.RED_HEART, True)
-        markup = InlineKeyboardMarkup.from_button(
-            InlineKeyboardButton('📢', get_deep_link_url('render_' + name))
-        )
-
     elif old_row := db.delete_doc(id):
         _report(info, 'deleted doc:', id, *old_row)
         reaction = ()
-        markup = None
     else:
         return
-
-    async def edit_markup():
-        try:
-            await msg.edit_reply_markup(markup)
-        except BadRequest as e:
-            if 'Message is not modified' not in str(e):
-                raise
 
     await asyncio.gather(
         do_notify(
@@ -481,5 +479,4 @@ async def handle_doc(msg: Message):
             parse_mode='MarkdownV2',
         ),
         msg.set_reaction(*reaction),
-        edit_markup(),
     )

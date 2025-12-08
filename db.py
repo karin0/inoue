@@ -12,12 +12,27 @@ class DataStore:
         atexit.register(self.conn.close)
 
         with self.conn:
-            self.conn.execute(
+            self.conn.executescript(
                 '''CREATE TABLE IF NOT EXISTS Doc (
-                    id INTEGER PRIMARY KEY NOT NULL,
-                    name TEXT UNIQUE NOT NULL,
-                    text TEXT NOT NULL
-                )'''
+                    id    INTEGER PRIMARY KEY NOT NULL,
+                    name  TEXT    UNIQUE NOT NULL,
+                    text  TEXT    NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS KV (
+                    id    INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                    key   TEXT    UNIQUE NOT NULL,
+                    value TEXT    NOT NULL
+                );
+
+                CREATE TRIGGER IF NOT EXISTS KV_fifo
+                AFTER INSERT ON KV
+                BEGIN
+                    DELETE FROM KV WHERE id IN (
+                        SELECT id FROM KV ORDER BY id DESC LIMIT -1 OFFSET 1000
+                    );
+                END;
+                '''
             )
 
     def close(self):
@@ -28,11 +43,22 @@ class DataStore:
 
     def summary(self) -> str:
         n = self.conn.execute('SELECT COUNT(*) FROM Doc').fetchone()[0]
-        return f'{n} docs'
+        m = self.conn.execute('SELECT COUNT(*) FROM KV').fetchone()[0]
+        return f'{n} docs, {m} keys'
 
     def get_doc(self, name: str) -> tuple[int, str] | None:
         cursor = self.conn.execute('SELECT id, text FROM Doc WHERE name = ?', (name,))
         return cursor.fetchone()
+
+    def get_doc_id(self, name: str) -> int | None:
+        cursor = self.conn.execute('SELECT id FROM Doc WHERE name = ?', (name,))
+        if row := cursor.fetchone():
+            return row[0]
+
+    def get_doc_name(self, id: int) -> str | None:
+        cursor = self.conn.execute('SELECT name FROM Doc WHERE id = ?', (id,))
+        if row := cursor.fetchone():
+            return row[0]
 
     # Works like INSERT OR REPLACE, but returns the replaced records.
     def save_doc(
@@ -63,6 +89,23 @@ class DataStore:
                 self.conn.execute('DELETE FROM Doc WHERE id = ?;', (id,))
 
         return row
+
+    def __getitem__(self, key: str) -> str | None:
+        cursor = self.conn.execute('SELECT value FROM KV WHERE key = ?;', (key,))
+        if row := cursor.fetchone():
+            return row[0]
+
+    def __setitem__(self, key: str, value: str):
+        with self.conn:
+            self.conn.execute(
+                '''INSERT INTO KV (key, value) VALUES (?, ?)
+                   ON CONFLICT(key) DO UPDATE SET value = excluded.value;''',
+                (key, value),
+            )
+
+    def __delitem__(self, key: str):
+        with self.conn:
+            self.conn.execute('DELETE FROM KV WHERE key = ?;', (key,))
 
 
 db = DataStore()

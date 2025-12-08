@@ -22,6 +22,7 @@ from util import (
     shorten,
     USER_ID,
     CHAN_ID,
+    GROUP_ID,
     init_util,
     use_msg,
     get_msg,
@@ -35,11 +36,11 @@ from inoue import render_receipt
 from run import handle_run, handle_cmd, handle_update
 from rg import handle_rg, handle_rg_callback, handle_rg_start
 from render import (
-    handle_doc,
     handle_render,
-    handle_render_start,
-    handle_render_inline_query,
+    handle_render_doc,
     handle_render_callback,
+    handle_render_group_msg,
+    handle_render_inline_query,
     CALLBACK_SIGNS,
 )
 from db import db
@@ -50,15 +51,17 @@ def auth(
 ) -> Callable[[Update, ContextTypes.DEFAULT_TYPE], Coroutine]:
     @functools.wraps(func)
     async def wrapper(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        chat = update.effective_chat
+        src = 'Unknown source'
+        valid = False
+
         if user := update.effective_user:
             src = f'{user.full_name} ({user.name} {user.id})'
             valid = user.id == USER_ID
-        elif chat := update.effective_chat:
-            src = f'{chat.type} ({chat.id})'
-            valid = chat.id == CHAN_ID
-        else:
-            src = 'Unknown source'
-            valid = False
+
+        if not valid and chat:
+            src = f'{chat.title} [{chat.type} {chat.id}]'
+            valid = chat.id == CHAN_ID or chat.id == GROUP_ID
 
         log.debug('Entering %s from %s: %s', func.__name__, src, update)
 
@@ -99,10 +102,13 @@ def auth(
 
 async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if post := update.edited_channel_post or update.channel_post:
-        return await handle_doc(post)
+        return await handle_render_doc(post)
 
     if not (msg := get_msg(update)):
         return
+
+    if (chat := update.effective_chat) and chat.id == GROUP_ID:
+        return await handle_render_group_msg(msg)
 
     if src := msg.forward_origin:
         # ID Bot
@@ -165,11 +171,8 @@ async def handle_greet(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def handle_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg, arg = get_msg_arg(update)
-    if arg:
-        if arg.startswith('rg_'):
-            return await handle_rg_start(msg, arg)
-        if arg.startswith('render_'):
-            return await handle_render_start(msg, arg)
+    if arg and arg.startswith('rg_'):
+        return await handle_rg_start(msg, arg)
 
     return await msg.reply_text(**stats())
 
