@@ -1,6 +1,7 @@
 import re
 import asyncio
 
+from typing import Iterable
 from collections import UserDict
 
 from telegram import (
@@ -17,30 +18,45 @@ from telegram.error import BadRequest
 from telegram.constants import ReactionEmoji
 
 from util import (
-    MAX_TEXT_LENGTH,
-    get_msg_arg,
     log,
+    get_msg_arg,
+    get_msg_url,
+    get_deep_link_url,
     reply_text,
     shorten,
     truncate_text,
     escape,
     do_notify,
-    get_msg_url,
+    pre_block_tuple,
 )
 from db import db
 
 CALLBACK_SIGNS = '/+:'
 
 
+class OverriddenDict(UserDict):
+    def __init__(self, overrides: dict[str, str]):
+        super().__init__()
+        self.overrides = overrides
+
+    def __getitem__(self, key: str) -> str:
+        if (v := self.overrides.get(key)) is not None:
+            return v
+        return super().__getitem__(key)
+
+    # __setitem__ is not overridden, so we can still have the natural order
+    # of the flags being inserted when iterated by `make_markup`.
+
+
 def make_markup(
-    text: str, ctx: dict[str], state: dict[str, bool] | None
+    text: str, ctx: OverriddenDict, state: dict[str, bool] | None
 ) -> InlineKeyboardMarkup | None:
     # query data: ('/'|'+' <flag-key>)* ':' <text>
     # where '/' means 0, '+' means 1
 
     size = len(text) + 1
     if state:
-        size += sum(len(k) for k in state.keys()) + len(state)
+        size += sum(len(k.encode('utf-8')) for k in state.keys()) + len(state)
 
     if size > InlineKeyboardButton.MAX_CALLBACK_DATA:
         return None
@@ -54,7 +70,7 @@ def make_markup(
         else:
             continue
 
-        if size + len(k) + 1 <= InlineKeyboardButton.MAX_CALLBACK_DATA:
+        if size + len(k.encode('utf-8')) + 1 <= InlineKeyboardButton.MAX_CALLBACK_DATA:
             flags[k] = v
 
     if state:
@@ -96,30 +112,16 @@ def make_markup(
     if doc_id:
         row.append(InlineKeyboardButton('📄', get_msg_url(doc_id)))
 
-    return InlineKeyboardMarkup.from_row(row)
+    # Group 5 buttons per row
+    rows = [row[i : i + 5] for i in range(0, len(row), 5)]
 
-
-class OverriddenDict(UserDict):
-    def __init__(self, overrides: dict[str, str]):
-        super().__init__()
-        self.overrides = overrides
-
-    def __getitem__(self, key: str) -> str:
-        if (v := self.overrides.get(key)) is not None:
-            return v
-        return super().__getitem__(key)
-
-    # __setitem__ is not overridden, so we can still have the natural order
-    # of the flags being inserted when iterated by `make_markup`.
+    return InlineKeyboardMarkup(rows)
 
 
 def render_text(
     text: str, flags: dict[str, bool] | None = None
 ) -> tuple[str, InlineKeyboardMarkup | None, str | None]:
-    if flags:
-        ctx = OverriddenDict({k: '01'[v] for k, v in flags.items()})
-    else:
-        ctx = {}
+    ctx = OverriddenDict({k: '01'[v] for k, v in flags.items()} if flags else {})
 
     errors = []
     result = render(text, ctx, None, errors) or '[empty]'
@@ -128,19 +130,15 @@ def render_text(
 
     result = truncate_text(result)
     parse_mode = None
-    do_pre = ctx.get('_pre')
-    if do_pre and do_pre != '0' and len(result) + 8 <= MAX_TEXT_LENGTH:
-        result2 = f'```\n{escape(result)}\n```'
-        if len(result2) <= MAX_TEXT_LENGTH:
-            result = result2
-            parse_mode = 'MarkdownV2'
+    do_pre = ctx.get('_pre', True)
+    if do_pre and do_pre != '0':
+        result, parse_mode = pre_block_tuple(result)
 
     log.info('rendered %d -> %d', len(text), len(result))
     return truncate_text(result), make_markup(text, ctx, flags), parse_mode
 
 
-async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
-    msg, arg = get_msg_arg(update)
+async def do_render(msg: Message, arg: str):
     target = msg.reply_to_message
 
     if target:
@@ -158,6 +156,16 @@ async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
 
     result, markup, parse_mode = render_text(text)
     return await reply_text(msg, result, reply_markup=markup, parse_mode=parse_mode)
+
+
+async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
+    msg, arg = get_msg_arg(update)
+    return await do_render(msg, arg)
+
+
+async def handle_render_start(msg: Message, arg: str):
+    name = arg[arg.index('_') + 1 :]
+    return await do_render(msg, '{:' + name + '}')
 
 
 async def handle_render_inline_query(query: InlineQuery, text: str):
@@ -217,14 +225,24 @@ async def handle_render_callback(
             raise
 
 
+def _flatten_keys(key1: str, parts: list[str]) -> Iterable[str]:
+    yield key1
+    for key in parts:
+        yield key.strip()
+
+
+def split_assignments(cmd: str, p1: int, p2: int) -> tuple[str, Iterable[str]]:
+    key1 = cmd[:p1].strip()
+    parts = cmd[p2:].split('=')
+    val = parts.pop().strip()
+    return val, _flatten_keys(key1, parts)
+
+
 reg = re.compile(r'{(.+?)}', re.DOTALL)
 
 
 def render(
-    text: str,
-    ctx: dict[str],
-    vis: set[str] | None,
-    errors: list[str],
+    text: str, ctx: OverriddenDict, vis: set[str] | None, errors: list[str]
 ) -> str:
     def repl(m: re.Match) -> str:
         cmd = m[1].strip()
@@ -232,7 +250,8 @@ def render(
             return m[0]
 
         # Conditional: {cond ? true-directive : false-directive} (false part optional)
-        if (p := cmd.find('?', 1)) >= 0:
+        # Omit `?=` which is handled inside directives and cannot occur in conditions
+        if (p := cmd.find('?', 1)) >= 0 and p + 1 < len(cmd) and cmd[p + 1] != '=':
             cond = cmd[:p].strip()
             if (t := cond.find('=', 1)) >= 0:
                 key = cond[:t].strip()
@@ -253,7 +272,7 @@ def render(
             cond = None
 
         for cmd in cmd.split(';'):
-            cmd = cmd.strip()
+            cmd: str = cmd.strip()
 
             # Empty directive
             if not cmd:
@@ -267,9 +286,54 @@ def render(
             elif cmd[-1] == ':':
                 pass
 
+            # Context override: {key:=value}
+            # a. Can never be overridden (except by markup buttons)
+            # b. Does not affect flags detected in markup, neither their natural order
+            # {key1:=key2=...=value} affects all keys
+            elif (p := cmd.find(':=', 1)) >= 0:
+                val, keys = split_assignments(cmd, p, p + 2)
+                for key in keys:
+                    if key not in ctx.overrides:
+                        ctx.overrides[key] = val
+
+            # Context set if empty: {key?=value}
+            # {key1?=key2=...=value} sets all keys to value if empty
+            elif (p := cmd.find('?=', 1)) >= 0:
+                val, keys = split_assignments(cmd, p, p + 2)
+                for key in keys:
+                    old = ctx.get(key)
+                    if not old or old == '0':
+                        ctx[key] = val
+
             # Context set: {key=value}
+            # {key1=key2=...=value} sets all keys to value
             elif (p := cmd.find('=', 1)) >= 0:
-                ctx[cmd[:p].strip()] = cmd[p + 1 :].strip()
+                val, keys = split_assignments(cmd, p, p + 1)
+                for key in keys:
+                    ctx[key] = val
+
+            # Context inplace replacement: {key|pat1/rep1|pat2/rep2|...}
+            elif (p := cmd.find('|', 1)) >= 0:
+                key = cmd[:p].strip()
+                val = ctx.get(key)
+                if val is None:
+                    errors.append('undefined: ' + cmd)
+                    return ''
+
+                parts = cmd[p + 1 :].split('|')
+                if not parts:
+                    errors.append('invalid replacements: ' + cmd)
+                    return ''
+
+                r = str(val)
+                for part in parts:
+                    try:
+                        pat, rep = part.split('/', 1)
+                    except ValueError:
+                        errors.append('invalid replacement: ' + part)
+                        return ''
+                    r = r.replace(pat.strip(), rep.strip())
+                ctx[key] = r
 
             # Context swap: {key1^key2}
             elif (p := cmd.find('^', 1)) >= 0:
@@ -393,12 +457,23 @@ async def handle_doc(msg: Message):
 
         _report(info, action, id, name, text)
         reaction = (ReactionEmoji.RED_HEART, True)
+        markup = InlineKeyboardMarkup.from_button(
+            InlineKeyboardButton('📢', get_deep_link_url('render_' + name))
+        )
 
     elif old_row := db.delete_doc(id):
         _report(info, 'deleted doc:', id, *old_row)
         reaction = ()
+        markup = None
     else:
         return
+
+    async def edit_markup():
+        try:
+            await msg.edit_reply_markup(markup)
+        except BadRequest as e:
+            if 'Message is not modified' not in str(e):
+                raise
 
     await asyncio.gather(
         do_notify(
@@ -406,4 +481,5 @@ async def handle_doc(msg: Message):
             parse_mode='MarkdownV2',
         ),
         msg.set_reaction(*reaction),
+        edit_markup(),
     )

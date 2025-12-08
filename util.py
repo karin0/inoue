@@ -120,6 +120,7 @@ async def do_notify(
             text = truncate_text(text)
 
     if bot:
+        kwargs.pop('do_quote', None)
         try:
             await bot.send_message(USER_ID, text, **kwargs)
         except Exception:
@@ -158,6 +159,10 @@ def get_msg_arg(update: MessageSource) -> tuple[Message, str]:
 def get_msg_url(msg_id) -> str:
     chat_id = str(CHAN_ID).removeprefix('-100')
     return f'https://t.me/c/{chat_id}/{msg_id}'
+
+
+def get_deep_link_url(arg: str) -> str:
+    return f'https://t.me/{BOT_NAME}?start={arg}'
 
 
 _resp_lru = OrderedDict()
@@ -243,8 +248,15 @@ def escape(s: str) -> str:
     return escape_markdown(s, version=2)
 
 
+def pre_block_tuple(s: str) -> tuple[str, str | None]:
+    if len(s) + 8 <= MAX_TEXT_LENGTH:
+        text = '```\n' + escape(s) + '\n```'
+        if len(text) <= MAX_TEXT_LENGTH:
+            return text, 'MarkdownV2'
+
+    return truncate_text(s), None
+
+
 def pre_block(s: str) -> dict:
-    text = '```\n' + escape(s) + '\n```'
-    if len(text) > MAX_TEXT_LENGTH:
-        return {'text': truncate_text(s), 'do_quote': True}
-    return {'text': text, 'parse_mode': 'MarkdownV2', 'do_quote': True}
+    text, parse_mode = pre_block_tuple(s)
+    return {'text': text, 'parse_mode': parse_mode, 'do_quote': True}

@@ -21,14 +21,13 @@ from telegram.constants import MessageEntityType
 from util import (
     escape,
     get_msg_arg,
+    get_deep_link_url,
     truncate_text,
     reply_text,
     log,
     notify,
-    BOT_NAME,
     MAX_TEXT_LENGTH,
 )
-from motto import greeting
 
 type Segment = Sequence['Segment'] | str | 'Style' | 'Link'
 
@@ -233,7 +232,6 @@ class RGQuery:
 
 
 CWD = os.environ['RG_CWD']
-URL_BASE = 'https://t.me/' + BOT_NAME + '?start=rg_'
 QUERIES: list[RGQuery] = []
 QUERY_LIMIT = 10
 QUERY_IDX = 0
@@ -267,7 +265,7 @@ def render_segment(seg: Segment, out: bytearray, entities: list[MessageEntity]):
                 type=MessageEntityType.TEXT_LINK,
                 offset=offset,
                 length=length,
-                url=URL_BASE + seg.url,
+                url=get_deep_link_url('rg_' + seg.url),
             )
         )
     elif isinstance(seg, str):
@@ -278,11 +276,7 @@ def render_segment(seg: Segment, out: bytearray, entities: list[MessageEntity]):
     return the_offset >> 1, (len(out) - the_offset) >> 1
 
 
-async def handle_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    msg, arg = get_msg_arg(update)
-    if not (arg and arg.startswith('rg_')):
-        return await msg.reply_text(greeting(), do_quote=True)
-
+async def handle_rg_start(msg: Message, arg: str):
     _, i, j, k = arg.split('_')
     await asyncio.gather(msg.delete(), do_show(i, j, k, None))
 

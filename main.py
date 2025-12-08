@@ -25,6 +25,7 @@ from util import (
     init_util,
     use_msg,
     get_msg,
+    get_msg_arg,
     do_notify,
     notify,
     escape,
@@ -32,10 +33,11 @@ from util import (
 from motto import greeting
 from inoue import render_receipt
 from run import handle_run, handle_cmd, handle_update
-from rg import handle_rg, handle_rg_callback, handle_start
+from rg import handle_rg, handle_rg_callback, handle_rg_start
 from render import (
-    handle_render,
     handle_doc,
+    handle_render,
+    handle_render_start,
     handle_render_inline_query,
     handle_render_callback,
     CALLBACK_SIGNS,
@@ -151,8 +153,25 @@ async def handle_inline_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await handle_render_inline_query(query, data)
 
 
+def stats() -> dict[str]:
+    s = db.summary()
+    text = f'{escape(greeting())}\n```\nSendai initiated: {escape(s)}\n```'
+    return {'text': text, 'parse_mode': 'MarkdownV2', 'do_quote': True}
+
+
 async def handle_greet(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await get_msg(update).reply_text(greeting(), do_quote=True)
+    await get_msg(update).reply_text(**stats())
+
+
+async def handle_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg, arg = get_msg_arg(update)
+    if arg:
+        if arg.startswith('rg_'):
+            return await handle_rg_start(msg, arg)
+        if arg.startswith('render_'):
+            return await handle_render_start(msg, arg)
+
+    return await msg.reply_text(**stats())
 
 
 commands = tuple(
@@ -172,13 +191,9 @@ async def post_init(app: Application) -> None:
     bot: Bot = app.bot
     init_util(bot)
     db.connect('sendai.db')
-    s = db.summary()
     await bot.set_my_commands(tuple((s, s) for s, _ in commands))
-    await do_notify(
-        f'{escape(greeting())}\n```\nSendai initiated: {escape(s)}\n```',
-        parse_mode='MarkdownV2',
-    )
-    log.info('Sendai initiated: %s', s)
+    await do_notify(**stats())
+    log.info('Sendai initiated: %s', db.summary())
 
 
 async def post_stop(_: Application) -> None:
