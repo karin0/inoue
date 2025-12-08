@@ -228,15 +228,16 @@ async def reply_text(
         # We don't bypass 'Message is not modified' here, as the user side cannot
         # distinguish whether the message is being updated.
         # This behavior can be overridden by `allow_not_modified`.
-        del db[key]
-
         e = str(e)
         if 'Message is not modified' not in e:
+            del db[key]
             fmt = 'Failed to edit response: %s -> %s: %s: %s'
             log.warning(fmt, key, resp_msg_id, type(e).__name__, e)
         elif allow_not_modified:
             log.info('Message not modified: %s -> %s', key, resp_msg_id)
             return None
+        else:
+            del db[key]
 
         return await _do_reply_text()
 

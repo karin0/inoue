@@ -50,7 +50,7 @@ class OverriddenDict(UserDict):
 
 
 def make_markup(
-    text: str, ctx: OverriddenDict, state: dict[str, bool] | None
+    text: str, ctx: 'RenderContext', state: dict[str, bool] | None
 ) -> InlineKeyboardMarkup | None:
     # query data: ('/'|'+' <flag-key>)* ':' <text>
     # where '/' means 0, '+' means 1
@@ -77,7 +77,7 @@ def make_markup(
     if state:
         flags.update(state)
 
-    if (doc_id := ctx.get(':db')) is None and not flags:
+    if (doc_id := ctx.first_doc_id) is None and not flags:
         return None
 
     row = [
@@ -120,26 +120,33 @@ def make_markup(
 
 
 def render_text(
-    text: str, flags: dict[str, bool] | None = None
-) -> tuple[str, InlineKeyboardMarkup | None, str | None]:
-    ctx = OverriddenDict({k: '01'[v] for k, v in flags.items()} if flags else {})
+    text: str,
+    flags: dict[str, bool] | None = None,
+    ctx_omit_doc_id: int | None = None,
+) -> tuple[str, str | None, InlineKeyboardMarkup | None]:
+    ctx = RenderContext(
+        {k: '01'[v] for k, v in flags.items()} if flags else {}, ctx_omit_doc_id
+    )
 
-    errors = []
-    result = render(text, ctx, None, errors) or '[empty]'
-    if errors:
+    result = ctx.render(text) or '[empty]'
+    if errors := ctx.errors:
         result += f'\n\n---\n\n' + '\n'.join(errors)
 
     result = truncate_text(result)
     parse_mode = None
-    do_pre = ctx.get('_pre', True)
-    if do_pre and do_pre != '0':
+    if ctx.get_flag('_pre', True):
         result, parse_mode = pre_block_tuple(result)
 
     log.info('rendered %d -> %d', len(text), len(result))
-    return truncate_text(result), make_markup(text, ctx, flags), parse_mode
+    return truncate_text(result), parse_mode, make_markup(text, ctx, flags)
 
 
-async def do_render(msg: Message, arg: str, allow_not_modified: bool = False):
+async def render_and_reply(
+    msg: Message,
+    arg: str,
+    allow_not_modified: bool = False,
+    ctx_omit_doc_id: int | None = None,
+) -> Message:
     target = msg.reply_to_message
 
     if target:
@@ -155,15 +162,12 @@ async def do_render(msg: Message, arg: str, allow_not_modified: bool = False):
     else:
         return await reply_text(msg, 'Specify text or reply to a message to render.')
 
-    result, markup, parse_mode = render_text(text)
-    return await reply_text(
-        msg, result, parse_mode, markup, allow_not_modified=allow_not_modified
-    )
+    args = render_text(text, ctx_omit_doc_id=ctx_omit_doc_id)
+    return await reply_text(msg, *args, allow_not_modified=allow_not_modified)
 
 
 async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
-    msg, arg = get_msg_arg(update)
-    return await do_render(msg, arg)
+    return await render_and_reply(*get_msg_arg(update))
 
 
 async def handle_render_group_msg(msg: Message):
@@ -175,11 +179,16 @@ async def handle_render_group_msg(msg: Message):
         and (doc_name := db.get_doc_name(origin.message_id))
     ):
         log.info('Doc in group: %s -> %s %s', msg.id, origin.message_id, doc_name)
-        await do_render(msg, '{:' + doc_name + '}', allow_not_modified=True)
+        await render_and_reply(
+            msg,
+            '{:' + doc_name + '}',
+            allow_not_modified=True,
+            ctx_omit_doc_id=origin.message_id,
+        )
 
 
 async def handle_render_inline_query(query: InlineQuery, text: str):
-    result, markup, parse_mode = render_text(text)
+    result, parse_mode, markup = render_text(text)
     await query.answer(
         [
             InlineQueryResultArticle(
@@ -212,7 +221,7 @@ async def handle_render_callback(
         flags[key] = sign == CALLBACK_SIGNS[True]
         i = j
 
-    result, markup, parse_mode = render_text(data[i + 1 :], flags)
+    result, parse_mode, markup = render_text(data[i + 1 :], flags)
 
     try:
         if update.callback_query.inline_message_id:
@@ -251,10 +260,22 @@ def split_assignments(cmd: str, p1: int, p2: int) -> tuple[str, Iterable[str]]:
 reg = re.compile(r'{(.+?)}', re.DOTALL)
 
 
-def render(
-    text: str, ctx: OverriddenDict, vis: set[str] | None, errors: list[str]
-) -> str:
-    def repl(m: re.Match) -> str:
+class RenderContext:
+    def __init__(self, ctx: dict[str], first_doc_id_omit: int | None = None):
+        self.ctx = OverriddenDict(ctx)
+        self.vis: set[str] = set()
+        self.errors: list[str] = []
+        self.first_doc_id: int | None = None
+        self.first_doc_id_omit = first_doc_id_omit
+        log.info('RenderContext initialized: %s %s', ctx, first_doc_id_omit)
+
+        self.get = self.ctx.get
+        self.items = self.ctx.items
+
+    def _repl(self, m: re.Match) -> str:
+        ctx = self.ctx
+        errors = self.errors
+
         cmd = m[1].strip()
         if not cmd:
             return m[0]
@@ -268,8 +289,7 @@ def render(
                 val = cond[t + 1 :].strip()
                 test = str(ctx.get(key)) == val
             else:
-                val = ctx.get(cond)
-                test = val and val != '0'
+                test = self.get_flag(cond)
 
             # Prefer doc expansion for ?:<doc>
             if (q := cmd.find(':', p + 2)) != -1:
@@ -311,8 +331,7 @@ def render(
             elif (p := cmd.find('?=', 1)) >= 0:
                 val, keys = split_assignments(cmd, p, p + 2)
                 for key in keys:
-                    old = ctx.get(key)
-                    if not old or old == '0':
+                    if not self.get(key):
                         ctx[key] = val
 
             # Context set: {key=value}
@@ -352,39 +371,29 @@ def render(
                 val1 = ctx.get(key1)
                 val2 = ctx.get(key2)
 
-                def make(k, v):
-                    if v is None:
-                        if k in ctx:
-                            del ctx[k]
-                    else:
-                        ctx[k] = v
-
-                make(key1, val2)
-                make(key2, val1)
+                self._ctx_set(key1, val2)
+                self._ctx_set(key2, val1)
 
             # Db doc get: {:name}
             elif cmd[0] == ':':
                 key = cmd[1:].strip()
+                vis = self.vis
 
-                nonlocal vis
-                if vis is None:
-                    vis = set()
-                elif key in vis:
+                if key in vis:
                     errors.append('circular: ' + cmd)
                     return ''
 
                 if doc_row := db.get_doc(key):
                     doc_id, doc = doc_row
                 else:
-                    ctx.setdefault(':db', '')
                     errors.append('undefined: ' + cmd)
                     return ''
 
-                if not ctx.get(':db'):
-                    ctx[':db'] = doc_id
+                if self.first_doc_id is None and self.first_doc_id_omit != doc_id:
+                    self.first_doc_id = doc_id
 
                 vis.add(key)
-                r = render(doc, ctx, vis, errors)
+                r = self.render(doc)
                 vis.remove(key)
                 return r
 
@@ -404,7 +413,20 @@ def render(
 
         return ''
 
-    return reg.sub(repl, text).strip()
+    def _ctx_set(self, k, v):
+        ctx = self.ctx
+        if v is None:
+            if k in ctx:
+                del ctx[k]
+        else:
+            ctx[k] = v
+
+    def render(self, text: str) -> str:
+        return reg.sub(self._repl, text).strip()
+
+    def get_flag(self, key: str, default: bool = False) -> bool:
+        v = self.ctx.get(key, default)
+        return v and v != '0'
 
 
 reg_name = re.compile(r'{([\w\-]+?):}')
