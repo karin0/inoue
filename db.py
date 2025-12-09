@@ -50,11 +50,6 @@ class DataStore:
         cursor = self.conn.execute('SELECT id, text FROM Doc WHERE name = ?', (name,))
         return cursor.fetchone()
 
-    def get_doc_id(self, name: str) -> int | None:
-        cursor = self.conn.execute('SELECT id FROM Doc WHERE name = ?', (name,))
-        if row := cursor.fetchone():
-            return row[0]
-
     def get_doc_name(self, id: int) -> str | None:
         cursor = self.conn.execute('SELECT name FROM Doc WHERE id = ?', (id,))
         if row := cursor.fetchone():
