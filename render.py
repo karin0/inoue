@@ -10,7 +10,6 @@ from telegram import (
     InlineQuery,
     InlineQueryResultArticle,
     InputTextMessageContent,
-    MessageOriginChannel,
     Update,
     Message,
     InlineKeyboardMarkup,
@@ -21,7 +20,6 @@ from telegram.error import BadRequest
 from telegram.constants import ReactionEmoji
 
 from util import (
-    CHAN_ID,
     log,
     get_msg_arg,
     get_msg_url,
@@ -181,20 +179,14 @@ async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
     return await render_and_reply(*get_msg_arg(update))
 
 
-async def handle_render_group_msg(msg: Message):
-    # This handles Doc messages that are forwarded from CHAN_ID to its discussion group.
-    if (
-        (origin := msg.forward_origin)
-        and isinstance(origin, MessageOriginChannel)
-        and origin.chat.id == CHAN_ID
-        and (doc_name := db.get_doc_name(origin.message_id))
-    ):
-        log.info('Doc in group: %s -> %s %s', msg.id, origin.message_id, doc_name)
+async def handle_render_group(msg: Message, origin_id: int):
+    if doc_name := db.get_doc_name(origin_id):
+        log.info('Doc in group: %s -> %s %s', msg.id, origin_id, doc_name)
         await render_and_reply(
             msg,
             '{:' + doc_name + '}',
             allow_not_modified=True,
-            ctx_omit_doc_id=origin.message_id,
+            ctx_omit_doc_id=origin_id,
         )
 
 

@@ -3,7 +3,7 @@ import asyncio
 import functools
 from typing import Callable, Coroutine, Iterable
 
-from telegram import Update, Bot
+from telegram import Update, Bot, MessageOriginChannel
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
@@ -39,7 +39,7 @@ from render import (
     handle_render,
     handle_render_doc,
     handle_render_callback,
-    handle_render_group_msg,
+    handle_render_group,
     handle_render_inline_query,
     CALLBACK_SIGNS,
 )
@@ -107,25 +107,30 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not (msg := get_msg(update)):
         return
 
-    if (chat := update.effective_chat) and chat.id == GROUP_ID:
-        return await handle_render_group_msg(msg)
+    if origin := msg.forward_origin:
+        # `render` handles Doc messages that are forwarded from CHAN_ID to its discussion group.
+        if (
+            (chat := update.effective_chat)
+            and chat.id == GROUP_ID
+            and isinstance(origin, MessageOriginChannel)
+            and origin.chat.id == CHAN_ID
+        ):
+            return await handle_render_group(msg, origin.message_id)
 
-    if src := msg.forward_origin:
         # ID Bot
-        return await msg.reply_text(*pre_block(str(src)), do_quote=True)
+        return await msg.reply_text(*pre_block(str(origin)), do_quote=True)
 
-    text = msg.text
-    if not (text and text.strip()):
+    if not ((text := msg.text) and text.strip()):
         with open('out.ogg', 'rb') as f:
             return await msg.reply_voice(f, do_quote=True)
 
     if text.startswith('/'):
-        return await handle_cmd(update, text[1:].strip())
+        return await handle_cmd(msg, text[1:].strip())
 
     if '\n' not in text:
         return await handle_rg(update, ctx)
 
-    await reply_text(update, *pre_block(render_receipt(text)))
+    await reply_text(msg, *pre_block(render_receipt(text)))
 
 
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

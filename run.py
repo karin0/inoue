@@ -10,7 +10,7 @@ from telegram import Message, Update
 from telegram.ext import ContextTypes
 from telegram.constants import ChatAction
 
-from util import get_msg, get_msg_arg, MAX_TEXT_LENGTH
+from util import get_msg, get_msg_arg, reply_text, MAX_TEXT_LENGTH
 
 UPDATE_CWD = os.environ['UPDATE_CWD']
 
@@ -18,21 +18,20 @@ UPDATE_CWD = os.environ['UPDATE_CWD']
 async def handle_run(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg, cmd = get_msg_arg(update)
     if cmd:
-        await handle_cmd(update, cmd)
+        await handle_cmd(msg, cmd)
     else:
-        await msg.reply_text('Provide a command to run.', do_quote=True)
+        await reply_text(msg, 'Provide a command to run.', do_quote=True)
 
 
 async def handle_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await _handle_cmd(update, './run.sh', cwd=UPDATE_CWD)
+    await _handle_cmd(get_msg(update), './run.sh', cwd=UPDATE_CWD)
 
 
-async def handle_cmd(update: Update, cmd: str):
-    return await _handle_cmd(update, 'bash', '-c', cmd)
+async def handle_cmd(msg: Message, cmd: str):
+    return await _handle_cmd(msg, 'bash', '-c', cmd)
 
 
-async def _handle_cmd(update: Update, bin: str, *args, **kwargs):
-    msg = get_msg(update)
+async def _handle_cmd(msg: Message, bin: str, *args, **kwargs):
     child = await asyncio.create_subprocess_exec(
         bin,
         *args,
