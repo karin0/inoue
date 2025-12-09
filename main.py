@@ -3,7 +3,7 @@ import asyncio
 import functools
 from typing import Callable, Coroutine, Iterable
 
-from telegram import Update, Bot, MessageOriginChannel
+from telegram import User, Update, Bot, MessageOriginChannel
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
@@ -14,6 +14,7 @@ from telegram.ext import (
     Application,
 )
 from telegram.error import NetworkError
+from telegram.constants import ChatID
 
 from util import (
     log,
@@ -48,20 +49,41 @@ from db import db
 
 def auth(
     func: Callable[[Update, ContextTypes.DEFAULT_TYPE], Coroutine],
+    *,
+    permissive: bool = False,
 ) -> Callable[[Update, ContextTypes.DEFAULT_TYPE], Coroutine]:
     @functools.wraps(func)
     async def wrapper(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        chat = update.effective_chat
-        src = 'Unknown source'
+        effective_msg = update.effective_message
+        src = None
+        sender_id = None
         valid = False
 
-        if user := update.effective_user:
-            src = f'{user.full_name} ({user.name} {user.id})'
-            valid = user.id == USER_ID
+        if sender := update.effective_sender:
+            sender_id = sender.id
+            if isinstance(sender, User):
+                src = f'{sender.full_name} ({sender.name} {sender_id})'
+                valid = sender_id == USER_ID
+            else:  # Chat
+                src = f'{sender.title} [{sender.type} {sender_id}]'
 
-        if not valid and chat:
-            src = f'{chat.title} [{chat.type} {chat.id}]'
-            valid = chat.id == CHAN_ID
+        if chat := update.effective_chat:
+            if chat.id != sender_id:
+                src2 = f'{chat.title} {{{chat.type} {chat.id}}}'
+                src = f'{src} @ {src2}' if src else src2
+
+            if not valid and permissive:
+                # Only `handle_msg` accepts messages that are not from USER_ID.
+                valid = chat.id == CHAN_ID or (
+                    # The content must be from CHAN_ID to be trusted, even if
+                    # auto-forwarded to GROUP_ID.
+                    chat.id == GROUP_ID
+                    and (msg := effective_msg)
+                    and msg.from_user.id == ChatID.SERVICE_CHAT
+                    and msg.is_automatic_forward
+                    and isinstance(origin := msg.forward_origin, MessageOriginChannel)
+                    and origin.chat.id == CHAN_ID
+                )
 
         log.debug('Entering %s from %s: %s', func.__name__, src, update)
 
@@ -73,26 +95,16 @@ def auth(
             log.info('%s: channel post %s', src, shorten(item.text))
         elif item := update.edited_channel_post:
             log.info('%s: edited post %s', src, shorten(item.text))
-        elif item := update.callback_query:
+        elif query := update.callback_query:
             msg = update.callback_query.message
-            log.info('%s: callback %s', src, shorten(item.data))
-        elif item := update.inline_query:
-            log.info('%s: inline %s', src, shorten(item.query))
+            log.info('%s: callback %s', src, shorten(query.data))
+        elif query := update.inline_query:
+            log.info('%s: inline %s', src, shorten(query.query))
         else:
             log.info('%s: unknown: %s', src, update)
 
-        if (item := msg or item) != update.effective_message:
-            log.warning('Message mismatch: %s vs %s', item, update.effective_message)
-
-        # The content must be from USER_ID or CHAN_ID to be trusted, even if
-        # forwarded to GROUP_ID.
-        if not valid and msg:
-            valid = (
-                msg.chat_id == GROUP_ID
-                and (origin := msg.forward_origin)
-                and isinstance(origin, MessageOriginChannel)
-                and origin.chat.id == CHAN_ID
-            )
+        if (item := msg or item) != effective_msg:
+            log.warning('Message mismatch: %s vs %s', item, effective_msg)
 
         if not valid:
             log.warning('Drop unauthorized update from %s: %s', src, update)
@@ -116,16 +128,22 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not (msg := get_msg(update)):
         return
 
-    if origin := msg.forward_origin:
-        # `render` handles Doc messages that are forwarded from CHAN_ID to its discussion group.
-        if (
-            msg.chat_id == GROUP_ID
-            and isinstance(origin, MessageOriginChannel)
-            and origin.chat.id == CHAN_ID
-        ):
-            return await handle_render_group(msg, origin.message_id)
+    # `render` handles Doc messages that are forwarded from CHAN_ID to its discussion group.
+    if (
+        isinstance(origin := msg.forward_origin, MessageOriginChannel)
+        and msg.chat_id == GROUP_ID
+        and origin.chat.id == CHAN_ID
+    ):
+        return await handle_render_group(msg, origin.message_id)
 
-        # ID Bot
+    # Privileged operations are only allowed in private chats, even if it's from
+    # USER_ID.
+    if msg.chat_id != USER_ID:
+        log.warning('handle_msg: unauthorized update: %s', update)
+        return
+
+    # ID Bot
+    if origin:
         return await msg.reply_text(*pre_block(str(origin)), do_quote=True)
 
     if not ((text := msg.text) and text.strip()):
@@ -269,9 +287,9 @@ def main():
     for off in range(5):
         app.add_handler(CommandHandler(f'rg{off}', rg))
 
-    app.add_handler(CallbackQueryHandler(auth(handle_callback)))
+    app.add_handler(CallbackQueryHandler(auth(handle_callback, permissive=True)))
     app.add_handler(InlineQueryHandler(auth(handle_inline_query)))
-    app.add_handler(MessageHandler(None, auth(handle_msg)))
+    app.add_handler(MessageHandler(None, auth(handle_msg, permissive=True)))
 
     log.info('Starting Sendai...')
     app.run_polling()

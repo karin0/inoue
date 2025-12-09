@@ -6,7 +6,6 @@ import traceback
 from typing import Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
-from collections import OrderedDict
 
 from telegram import Message, Bot, MessageEntity, InlineKeyboardMarkup, Update
 from telegram.constants import MessageLimit
