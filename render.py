@@ -43,19 +43,47 @@ class OverriddenDict(UserDict):
     def __getitem__(self, key: str) -> str:
         if (v := self.overrides.get(key)) is not None:
             return v
-        return super().__getitem__(key)
+        return self.data[key]
 
-    # For `get` method to work
+    # For `get` method to work.
     def __contains__(self, key: str) -> bool:
-        return key in self.overrides or super().__contains__(key)
+        return key in self.overrides or key in self.data
+
+    def setdefault(self, key: str, default: str):
+        # For `?=` operator.
+        #
+        # We always set the default in the underlying dict, even if the value
+        # is overridden, so the natural order of keys is preserved as defined by
+        # documents and won't change after markup buttons are activated.
+        #
+        # For the same purpose, `__setitem__` (for `=` operator) is not overridden.
+        r0 = self.data.setdefault(key, default)
+        if (r := self.overrides.get(key)) is not None:
+            return r
+        return r0
+
+    def setdefault_override(self, key: str, value: str) -> str:
+        # For `:=` operator.
+        #
+        # This only affects the `overrides` dict, which has higher priority than
+        # the underlying dict by their *values*, but are placed after those touched
+        # by `=` and `?=` in the natural order of *keys*.
+        #
+        # There is no need to write back the overridden *value* either here or
+        # in `__setitem__`, since `finalize()` already reflects the values from
+        # `overrides`.
+        return self.overrides.setdefault(key, value)
 
     def clone(self) -> 'OverriddenDict':
         new = OverriddenDict(self.overrides.copy())
         new.data = self.data.copy()
         return new
 
-    # __setitem__ is not overridden, so we can still have the natural order
-    # of the flags being inserted when iterated by `make_markup`.
+    def finalize(self):
+        # Keys from the underlying dict are yielded first, in their natural order.
+        r = self.data
+        r.update(self.overrides)
+        return r.items()
 
 
 def make_markup(
@@ -72,7 +100,7 @@ def make_markup(
         return None
 
     flags = {}
-    for k, v in ctx.items():
+    for k, v in ctx.ctx.finalize():
         if v == '0':
             v = False
         elif v == '1':
@@ -83,6 +111,9 @@ def make_markup(
         if size + len(k.encode('utf-8')) + 1 <= InlineKeyboardButton.MAX_CALLBACK_DATA:
             flags[k] = v
 
+    log.debug('make_markup: flags %s state %s', flags, state)
+
+    # The external state takes precedence even over `ctx.overrides`.
     if state:
         flags.update(state)
 
@@ -128,16 +159,13 @@ def make_markup(
     return InlineKeyboardMarkup(rows)
 
 
-def render_text(
+def finalize_rendered_text(
     text: str,
-    flags: dict[str, bool] | None = None,
-    ctx_omit_doc_id: int | None = None,
+    flags: dict[str, bool] | None,
+    result: str,
+    ctx: 'RenderContext',
 ) -> tuple[str, str | None, InlineKeyboardMarkup | None]:
-    ctx = RenderContext(
-        {k: '01'[v] for k, v in flags.items()} if flags else {}, ctx_omit_doc_id
-    )
-
-    result = ctx.render(text) or '[empty]'
+    result = result or '[empty]'
     if errors := ctx.errors:
         result += f'\n\n---\n\n' + '\n'.join(errors)
 
@@ -150,12 +178,15 @@ def render_text(
     return truncate_text(result), parse_mode, make_markup(text, ctx, flags)
 
 
-async def render_and_reply(
-    msg: Message,
-    arg: str,
-    allow_not_modified: bool = False,
-    ctx_omit_doc_id: int | None = None,
-) -> Message:
+def render_text(
+    text: str, flags: dict[str, bool] | None = None
+) -> tuple[str, str | None, InlineKeyboardMarkup | None]:
+    ctx = RenderContext({k: '01'[v] for k, v in flags.items()} if flags else {})
+    return finalize_rendered_text(text, flags, ctx.render(text), ctx)
+
+
+async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
+    msg, arg = get_msg_arg(update)
     target = msg.reply_to_message
 
     if target:
@@ -171,39 +202,33 @@ async def render_and_reply(
     else:
         return await reply_text(msg, 'Specify text or reply to a message to render.')
 
-    args = render_text(text, ctx_omit_doc_id=ctx_omit_doc_id)
-    return await reply_text(msg, *args, allow_not_modified=allow_not_modified)
+    return await reply_text(msg, *render_text(text))
 
 
-async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
-    return await render_and_reply(*get_msg_arg(update))
+preview_cache = {}
 
 
 async def handle_render_group(msg: Message, origin_id: int):
-    if doc_name := db.get_doc_name(origin_id):
+    if cache := preview_cache.pop(origin_id, None):
+        doc_name, args = cache
         log.info('Doc in group: %s -> %s %s', msg.id, origin_id, doc_name)
-        await render_and_reply(
-            msg,
-            '{:' + doc_name + '}',
-            allow_not_modified=True,
-            ctx_omit_doc_id=origin_id,
-        )
+        await reply_text(msg, *args, allow_not_modified=True)
+    else:
+        log.warning('No doc cache for group: %s -> %s', msg.id, origin_id)
+
+    if left := tuple((id, name) for id, (name, _) in preview_cache.items()):
+        log.warning('Preview cache not empty: %s', left)
 
 
 async def handle_render_inline_query(query: InlineQuery, text: str):
     result, parse_mode, markup = render_text(text)
-    await query.answer(
-        [
-            InlineQueryResultArticle(
-                id='1',
-                title=f'Render: {len(result)}',
-                input_message_content=InputTextMessageContent(
-                    result, parse_mode=parse_mode
-                ),
-                reply_markup=markup,
-            )
-        ]
+    r = InlineQueryResultArticle(
+        id='1',
+        title=f'Render: {len(result)}',
+        input_message_content=InputTextMessageContent(result, parse_mode=parse_mode),
+        reply_markup=markup,
     )
+    await query.answer((r,))
 
 
 async def handle_render_callback(
@@ -262,36 +287,22 @@ def split_assignments(cmd: str, p1: int, p2: int) -> tuple[str, Iterable[str]]:
 
 reg = re.compile(r'{(.+?)}|^([^\r\n]+?);$', re.DOTALL | re.MULTILINE)
 
-# Doc name declaration `name:` must be at the start of an parsed block, despite of whitespaces.
-reg_name = re.compile(
-    r'{\s*([\w\-]+?):\s*(?:;.*?)?}|^[^\S\r\n]*([\w\-]+?):[^\S\r\n]*;(?:[^\r\n]*?;)?$',
-    re.DOTALL | re.MULTILINE,
-)
-
-
-def unwrap_match(m: re.Match) -> str | None:
-    if (r := m[1]) is not None or (r := m[2]) is not None:
-        return r.strip()
-
 
 class RenderContext:
-    def __init__(self, overrides: dict[str], first_doc_id_omit: int | None = None):
+    def __init__(self, overrides: dict[str]):
         self.ctx = OverriddenDict(overrides)
         self.vis: set[str] = set()
         self.errors: list[str] = []
         self.first_doc_id: int | None = None
-        self.first_doc_id_omit = first_doc_id_omit
+        self.first_doc_id_is_implicit: bool = False
+        self.doc_name = None
 
-        self.get = self.ctx.get
-        self.items = self.ctx.items
+    def _repl(self, m: re.Match, top: bool) -> str:
+        if not (cmd := m[1] or m[2]):
+            return m[0]
 
-    def _repl(self, m: re.Match) -> str:
         ctx = self.ctx
         errors = self.errors
-
-        cmd = unwrap_match(m)
-        if not cmd:
-            return m[0]
 
         # Conditional: {cond ? true-directive : false-directive} (false part optional)
         # Omit `?=` which is handled inside directives and cannot occur in conditions
@@ -333,7 +344,7 @@ class RenderContext:
 
             # Empty directive
             if not cmd:
-                continue
+                pass
 
             # Literal: {`raw}
             elif cmd[0] == '`':
@@ -341,25 +352,27 @@ class RenderContext:
 
             # Db name set: {name:}
             elif cmd[-1] == ':':
-                pass
+                if top:
+                    if self.doc_name:
+                        errors.append('doc name redefined: ' + cmd)
+                    else:
+                        self.doc_name = cmd[:-1].strip()
 
             # Context override: {key:=value}
             # a. Can never be overridden (except by markup buttons)
-            # b. Does not affect flags detected in markup, neither their natural order
+            # b. Does not interrupt the natural order of flags detected in markup
             # {key1:=key2=...=value} affects all keys
             elif (p := cmd.find(':=', 1)) >= 0:
                 val, keys = split_assignments(cmd, p, p + 2)
                 for key in keys:
-                    if key not in ctx.overrides:
-                        ctx.overrides[key] = val
+                    ctx.setdefault_override(key, val)
 
             # Context set if empty: {key?=value}
             # {key1?=key2=...=value} sets all keys to value if empty
             elif (p := cmd.find('?=', 1)) >= 0:
                 val, keys = split_assignments(cmd, p, p + 2)
                 for key in keys:
-                    if not self.get(key):
-                        ctx[key] = val
+                    ctx.setdefault(key, val)
 
             # Context set: {key=value}
             # {key1=key2=...=value} sets all keys to value
@@ -374,12 +387,12 @@ class RenderContext:
                 val = ctx.get(key)
                 if val is None:
                     errors.append('undefined: ' + cmd)
-                    return ''
+                    continue
 
                 parts = cmd[p + 1 :].split('|')
                 if not parts:
                     errors.append('invalid replacements: ' + cmd)
-                    return ''
+                    continue
 
                 r = str(val)
                 for part in parts:
@@ -387,7 +400,7 @@ class RenderContext:
                         pat, rep = part.split('/', 1)
                     except ValueError:
                         errors.append('invalid replacement: ' + part)
-                        return ''
+                        continue
                     r = r.replace(pat.strip(), rep.strip())
                 ctx[key] = r
 
@@ -402,7 +415,8 @@ class RenderContext:
                 self._ctx_set(key2, val1)
 
             # Db doc get: {:name}
-            elif cmd[0] == ':':
+            # Db doc implicit get: {*name} (can be overridden as self.first_doc_id)
+            elif cmd[0] == ':' or cmd[0] == '*':
                 key = cmd[1:].strip()
                 vis = self.vis
 
@@ -416,11 +430,12 @@ class RenderContext:
                     errors.append('undefined: ' + cmd)
                     return ''
 
-                if self.first_doc_id is None and self.first_doc_id_omit != doc_id:
+                if self.first_doc_id is None or self.first_doc_id_is_implicit:
                     self.first_doc_id = doc_id
+                    self.first_doc_id_is_implicit = cmd[0] == '*'
 
                 vis.add(key)
-                r = self.render(doc)
+                r = self.render(doc, top=False)
                 vis.remove(key)
                 return r
 
@@ -448,8 +463,8 @@ class RenderContext:
         else:
             ctx[k] = v
 
-    def render(self, text: str) -> str:
-        return reg.sub(self._repl, text).strip()
+    def render(self, text: str, top: bool = True) -> str:
+        return reg.sub(lambda m: self._repl(m, top), text).strip()
 
     def get_flag(self, key: str, default: bool = False) -> bool:
         v = self.ctx.get(key, default)
@@ -489,7 +504,13 @@ async def handle_render_doc(msg: Message):
     id = msg.message_id
     info = []
 
-    if (m := reg_name.search(text)) and (name := unwrap_match(m)):
+    ctx = RenderContext({})
+    rendered = ctx.render(text)
+
+    if name := ctx.doc_name:
+        args = finalize_rendered_text(f'*{name};', None, rendered, ctx)
+        preview_cache[id] = (name, args)
+
         old_by_id, old_by_name = db.save_doc(id, name, text)
 
         action = 'new doc:'
