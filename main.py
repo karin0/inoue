@@ -61,7 +61,7 @@ def auth(
 
         if not valid and chat:
             src = f'{chat.title} [{chat.type} {chat.id}]'
-            valid = chat.id == CHAN_ID or chat.id == GROUP_ID
+            valid = chat.id == CHAN_ID
 
         log.debug('Entering %s from %s: %s', func.__name__, src, update)
 
@@ -81,9 +81,18 @@ def auth(
         else:
             log.info('%s: unknown: %s', src, update)
 
-        item = msg or item
-        if item != update.effective_message:
+        if (item := msg or item) != update.effective_message:
             log.warning('Message mismatch: %s vs %s', item, update.effective_message)
+
+        # The content must be from USER_ID or CHAN_ID to be trusted, even if
+        # forwarded to GROUP_ID.
+        if not valid and msg:
+            valid = (
+                msg.chat_id == GROUP_ID
+                and (origin := msg.forward_origin)
+                and isinstance(origin, MessageOriginChannel)
+                and origin.chat.id == CHAN_ID
+            )
 
         if not valid:
             log.warning('Drop unauthorized update from %s: %s', src, update)
@@ -110,8 +119,7 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if origin := msg.forward_origin:
         # `render` handles Doc messages that are forwarded from CHAN_ID to its discussion group.
         if (
-            (chat := update.effective_chat)
-            and chat.id == GROUP_ID
+            msg.chat_id == GROUP_ID
             and isinstance(origin, MessageOriginChannel)
             and origin.chat.id == CHAN_ID
         ):
