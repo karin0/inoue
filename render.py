@@ -4,6 +4,8 @@ import asyncio
 from typing import Iterable
 from collections import UserDict
 
+from simpleeval import simple_eval
+
 from telegram import (
     InlineQuery,
     InlineQueryResultArticle,
@@ -44,6 +46,15 @@ class OverriddenDict(UserDict):
         if (v := self.overrides.get(key)) is not None:
             return v
         return super().__getitem__(key)
+
+    # For `get` method to work
+    def __contains__(self, key: str) -> bool:
+        return key in self.overrides or super().__contains__(key)
+
+    def clone(self) -> 'OverriddenDict':
+        new = OverriddenDict(self.overrides.copy())
+        new.data = self.data.copy()
+        return new
 
     # __setitem__ is not overridden, so we can still have the natural order
     # of the flags being inserted when iterated by `make_markup`.
@@ -257,17 +268,27 @@ def split_assignments(cmd: str, p1: int, p2: int) -> tuple[str, Iterable[str]]:
     return val, _flatten_keys(key1, parts)
 
 
-reg = re.compile(r'{(.+?)}', re.DOTALL)
+reg = re.compile(r'{(.+?)}|^([^\r\n]+?);$', re.DOTALL | re.MULTILINE)
+
+# Doc name declaration `name:` must be at the start of an parsed block, despite of whitespaces.
+reg_name = re.compile(
+    r'{\s*([\w\-]+?):\s*(?:;.*?)?}|^[^\S\r\n]*([\w\-]+?):[^\S\r\n]*;(?:[^\r\n]*?;)?$',
+    re.DOTALL | re.MULTILINE,
+)
+
+
+def unwrap_match(m: re.Match) -> str | None:
+    if (r := m[1]) is not None or (r := m[2]) is not None:
+        return r.strip()
 
 
 class RenderContext:
-    def __init__(self, ctx: dict[str], first_doc_id_omit: int | None = None):
-        self.ctx = OverriddenDict(ctx)
+    def __init__(self, overrides: dict[str], first_doc_id_omit: int | None = None):
+        self.ctx = OverriddenDict(overrides)
         self.vis: set[str] = set()
         self.errors: list[str] = []
         self.first_doc_id: int | None = None
         self.first_doc_id_omit = first_doc_id_omit
-        log.info('RenderContext initialized: %s %s', ctx, first_doc_id_omit)
 
         self.get = self.ctx.get
         self.items = self.ctx.items
@@ -276,7 +297,7 @@ class RenderContext:
         ctx = self.ctx
         errors = self.errors
 
-        cmd = m[1].strip()
+        cmd = unwrap_match(m)
         if not cmd:
             return m[0]
 
@@ -284,7 +305,21 @@ class RenderContext:
         # Omit `?=` which is handled inside directives and cannot occur in conditions
         if (p := cmd.find('?', 1)) >= 0 and p + 1 < len(cmd) and cmd[p + 1] != '=':
             cond = cmd[:p].strip()
-            if (t := cond.find('=', 1)) >= 0:
+            if not cond:
+                errors.append('empty condition: ' + cmd)
+                test = False
+            elif cond[0] == cond[-1] == '\"':
+                # Evaluate Python expression
+                expr = cond[1:-1].strip()
+                try:
+                    v = simple_eval(expr, names=ctx.clone())
+                except Exception as e:
+                    errors.append(f'evaluation: {expr}: {type(e).__name__}: {e}')
+                    test = False
+                else:
+                    test = bool(v)
+                    log.info('evaluated condition: %s -> %s (%s)', expr, v, test)
+            elif (t := cond.find('=', 1)) >= 0:
                 key = cond[:t].strip()
                 val = cond[t + 1 :].strip()
                 test = str(ctx.get(key)) == val
@@ -429,9 +464,6 @@ class RenderContext:
         return v and v != '0'
 
 
-reg_name = re.compile(r'{([\w\-]+?):}')
-
-
 def _report(
     out: list[str], action: str, id: int | None, name: str | None, text: str | None
 ):
@@ -465,7 +497,7 @@ async def handle_render_doc(msg: Message):
     id = msg.message_id
     info = []
 
-    if (m := reg_name.search(text)) and (name := m[1].strip()):
+    if (m := reg_name.search(text)) and (name := unwrap_match(m)):
         old_by_id, old_by_name = db.save_doc(id, name, text)
 
         action = 'new doc:'
@@ -498,6 +530,7 @@ async def handle_render_doc(msg: Message):
     await asyncio.gather(
         do_notify(
             truncate_text(('\n' if len(info) > 2 else ' ').join(info)),
+            quiet=True,
             parse_mode='MarkdownV2',
         ),
         msg.set_reaction(*reaction),

@@ -2,12 +2,12 @@ from math import floor
 from typing import Hashable
 from collections import defaultdict
 
-from arithmetic_eval import evaluate
+from simpleeval import simple_eval
 from prettytable import PrettyTable
 
 
 def calc(s: str) -> float:
-    return evaluate(s, {'x': 1.1})
+    return simple_eval(s, names={'x': 1.1})
 
 
 def render_sign(v: float | int) -> str:

@@ -110,7 +110,12 @@ def use_msg(m: Message | None):
 
 
 async def do_notify(
-    text: str, *, message: Message | None = None, revocable: bool = False, **kwargs
+    text: str,
+    *,
+    message: Message | None = None,
+    revocable: bool = False,
+    quiet: bool = False,
+    **kwargs,
 ):
     if m := message or msg.get(None):
         try:
@@ -126,7 +131,12 @@ async def do_notify(
     if bot:
         kwargs.pop('do_quote', None)
         try:
-            await bot.send_message(USER_ID, text, **kwargs)
+            if quiet:
+                await bot.send_message(
+                    GROUP_ID, text, disable_notification=True, **kwargs
+                )
+            else:
+                await bot.send_message(USER_ID, text, **kwargs)
         except Exception:
             traceback.print_exc()
 
