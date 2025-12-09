@@ -150,7 +150,8 @@ def get_msg(update: MessageSource) -> Message:
         if m := update.message or update.edited_message:
             return m
     elif update is None:
-        return msg.get()
+        if m := msg.get():
+            return m
     else:
         return update
 
@@ -178,12 +179,6 @@ def get_msg_url(msg_id, chat_id=None) -> str:
 
 def get_deep_link_url(arg: str) -> str:
     return f'https://t.me/{BOT_NAME}?start={arg}'
-
-
-def get_bot() -> Bot:
-    if not bot:
-        raise RuntimeError('Bot not initialized')
-    return bot
 
 
 # Note: the return value could be `None` if `allow_not_modified` is set.
