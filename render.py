@@ -29,8 +29,8 @@ from util import (
     shorten,
     truncate_text,
     escape,
+    pre_block,
     do_notify,
-    pre_block_tuple,
 )
 from db import db
 
@@ -146,7 +146,7 @@ def render_text(
     result = truncate_text(result)
     parse_mode = None
     if ctx.get_flag('_pre', True):
-        result, parse_mode = pre_block_tuple(result)
+        result, parse_mode = pre_block(result)
 
     log.info('rendered %d -> %d', len(text), len(result))
     return truncate_text(result), parse_mode, make_markup(text, ctx, flags)
@@ -527,11 +527,8 @@ async def handle_render_doc(msg: Message):
     else:
         return
 
+    res = truncate_text(('\n' if len(info) > 2 else ' ').join(info))
     await asyncio.gather(
-        do_notify(
-            truncate_text(('\n' if len(info) > 2 else ' ').join(info)),
-            quiet=True,
-            parse_mode='MarkdownV2',
-        ),
+        do_notify(res, 'MarkdownV2', quiet=True),
         msg.set_reaction(*reaction),
     )

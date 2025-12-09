@@ -111,6 +111,7 @@ def use_msg(m: Message | None):
 
 async def do_notify(
     text: str,
+    parse_mode: str | None = None,
     *,
     message: Message | None = None,
     revocable: bool = False,
@@ -120,23 +121,22 @@ async def do_notify(
     if m := message or msg.get(None):
         try:
             if revocable:
-                return await reply_text(m, text, **kwargs)
+                return await reply_text(m, text, parse_mode, **kwargs)
             else:
-                return await m.reply_text(text, do_quote=True, **kwargs)
+                return await m.reply_text(text, parse_mode, do_quote=True, **kwargs)
         except Exception as e:
             traceback.print_exc()
             text += f'\nreply_text: {type(e).__name__}: {e}'
             text = truncate_text(text)
 
     if bot:
-        kwargs.pop('do_quote', None)
         try:
             if quiet:
                 await bot.send_message(
-                    GROUP_ID, text, disable_notification=True, **kwargs
+                    GROUP_ID, text, parse_mode, disable_notification=True, **kwargs
                 )
             else:
-                await bot.send_message(USER_ID, text, **kwargs)
+                await bot.send_message(USER_ID, text, parse_mode, **kwargs)
         except Exception:
             traceback.print_exc()
 
@@ -195,7 +195,6 @@ async def reply_text(
     reply_markup: InlineKeyboardMarkup | None = None,
     *,
     entities: Sequence[MessageEntity] | None = None,
-    do_quote: bool = True,
     allow_not_modified: bool = False,
 ) -> Message:
     m = get_msg(update)
@@ -214,7 +213,7 @@ async def reply_text(
             parse_mode=parse_mode,
             reply_markup=reply_markup,
             entities=entities,
-            do_quote=do_quote,
+            do_quote=True,
         )
 
         val = str(resp.message_id)
@@ -281,15 +280,10 @@ def escape(s: str) -> str:
     return escape_markdown(s, version=2)
 
 
-def pre_block_tuple(s: str) -> tuple[str, str | None]:
+def pre_block(s: str) -> tuple[str, str | None]:
     if len(s) + 8 <= MAX_TEXT_LENGTH:
         text = '```\n' + escape(s) + '\n```'
         if len(text) <= MAX_TEXT_LENGTH:
             return text, 'MarkdownV2'
 
     return truncate_text(s), None
-
-
-def pre_block(s: str) -> dict:
-    text, parse_mode = pre_block_tuple(s)
-    return {'text': text, 'parse_mode': parse_mode, 'do_quote': True}

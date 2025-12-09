@@ -1,7 +1,7 @@
 import os
 import asyncio
 import functools
-from typing import Callable, Coroutine
+from typing import Callable, Coroutine, Iterable
 
 from telegram import Update, Bot
 from telegram.ext import (
@@ -17,6 +17,7 @@ from telegram.error import NetworkError
 
 from util import (
     log,
+    notify,
     pre_block,
     reply_text,
     shorten,
@@ -28,7 +29,6 @@ from util import (
     get_msg,
     get_msg_arg,
     do_notify,
-    notify,
     escape,
 )
 from motto import greeting
@@ -112,7 +112,7 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if src := msg.forward_origin:
         # ID Bot
-        return await msg.reply_text(**pre_block(str(src)))
+        return await msg.reply_text(*pre_block(str(src)), do_quote=True)
 
     text = msg.text
     if not (text and text.strip()):
@@ -125,7 +125,7 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if '\n' not in text:
         return await handle_rg(update, ctx)
 
-    await reply_text(update, **pre_block(render_receipt(text)))
+    await reply_text(update, *pre_block(render_receipt(text)))
 
 
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -159,14 +159,15 @@ async def handle_inline_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await handle_render_inline_query(query, data)
 
 
-def stats() -> dict[str]:
-    s = db.summary()
-    text = f'{escape(greeting())}\n```\nSendai initiated: {escape(s)}\n```'
-    return {'text': text, 'parse_mode': 'MarkdownV2', 'do_quote': True}
+def stats(header='Sendai') -> tuple[str]:
+    info = f'{header}: {db.summary()}'
+    log.info('%s', info)
+    text = f'{escape(greeting())}\n```\n{escape(info)}\n```'
+    return text, 'MarkdownV2'
 
 
 async def handle_greet(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await get_msg(update).reply_text(**stats())
+    await reply_text(update, *stats())
 
 
 async def handle_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -174,7 +175,25 @@ async def handle_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if arg and arg.startswith('rg_'):
         return await handle_rg_start(msg, arg)
 
-    return await msg.reply_text(**stats())
+    return await reply_text(msg, *stats())
+
+
+def parse_sort(arg: str) -> Iterable[int]:
+    last = None
+    for x in arg.split():
+        if last and len(x) < len(last):
+            # last = 10086, x = 89 -> out = 10089
+            x = last[: len(last) - len(x)] + x
+        last = x
+        yield int(x)
+
+
+async def handle_sort(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg, arg = get_msg_arg(update)
+    if not arg:
+        return await msg.reply_text('Usage: /sort 114 514 1919 810 ...')
+    res = '\n'.join(str(x) for x in sorted(parse_sort(arg)))
+    await reply_text(msg, *pre_block(res))
 
 
 commands = tuple(
@@ -186,6 +205,7 @@ commands = tuple(
         handle_update,
         handle_rg,
         handle_render,
+        handle_sort,
     ]
 )
 
@@ -195,8 +215,7 @@ async def post_init(app: Application) -> None:
     init_util(bot)
     db.connect('sendai.db')
     await bot.set_my_commands(tuple((s, s) for s, _ in commands))
-    await do_notify(**stats())
-    log.info('Sendai initiated: %s', db.summary())
+    await do_notify(*stats('Sendai initiated'))
 
 
 async def post_stop(_: Application) -> None:
