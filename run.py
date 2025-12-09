@@ -10,7 +10,7 @@ from telegram import Message, Update
 from telegram.ext import ContextTypes
 from telegram.constants import ChatAction
 
-from util import get_msg, get_msg_arg, reply_text, MAX_TEXT_LENGTH
+from util import get_msg, get_msg_arg, pre_block, reply_text, MAX_TEXT_LENGTH
 
 UPDATE_CWD = os.environ['UPDATE_CWD']
 
@@ -122,10 +122,11 @@ async def consumer(
                     msg = None
                     text = new
 
+            content = pre_block(text, do_truncate=False)
             if msg:
-                await msg.edit_text(text)
+                await msg.edit_text(*content)
             else:
-                msg = await send(text, arg)
+                msg = await send(content, arg)
 
         if eof:
             break
@@ -138,9 +139,9 @@ async def __handle_cmd(msg: Message, child: Process, evt: asyncio.Event):
     q_err = asyncio.Queue()
     asyncio.create_task(producer(q_err, child.stderr))
 
-    async def send(text, do_quote):
+    async def send(content, do_quote):
         nonlocal evt
-        r = await msg.reply_text(text, do_quote=do_quote)
+        r = await msg.reply_text(*content, do_quote=do_quote)
         if evt:
             evt.set()
             evt = None

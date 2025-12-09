@@ -280,10 +280,13 @@ def escape(s: str) -> str:
     return escape_markdown(s, version=2)
 
 
-def pre_block(s: str) -> tuple[str, str | None]:
+# This truncates the text by default, trimming any leading and trailing spaces.
+def pre_block(s: str, *, do_truncate: bool = True) -> tuple[str, str | None]:
     if len(s) + 8 <= MAX_TEXT_LENGTH:
         text = '```\n' + escape(s) + '\n```'
         if len(text) <= MAX_TEXT_LENGTH:
             return text, 'MarkdownV2'
 
-    return truncate_text(s), None
+    if do_truncate:
+        s = truncate_text(s)
+    return s, None
