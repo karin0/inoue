@@ -375,7 +375,7 @@ async def handle_rg_callback(data: str):
 
 
 async def _run_rg(arg: str, cwd: str) -> RGQuery:
-    cmd = ('rg', '-m', str(MATCH_LIMIT), '--sortr', 'path', '--json', arg)
+    cmd = ('rg', '-Sm', str(MATCH_LIMIT), '--sortr', 'path', '--json', arg)
     child = await asyncio.create_subprocess_exec(
         *cmd, stdin=DEVNULL, stdout=PIPE, stderr=DEVNULL, cwd=cwd
     )
