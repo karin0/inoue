@@ -42,7 +42,7 @@ from render import (
     handle_render_callback,
     handle_render_group,
     handle_render_inline_query,
-    CALLBACK_SIGNS,
+    ALL_CALLBACK_SIGNS,
 )
 from db import db
 
@@ -166,7 +166,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data:
         if data.startswith('rg_'):
             fut = handle_rg_callback(data)
-        elif data[0] in CALLBACK_SIGNS:
+        elif data[0] in ALL_CALLBACK_SIGNS:
             fut = handle_render_callback(update, ctx, data)
         elif data != 'noop':
             log.warning('bad callback: %s', data)

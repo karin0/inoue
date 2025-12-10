@@ -1,7 +1,7 @@
 import re
 import asyncio
 
-from typing import Iterable
+from typing import Callable
 from collections import UserDict
 
 from simpleeval import simple_eval
@@ -32,7 +32,8 @@ from util import (
 )
 from db import db
 
-CALLBACK_SIGNS = '/+:'
+CALLBACK_SIGNS = '/+'
+ALL_CALLBACK_SIGNS = frozenset('/+:#`')
 
 
 class OverriddenDict(UserDict):
@@ -92,10 +93,10 @@ def make_markup(
     if not path:
         return None
 
-    # query data: ('/'|'+' <flag-key>)* ':' <text>
+    # query data: ('/'|'+' <flag-key>)* <path-header: ':'|'#'|'`'> <path-body>
     # where '/' means 0, '+' means 1
 
-    size = len(path.encode('utf-8')) + 1
+    size = len(path.encode('utf-8'))
     if state:
         size += sum(len(k.encode('utf-8')) for k in state.keys()) + len(state)
 
@@ -125,7 +126,7 @@ def make_markup(
 
     row = [
         InlineKeyboardButton(
-            ('⏪ ' if state else '🔄 ') + shorten(path), callback_data=':' + path
+            ('⏪ ' if state else '🔄 ') + shorten(path[1:]), callback_data=path
         )
     ]
 
@@ -134,9 +135,7 @@ def make_markup(
             state = {}
 
         def push_button(name: str):
-            data = (
-                ''.join((CALLBACK_SIGNS[v] + k) for k, v in state.items()) + ':' + path
-            )
+            data = ''.join((CALLBACK_SIGNS[v] + k) for k, v in state.items()) + path
             row.append(InlineKeyboardButton(name, callback_data=data))
 
         for k, v in flags.items():
@@ -222,9 +221,9 @@ preview_cache = {}
 
 async def handle_render_group(msg: Message, origin_id: int):
     if cache := preview_cache.pop(origin_id, None):
-        doc_name = cache[0]
+        doc_name, *args = cache
         log.info('Doc in group: %s -> %s %s', msg.id, origin_id, doc_name)
-        args = rendered_response(None, *cache)
+        args = rendered_response(None, ':' + doc_name, *args)
         await reply_text(msg, *args, allow_not_modified=True)
 
     if left := tuple((id, name) for id, (name, *_) in preview_cache.items()):
@@ -246,29 +245,30 @@ async def handle_render_callback(
     update: Update, ctx: ContextTypes.DEFAULT_TYPE, data: str
 ):
     flags = {}
-    i = 0
-    while i < len(data):
-        sign = data[i]
-        if sign == ':':
-            break
-
-        i += 1
-        j = i
-        while j < len(data) and data[j] not in CALLBACK_SIGNS:
+    j = 0
+    true = CALLBACK_SIGNS[True]
+    while (i := j) < len(data) and (sign := data[i]) in CALLBACK_SIGNS:
+        j = i = i + 1
+        while j < len(data) and data[j] not in ALL_CALLBACK_SIGNS:
             j += 1
-        key = data[i:j]
-        flags[key] = sign == CALLBACK_SIGNS[True]
-        i = j
+        flags[data[i:j]] = sign == true
 
-    if not (path := data[i + 1 :]):
-        raise ValueError('empty path in render callback')
+    if len(path := data[i:]) <= 2:
+        raise ValueError('bad path in render callback: ' + data)
 
-    if path[0] == '`':
-        data = path[1:]
-    elif path[0] == '#':
-        data = db['r-' + path]
-    else:
-        _, data = db.get_doc(path)
+    # Compatibility with old format
+    if path[0] == ':' and path[1] in ALL_CALLBACK_SIGNS:
+        path = path[1:]
+
+    match path[0]:
+        case '`':
+            data = path[1:]
+        case '#':
+            data = db['r-' + path]
+        case ':':
+            _, data = db.get_doc(path[1:])
+        case _:
+            raise ValueError('bad render callback: ' + data)
 
     result, parse_mode, markup = render_text(data, flags, path)
 
@@ -293,13 +293,8 @@ async def handle_render_callback(
             raise
 
 
-def _flatten_keys(key1: str, parts: list[str]) -> Iterable[str]:
-    yield key1
-    for key in parts:
-        yield key.strip()
-
-
 reg = re.compile(r'{(.+?)}|^([^\r\n]+?);$', re.DOTALL | re.MULTILINE)
+all_unary = tuple('+/$:*`')
 
 
 class RenderContext:
@@ -317,7 +312,8 @@ class RenderContext:
 
         return str(val)
 
-    # Evaluate expression to value (str)
+    # Evaluate expression to a value (str).
+    # This should not have side effects on `ctx`.
     def evaluate(self, expr: str, *, in_directive: bool = True) -> str:
         # Empty
         if not (expr := expr.strip()):
@@ -381,16 +377,19 @@ class RenderContext:
         # Literal: {raw}
         return expr
 
-    def split_assignments(
-        self, cmd: str, p1: int, p2: int
-    ) -> tuple[str, Iterable[str]]:
+    def _do_assignments(
+        self, cmd: str, p1: int, p2: int, set: Callable[[str, str], None]
+    ):
         key1 = cmd[:p1].strip()
         parts = cmd[p2:].split('=')
         val = self.evaluate(parts.pop().strip())
-        return val, _flatten_keys(key1, parts)
+        set(key1, val)
+        for key in parts:
+            set(key.strip(), val)
 
     def _repl(self, m: re.Match, top: bool) -> str:
-        if not ((cmd := m[1] or m[2]) and (cmd := cmd.strip())):
+        cmd: str = m[1] or m[2]
+        if not (cmd and (cmd := cmd.strip())):
             return m[0]
 
         # Comment
@@ -417,8 +416,10 @@ class RenderContext:
             else:
                 return ''
 
-        for cmd in cmd.split(';'):
-            cmd: str = cmd.strip()
+        ret = None
+
+        def handle_cmd(cmd: str):
+            nonlocal ret
 
             # Empty directive
             if not cmd:
@@ -426,7 +427,10 @@ class RenderContext:
 
             # Literal: {`raw}
             elif cmd[0] == '`':
-                return cmd[1:]
+                if ret is None:
+                    ret = cmd[1:]
+                else:
+                    errors.append('redundant literal: ' + cmd)
 
             # Db name set: {name:}
             elif cmd[-1] == ':':
@@ -441,36 +445,28 @@ class RenderContext:
             # b. Does not interrupt the natural order of flags detected in markup
             # {key1:=key2=...=value} affects all keys
             elif (p := cmd.find(':=', 1)) >= 0:
-                val, keys = self.split_assignments(cmd, p, p + 2)
-                for key in keys:
-                    ctx.setdefault_override(key, val)
+                self._do_assignments(cmd, p, p + 2, ctx.setdefault_override)
 
             # Context set if empty: {key?=value}
             # {key1?=key2=...=value} sets all keys to value if empty
             elif (p := cmd.find('?=', 1)) >= 0:
-                val, keys = self.split_assignments(cmd, p, p + 2)
-                for key in keys:
-                    ctx.setdefault(key, val)
+                self._do_assignments(cmd, p, p + 2, ctx.setdefault)
 
             # Context set: {key=value}
             # {key1=key2=...=value} sets all keys to value
             elif (p := cmd.find('=', 1)) >= 0:
-                val, keys = self.split_assignments(cmd, p, p + 1)
-                for key in keys:
-                    ctx[key] = val
+                self._do_assignments(cmd, p, p + 1, ctx.__setitem__)
 
             # Context inplace replacement: {key|pat1/rep1|pat2/rep2|...}
             elif (p := cmd.find('|', 1)) >= 0:
                 key = cmd[:p].strip()
                 val = ctx.get(key)
                 if val is None:
-                    errors.append('undefined: ' + cmd)
-                    continue
+                    return errors.append('undefined: ' + cmd)
 
                 parts = cmd[p + 1 :].split('|')
                 if not parts:
-                    errors.append('invalid replacements: ' + cmd)
-                    continue
+                    return errors.append('invalid replacements: ' + cmd)
 
                 r = str(val)
                 for part in parts:
@@ -478,8 +474,9 @@ class RenderContext:
                         pat, rep = part.split('/', 1)
                     except ValueError:
                         errors.append('invalid replacement: ' + part)
-                        continue
-                    r = r.replace(pat.strip(), rep.strip())
+                    else:
+                        r = r.replace(pat.strip(), rep.strip())
+
                 ctx[key] = r
 
             # Context swap: {key1^key2}
@@ -491,10 +488,34 @@ class RenderContext:
 
                 self.set_ctx(key1, val2)
                 self.set_ctx(key2, val1)
-            else:
-                return self.evaluate(cmd, in_directive=in_directive)
 
-        return ''
+            # Context flag override: {+key1} means {key1:=1}, {/key2} means {key2:=0}
+            # Also starts an unary chain: {+key1/key2/+key3*doc}
+            # Other unary operators like `$:*` don't start a chain, as they yields
+            # immediate values instead of preparing context.
+            elif cmd[0] == '+' or cmd[0] == '/':
+                val = '1' if cmd[0] == '+' else '0'
+                for i in range(2, len(cmd)):
+                    if cmd[i] in all_unary:
+                        key = cmd[1:i].strip()
+                        ctx.setdefault_override(key, val)
+                        if rest := cmd[i:]:
+                            return handle_cmd(rest)
+                        break
+                else:
+                    key = cmd[1:].strip()
+                    ctx.setdefault_override(key, val)
+
+            # Only the first expression is evaluated. Subsequent ones are discarded.
+            elif ret is None:
+                ret = self.evaluate(cmd, in_directive=in_directive)
+            else:
+                errors.append('redundant expression: ' + cmd)
+
+        for cmd in cmd.split(';'):
+            handle_cmd(cmd.strip())
+
+        return ret or ''
 
     def set_ctx(self, k: str, v):
         ctx = self.ctx
