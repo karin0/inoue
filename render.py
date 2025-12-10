@@ -163,8 +163,8 @@ def make_markup(
 
 
 def rendered_response(
-    path: str | None,
     flags: dict[str, bool] | None,
+    path: str | None,
     result: str,
     ctx: 'RenderContext',
 ) -> tuple[str, str | None, InlineKeyboardMarkup | None]:
@@ -177,7 +177,7 @@ def rendered_response(
     if ctx.get_flag('_pre', True):
         result, parse_mode = pre_block(result)
 
-    return truncate_text(result), parse_mode, make_markup(path, ctx, flags)
+    return result, parse_mode, make_markup(path, ctx, flags)
 
 
 def render_text(
@@ -192,7 +192,7 @@ def render_text(
     if path is None and len(text) + 2 < InlineKeyboardButton.MAX_CALLBACK_DATA:
         path = '`' + text
 
-    return rendered_response(path, flags, result, ctx)
+    return rendered_response(flags, path, result, ctx)
 
 
 async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
@@ -214,7 +214,7 @@ async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
 
     path = f'#{msg.message_id}'
     db['r-' + path] = text
-    return await reply_text(msg, *render_text(text, path=path))
+    return await reply_text(msg, *render_text(text, path=path), allow_not_modified=True)
 
 
 preview_cache = {}
@@ -222,12 +222,10 @@ preview_cache = {}
 
 async def handle_render_group(msg: Message, origin_id: int):
     if cache := preview_cache.pop(origin_id, None):
-        doc_name, rendered, ctx = cache
+        doc_name = cache[0]
         log.info('Doc in group: %s -> %s %s', msg.id, origin_id, doc_name)
-        args = rendered_response(doc_name, None, rendered, ctx)
+        args = rendered_response(None, *cache)
         await reply_text(msg, *args, allow_not_modified=True)
-    else:
-        log.warning('No doc cache for group: %s -> %s', msg.id, origin_id)
 
     if left := tuple((id, name) for id, (name, *_) in preview_cache.items()):
         log.warning('Preview cache not empty: %s', left)
@@ -404,7 +402,9 @@ class RenderContext:
 
         # Conditional: {cond ? true-directive : false-directive} (false part optional)
         # Omit `?=` which is handled inside directives and cannot occur in conditions
-        if (p := cmd.find('?', 1)) >= 0 and p + 1 < len(cmd) and cmd[p + 1] != '=':
+        if in_directive := (
+            (p := cmd.find('?', 1)) >= 0 and p + 1 < len(cmd) and cmd[p + 1] != '='
+        ):
             val = self.evaluate(cmd[:p].strip(), in_directive=False)
             test = val and val != '0'
 
@@ -416,10 +416,6 @@ class RenderContext:
                 cmd = cmd[p + 1 :].strip()
             else:
                 return ''
-
-            in_directive = True
-        else:
-            in_directive = False
 
         for cmd in cmd.split(';'):
             cmd: str = cmd.strip()
