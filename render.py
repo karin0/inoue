@@ -187,7 +187,9 @@ def render_text(
     flags: dict[str, bool] | None = None,
     path: str | None = None,
 ) -> tuple[str, str | None, InlineKeyboardMarkup | None]:
-    ctx = RenderContext(dict(flags) if flags is not None else {}, this_doc=(None, text))
+    # Real docs don't need `this_doc`, and we don't know their IDs here.
+    this_doc = None if path and path[0] == ':' else (None, text)
+    ctx = RenderContext(dict(flags) if flags is not None else {}, this_doc=this_doc)
     result = ctx.render(text)
     log.info('rendered %d -> %d', len(text), len(result))
 
