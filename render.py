@@ -272,8 +272,6 @@ async def handle_render_callback(
     else:
         _, data = db.get_doc(path)
 
-    log.info('render callback: %s flags %s data %s', path, flags, data)
-
     result, parse_mode, markup = render_text(data, flags, path)
 
     try:
@@ -303,13 +301,6 @@ def _flatten_keys(key1: str, parts: list[str]) -> Iterable[str]:
         yield key.strip()
 
 
-def split_assignments(cmd: str, p1: int, p2: int) -> tuple[str, Iterable[str]]:
-    key1 = cmd[:p1].strip()
-    parts = cmd[p2:].split('=')
-    val = parts.pop().strip()
-    return val, _flatten_keys(key1, parts)
-
-
 reg = re.compile(r'{(.+?)}|^([^\r\n]+?);$', re.DOTALL | re.MULTILINE)
 
 
@@ -320,6 +311,85 @@ class RenderContext:
         self.errors: list[str] = []
         self.first_doc_id: int | None = None
         self.doc_name = None
+
+    def get_ctx(self, key: str, expr: str) -> str:
+        if (val := self.ctx.get(key)) is None:
+            self.errors.append('undefined: ' + expr)
+            return ''
+
+        return str(val)
+
+    # Evaluate expression to value (str)
+    def evaluate(self, expr: str, *, in_directive: bool = True) -> str:
+        # Empty
+        if not (expr := expr.strip()):
+            return ''
+
+        # Literal: {`raw}
+        if expr[0] == '`':
+            return expr[1:]
+
+        if len(expr) >= 2:
+            # Script: {"1 + 1"}
+            if expr[0] == expr[-1] == '\"':
+                expr = expr[1:-1].strip()
+                try:
+                    v = simple_eval(expr, names=self.ctx.clone())
+                except Exception as e:
+                    self.errors.append(f'evaluation: {expr}: {type(e).__name__}: {e}')
+                    v = ''
+                else:
+                    log.debug('evaluated script: %s -> %s', expr, v)
+                return str(v)
+
+            # Literal: {'raw'}
+            if expr[0] == expr[-1] == '\'':
+                return expr[1:-1]
+
+        # Db doc get: {:name} or {*name}
+        if expr[0] == ':' or expr[0] == '*':
+            key = expr[1:].strip()
+            vis = self.vis
+
+            if key in vis:
+                self.errors.append('circular: ' + expr)
+                return ''
+
+            if doc_row := db.get_doc(key):
+                doc_id, doc = doc_row
+            else:
+                self.errors.append('undefined: ' + expr)
+                return ''
+
+            if self.first_doc_id is None:
+                self.first_doc_id = doc_id
+
+            vis.add(key)
+            r = self.render(doc, top=False)
+            vis.remove(key)
+            return r
+
+        # Context equality: {key=value}
+        if (p := expr.find('=', 1)) >= 0:
+            key = expr[:p].strip()
+            val = self.evaluate(expr[p + 1 :].strip())
+            return '1' if self.get_ctx(key, expr) == val else '0'
+
+        # Context get: {$key} or {key} (out of a condition directive)
+        if expr[0] == '$' or not in_directive:
+            key = expr.lstrip('$').strip()
+            return self.get_ctx(key, expr)
+
+        # Literal: {raw}
+        return expr
+
+    def split_assignments(
+        self, cmd: str, p1: int, p2: int
+    ) -> tuple[str, Iterable[str]]:
+        key1 = cmd[:p1].strip()
+        parts = cmd[p2:].split('=')
+        val = self.evaluate(parts.pop().strip())
+        return val, _flatten_keys(key1, parts)
 
     def _repl(self, m: re.Match, top: bool) -> str:
         if not ((cmd := m[1] or m[2]) and (cmd := cmd.strip())):
@@ -335,27 +405,8 @@ class RenderContext:
         # Conditional: {cond ? true-directive : false-directive} (false part optional)
         # Omit `?=` which is handled inside directives and cannot occur in conditions
         if (p := cmd.find('?', 1)) >= 0 and p + 1 < len(cmd) and cmd[p + 1] != '=':
-            cond = cmd[:p].strip()
-            if not cond:
-                errors.append('empty condition: ' + cmd)
-                test = False
-            elif cond[0] == cond[-1] == '\"':
-                # Evaluate Python expression
-                expr = cond[1:-1].strip()
-                try:
-                    v = simple_eval(expr, names=ctx.clone())
-                except Exception as e:
-                    errors.append(f'evaluation: {expr}: {type(e).__name__}: {e}')
-                    test = False
-                else:
-                    test = bool(v)
-                    log.info('evaluated condition: %s -> %s (%s)', expr, v, test)
-            elif (t := cond.find('=', 1)) >= 0:
-                key = cond[:t].strip()
-                val = cond[t + 1 :].strip()
-                test = str(ctx.get(key)) == val
-            else:
-                test = self.get_flag(cond)
+            val = self.evaluate(cmd[:p].strip(), in_directive=False)
+            test = val and val != '0'
 
             # This overrides doc expansion like `? :<doc>`, where we have to
             # use `*<doc>` instead.
@@ -365,8 +416,10 @@ class RenderContext:
                 cmd = cmd[p + 1 :].strip()
             else:
                 return ''
+
+            in_directive = True
         else:
-            cond = None
+            in_directive = False
 
         for cmd in cmd.split(';'):
             cmd: str = cmd.strip()
@@ -392,21 +445,21 @@ class RenderContext:
             # b. Does not interrupt the natural order of flags detected in markup
             # {key1:=key2=...=value} affects all keys
             elif (p := cmd.find(':=', 1)) >= 0:
-                val, keys = split_assignments(cmd, p, p + 2)
+                val, keys = self.split_assignments(cmd, p, p + 2)
                 for key in keys:
                     ctx.setdefault_override(key, val)
 
             # Context set if empty: {key?=value}
             # {key1?=key2=...=value} sets all keys to value if empty
             elif (p := cmd.find('?=', 1)) >= 0:
-                val, keys = split_assignments(cmd, p, p + 2)
+                val, keys = self.split_assignments(cmd, p, p + 2)
                 for key in keys:
                     ctx.setdefault(key, val)
 
             # Context set: {key=value}
             # {key1=key2=...=value} sets all keys to value
             elif (p := cmd.find('=', 1)) >= 0:
-                val, keys = split_assignments(cmd, p, p + 1)
+                val, keys = self.split_assignments(cmd, p, p + 1)
                 for key in keys:
                     ctx[key] = val
 
@@ -440,49 +493,14 @@ class RenderContext:
                 val1 = ctx.get(key1)
                 val2 = ctx.get(key2)
 
-                self._ctx_set(key1, val2)
-                self._ctx_set(key2, val1)
-
-            # Db doc get: {:name} or {*name}
-            elif cmd[0] == ':' or cmd[0] == '*':
-                key = cmd[1:].strip()
-                vis = self.vis
-
-                if key in vis:
-                    errors.append('circular: ' + cmd)
-                    return ''
-
-                if doc_row := db.get_doc(key):
-                    doc_id, doc = doc_row
-                else:
-                    errors.append('undefined: ' + cmd)
-                    return ''
-
-                if self.first_doc_id is None:
-                    self.first_doc_id = doc_id
-
-                vis.add(key)
-                r = self.render(doc, top=False)
-                vis.remove(key)
-                return r
-
-            # Context get: {$key} or {key} (w/o condition)
-            elif cmd[0] == '$' or not cond:
-                key = cmd.lstrip('$').strip()
-
-                if (val := ctx.get(key)) is None:
-                    errors.append('undefined: ' + cmd)
-                    return ''
-
-                return str(val)
-
-            # Literal: {raw} (when condition)
+                self.set_ctx(key1, val2)
+                self.set_ctx(key2, val1)
             else:
-                return cmd
+                return self.evaluate(cmd, in_directive=in_directive)
 
         return ''
 
-    def _ctx_set(self, k, v):
+    def set_ctx(self, k: str, v):
         ctx = self.ctx
         if v is None:
             if k in ctx:
