@@ -80,10 +80,16 @@ class DataStore:
 
         return row
 
-    def __getitem__(self, key: str) -> str | None:
+    def get(self, key: str, default: str | None = None) -> str | None:
         cursor = self.conn.execute('SELECT value FROM KV WHERE key = ?;', (key,))
         if row := cursor.fetchone():
             return row[0]
+        return default
+
+    def __getitem__(self, key: str) -> str | None:
+        if value := self.get(key):
+            return value
+        raise KeyError(key)
 
     def __setitem__(self, key: str, value: str):
         with self.conn:

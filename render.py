@@ -87,12 +87,15 @@ class OverriddenDict(UserDict):
 
 
 def make_markup(
-    text: str, ctx: 'RenderContext', state: dict[str, bool] | None
+    path: str | None, ctx: 'RenderContext', state: dict[str, bool] | None
 ) -> InlineKeyboardMarkup | None:
+    if not path:
+        return None
+
     # query data: ('/'|'+' <flag-key>)* ':' <text>
     # where '/' means 0, '+' means 1
 
-    size = len(text) + 1
+    size = len(path.encode('utf-8')) + 1
     if state:
         size += sum(len(k.encode('utf-8')) for k in state.keys()) + len(state)
 
@@ -122,7 +125,7 @@ def make_markup(
 
     row = [
         InlineKeyboardButton(
-            ('⏪ ' if state else '🔄 ') + shorten(text), callback_data=':' + text
+            ('⏪ ' if state else '🔄 ') + shorten(path), callback_data=':' + path
         )
     ]
 
@@ -132,7 +135,7 @@ def make_markup(
 
         def push_button(name: str):
             data = (
-                ''.join((CALLBACK_SIGNS[v] + k) for k, v in state.items()) + ':' + text
+                ''.join((CALLBACK_SIGNS[v] + k) for k, v in state.items()) + ':' + path
             )
             row.append(InlineKeyboardButton(name, callback_data=data))
 
@@ -159,8 +162,8 @@ def make_markup(
     return InlineKeyboardMarkup(rows)
 
 
-def finalize_rendered_text(
-    text: str,
+def rendered_response(
+    path: str | None,
     flags: dict[str, bool] | None,
     result: str,
     ctx: 'RenderContext',
@@ -174,15 +177,22 @@ def finalize_rendered_text(
     if ctx.get_flag('_pre', True):
         result, parse_mode = pre_block(result)
 
-    log.info('rendered %d -> %d', len(text), len(result))
-    return truncate_text(result), parse_mode, make_markup(text, ctx, flags)
+    return truncate_text(result), parse_mode, make_markup(path, ctx, flags)
 
 
 def render_text(
-    text: str, flags: dict[str, bool] | None = None
+    text: str,
+    flags: dict[str, bool] | None = None,
+    path: str | None = None,
 ) -> tuple[str, str | None, InlineKeyboardMarkup | None]:
     ctx = RenderContext({k: '01'[v] for k, v in flags.items()} if flags else {})
-    return finalize_rendered_text(text, flags, ctx.render(text), ctx)
+    result = ctx.render(text)
+    log.info('rendered %d -> %d', len(text), len(result))
+
+    if path is None and len(text) + 2 < InlineKeyboardButton.MAX_CALLBACK_DATA:
+        path = '`' + text
+
+    return rendered_response(path, flags, result, ctx)
 
 
 async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
@@ -202,7 +212,9 @@ async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
     else:
         return await reply_text(msg, 'Specify text or reply to a message to render.')
 
-    return await reply_text(msg, *render_text(text))
+    path = f'#{msg.message_id}'
+    db['r-' + path] = text
+    return await reply_text(msg, *render_text(text, path=path))
 
 
 preview_cache = {}
@@ -210,13 +222,14 @@ preview_cache = {}
 
 async def handle_render_group(msg: Message, origin_id: int):
     if cache := preview_cache.pop(origin_id, None):
-        doc_name, args = cache
+        doc_name, rendered, ctx = cache
         log.info('Doc in group: %s -> %s %s', msg.id, origin_id, doc_name)
+        args = rendered_response(doc_name, None, rendered, ctx)
         await reply_text(msg, *args, allow_not_modified=True)
     else:
         log.warning('No doc cache for group: %s -> %s', msg.id, origin_id)
 
-    if left := tuple((id, name) for id, (name, _) in preview_cache.items()):
+    if left := tuple((id, name) for id, (name, *_) in preview_cache.items()):
         log.warning('Preview cache not empty: %s', left)
 
 
@@ -249,7 +262,19 @@ async def handle_render_callback(
         flags[key] = sign == CALLBACK_SIGNS[True]
         i = j
 
-    result, parse_mode, markup = render_text(data[i + 1 :], flags)
+    if not (path := data[i + 1 :]):
+        raise ValueError('empty path in render callback')
+
+    if path[0] == '`':
+        data = path[1:]
+    elif path[0] == '#':
+        data = db['r-' + path]
+    else:
+        _, data = db.get_doc(path)
+
+    log.info('render callback: %s flags %s data %s', path, flags, data)
+
+    result, parse_mode, markup = render_text(data, flags, path)
 
     try:
         if update.callback_query.inline_message_id:
@@ -294,12 +319,15 @@ class RenderContext:
         self.vis: set[str] = set()
         self.errors: list[str] = []
         self.first_doc_id: int | None = None
-        self.first_doc_id_is_implicit: bool = False
         self.doc_name = None
 
     def _repl(self, m: re.Match, top: bool) -> str:
-        if not (cmd := m[1] or m[2]):
+        if not ((cmd := m[1] or m[2]) and (cmd := cmd.strip())):
             return m[0]
+
+        # Comment
+        if cmd[0] == '#':
+            return ''
 
         ctx = self.ctx
         errors = self.errors
@@ -329,8 +357,9 @@ class RenderContext:
             else:
                 test = self.get_flag(cond)
 
-            # Prefer doc expansion for ?:<doc>
-            if (q := cmd.find(':', p + 2)) != -1:
+            # This overrides doc expansion like `? :<doc>`, where we have to
+            # use `*<doc>` instead.
+            if (q := cmd.find(':', p + 1)) != -1:
                 cmd = cmd[p + 1 : q].strip() if test else cmd[q + 1 :].strip()
             elif test:
                 cmd = cmd[p + 1 :].strip()
@@ -414,8 +443,7 @@ class RenderContext:
                 self._ctx_set(key1, val2)
                 self._ctx_set(key2, val1)
 
-            # Db doc get: {:name}
-            # Db doc implicit get: {*name} (can be overridden as self.first_doc_id)
+            # Db doc get: {:name} or {*name}
             elif cmd[0] == ':' or cmd[0] == '*':
                 key = cmd[1:].strip()
                 vis = self.vis
@@ -430,9 +458,8 @@ class RenderContext:
                     errors.append('undefined: ' + cmd)
                     return ''
 
-                if self.first_doc_id is None or self.first_doc_id_is_implicit:
+                if self.first_doc_id is None:
                     self.first_doc_id = doc_id
-                    self.first_doc_id_is_implicit = cmd[0] == '*'
 
                 vis.add(key)
                 r = self.render(doc, top=False)
@@ -508,9 +535,7 @@ async def handle_render_doc(msg: Message):
     rendered = ctx.render(text)
 
     if name := ctx.doc_name:
-        args = finalize_rendered_text(f'*{name};', None, rendered, ctx)
-        preview_cache[id] = (name, args)
-
+        preview_cache[id] = (name, rendered, ctx)
         old_by_id, old_by_name = db.save_doc(id, name, text)
 
         action = 'new doc:'

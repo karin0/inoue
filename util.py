@@ -215,7 +215,7 @@ async def reply_text(
         log.debug('Sending new response: %s -> %s', key, val)
         return resp
 
-    resp_msg_id = db[key]
+    resp_msg_id = db.get(key)
 
     if resp_msg_id is None:
         return await _do_reply_text()
