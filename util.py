@@ -190,7 +190,7 @@ async def reply_text(
     *,
     entities: Sequence[MessageEntity] | None = None,
     allow_not_modified: bool = False,
-) -> Message:
+) -> Message | None:
     m = get_msg(update)
     if m.chat_id == USER_ID:
         chat_kind = 'u'
@@ -215,9 +215,7 @@ async def reply_text(
         log.debug('Sending new response: %s -> %s', key, val)
         return resp
 
-    resp_msg_id = db.get(key)
-
-    if resp_msg_id is None:
+    if not (resp_msg_id := db.get(key)):
         return await _do_reply_text()
 
     resp_msg_id = int(resp_msg_id)
