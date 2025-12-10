@@ -1,7 +1,7 @@
 import re
 import asyncio
 
-from typing import Callable
+from typing import Any, Iterable, Callable
 from collections import UserDict
 
 from simpleeval import simple_eval
@@ -35,13 +35,16 @@ from db import db
 CALLBACK_SIGNS = '/+'
 ALL_CALLBACK_SIGNS = frozenset('/+:#`')
 
+# Allowed types for context values, as allowed by `simpleeval` by default (except None).
+type Value = str | int | float | bool
+
 
 class OverriddenDict(UserDict):
-    def __init__(self, overrides: dict[str, str]):
+    def __init__(self, overrides: dict[str, Value]):
         super().__init__()
         self.overrides = overrides
 
-    def __getitem__(self, key: str) -> str:
+    def __getitem__(self, key: str) -> Value:
         if (v := self.overrides.get(key)) is not None:
             return v
         return self.data[key]
@@ -50,7 +53,7 @@ class OverriddenDict(UserDict):
     def __contains__(self, key: str) -> bool:
         return key in self.overrides or key in self.data
 
-    def setdefault(self, key: str, default: str):
+    def setdefault(self, key: str, default: Value) -> Value:
         # For `?=` operator.
         #
         # We always set the default in the underlying dict, even if the value
@@ -63,7 +66,7 @@ class OverriddenDict(UserDict):
             return r
         return r0
 
-    def setdefault_override(self, key: str, value: str) -> str:
+    def setdefault_override(self, key: str, value: Value) -> Value:
         # For `:=` operator.
         #
         # This only affects the `overrides` dict, which has higher priority than
@@ -80,7 +83,7 @@ class OverriddenDict(UserDict):
         new.data = self.data.copy()
         return new
 
-    def finalize(self):
+    def finalize(self) -> Iterable[tuple[str, Value]]:
         # Keys from the underlying dict are yielded first, in their natural order.
         r = self.data
         r.update(self.overrides)
@@ -105,9 +108,9 @@ def make_markup(
 
     flags = {}
     for k, v in ctx.ctx.finalize():
-        if v == '0':
+        if v == '0' or v == 0:  # This covers `False` as well.
             v = False
-        elif v == '1':
+        elif v == '1' or v == 1:
             v = True
         else:
             continue
@@ -184,8 +187,7 @@ def render_text(
     flags: dict[str, bool] | None = None,
     path: str | None = None,
 ) -> tuple[str, str | None, InlineKeyboardMarkup | None]:
-    ctx = {k: '01'[v] for k, v in flags.items()} if flags else {}
-    ctx = RenderContext(ctx, this_doc=(None, text))
+    ctx = RenderContext(dict(flags) if flags is not None else {}, this_doc=(None, text))
     result = ctx.render(text)
     log.info('rendered %d -> %d', len(text), len(result))
 
@@ -301,7 +303,10 @@ MAX_DEPTH = 20
 
 class RenderContext:
     def __init__(
-        self, overrides: dict[str], *, this_doc: tuple[int | None, str] | None = None
+        self,
+        overrides: dict[str, Value],
+        *,
+        this_doc: tuple[int | None, str] | None = None,
     ):
         self.ctx = OverriddenDict(overrides)
         self.this_doc = this_doc
@@ -310,16 +315,18 @@ class RenderContext:
         self.first_doc_id: int | None = None
         self.doc_name: str | None = None
 
-    def get_ctx(self, key: str, expr: str) -> str:
+    def get_ctx(self, key: str, expr: str) -> Value:
         if (val := self.ctx.get(key)) is None:
             self.errors.append('undefined: ' + expr)
             return ''
 
-        return str(val)
+        return val
 
-    # Evaluate expression to a value (str).
+    # Evaluate expression to a value.
     # This should not have side effects on `ctx`.
-    def evaluate(self, expr: str, *, in_directive: bool = True) -> str:
+    def evaluate(
+        self, expr: str, *, in_directive: bool = True, as_str: bool = False
+    ) -> Value:
         # Empty
         if not (expr := expr.strip()):
             return ''
@@ -339,7 +346,12 @@ class RenderContext:
                     v = ''
                 else:
                     log.debug('evaluated script: %s -> %s', expr, v)
-                return str(v)
+                    # Ensure a `Value`.
+                    if v is None:
+                        return ''
+
+                # Not necessarily str!
+                return str(v) if as_str else v
 
             # Literal: {'raw'}
             if expr[0] == expr[-1] == '\'':
@@ -372,22 +384,23 @@ class RenderContext:
             self.depth -= 1
             return r
 
-        # Context equality: {key=value}
+        # Context equality: {key=value} (by string representation)
         if (p := expr.find('=', 1)) >= 0:
             key = expr[:p].strip()
-            val = self.evaluate(expr[p + 1 :].strip())
-            return '1' if self.get_ctx(key, expr) == val else '0'
+            val = self.evaluate(expr[p + 1 :].strip(), as_str=True)
+            return '1' if str(self.get_ctx(key, expr)) == val else '0'
 
         # Context get: {$key} or {key} (out of a condition directive)
         if expr[0] == '$' or not in_directive:
             key = expr.lstrip('$').strip()
-            return self.get_ctx(key, expr)
+            val = self.get_ctx(key, expr)
+            return str(val) if as_str else val
 
         # Literal: {raw}
         return expr
 
     def _do_assignments(
-        self, cmd: str, p1: int, p2: int, set: Callable[[str, str], None]
+        self, cmd: str, p1: int, p2: int, set: Callable[[str, Value], Any]
     ):
         key1 = cmd[:p1].strip()
         parts = cmd[p2:].split('=')
@@ -413,8 +426,9 @@ class RenderContext:
         if in_directive := (
             (p := cmd.find('?', 1)) >= 0 and p + 1 < len(cmd) and cmd[p + 1] != '='
         ):
+            # Not `as_str`, so `False` is still treated falsey.
             val = self.evaluate(cmd[:p].strip(), in_directive=False)
-            test = val and val != '0' and val != 'False'
+            test = val and val != '0'
 
             # This overrides doc expansion like `? :<doc>`, where we have to
             # use `*<doc>` instead.
@@ -517,7 +531,7 @@ class RenderContext:
 
             # Only the first expression is evaluated. Subsequent ones are discarded.
             elif ret is None:
-                ret = self.evaluate(cmd, in_directive=in_directive)
+                ret = self.evaluate(cmd, in_directive=in_directive, as_str=True)
             else:
                 errors.append('redundant expression: ' + cmd)
 
@@ -526,13 +540,11 @@ class RenderContext:
 
         return ret or ''
 
-    def set_ctx(self, k: str, v):
-        ctx = self.ctx
+    def set_ctx(self, k: str, v: Value | None):
         if v is None:
-            if k in ctx:
-                del ctx[k]
+            self.ctx.pop(k, None)
         else:
-            ctx[k] = v
+            self.ctx[k] = v
 
     def render(self, text: str) -> str:
         return reg.sub(self._repl, text).strip()
