@@ -184,7 +184,8 @@ def render_text(
     flags: dict[str, bool] | None = None,
     path: str | None = None,
 ) -> tuple[str, str | None, InlineKeyboardMarkup | None]:
-    ctx = RenderContext({k: '01'[v] for k, v in flags.items()} if flags else {})
+    ctx = {k: '01'[v] for k, v in flags.items()} if flags else {}
+    ctx = RenderContext(ctx, this_doc=(None, text))
     result = ctx.render(text)
     log.info('rendered %d -> %d', len(text), len(result))
 
@@ -294,16 +295,20 @@ async def handle_render_callback(
 
 
 reg = re.compile(r'{(.+?)}|^([^\r\n]+?);$', re.DOTALL | re.MULTILINE)
-all_unary = tuple('+/$:*`')
+all_unary = frozenset('+/$:*`')
+MAX_DEPTH = 20
 
 
 class RenderContext:
-    def __init__(self, overrides: dict[str]):
+    def __init__(
+        self, overrides: dict[str], *, this_doc: tuple[int | None, str] | None = None
+    ):
         self.ctx = OverriddenDict(overrides)
-        self.vis: set[str] = set()
+        self.this_doc = this_doc
+        self.depth: int = 0
         self.errors: list[str] = []
         self.first_doc_id: int | None = None
-        self.doc_name = None
+        self.doc_name: str | None = None
 
     def get_ctx(self, key: str, expr: str) -> str:
         if (val := self.ctx.get(key)) is None:
@@ -342,15 +347,19 @@ class RenderContext:
 
         # Db doc get: {:name} or {*name}
         if expr[0] == ':' or expr[0] == '*':
-            key = expr[1:].strip()
-            vis = self.vis
-
-            if key in vis:
-                self.errors.append('circular: ' + expr)
+            # Recursion is allowed up to a limit.
+            if self.depth >= MAX_DEPTH:
+                self.errors.append('max depth exceeded: ' + expr)
                 return ''
 
-            if doc_row := db.get_doc(key):
-                doc_id, doc = doc_row
+            key = expr[1:].strip()
+
+            # Allow self-reference in `handle_render` and `handle_render_doc`,
+            # where the doc is not saved yet.
+            # Note that `doc_id` can be None in `handle_render`, where the
+            # `doc_name` is transient and only used for recursion.
+            if row := self.doc_name == key and self.this_doc or db.get_doc(key):
+                doc_id, doc = row
             else:
                 self.errors.append('undefined: ' + expr)
                 return ''
@@ -358,9 +367,9 @@ class RenderContext:
             if self.first_doc_id is None:
                 self.first_doc_id = doc_id
 
-            vis.add(key)
-            r = self.render(doc, top=False)
-            vis.remove(key)
+            self.depth += 1
+            r = self.render(doc)
+            self.depth -= 1
             return r
 
         # Context equality: {key=value}
@@ -387,7 +396,7 @@ class RenderContext:
         for key in parts:
             set(key.strip(), val)
 
-    def _repl(self, m: re.Match, top: bool) -> str:
+    def _repl(self, m: re.Match) -> str:
         cmd: str = m[1] or m[2]
         if not (cmd and (cmd := cmd.strip())):
             return m[0]
@@ -405,7 +414,7 @@ class RenderContext:
             (p := cmd.find('?', 1)) >= 0 and p + 1 < len(cmd) and cmd[p + 1] != '='
         ):
             val = self.evaluate(cmd[:p].strip(), in_directive=False)
-            test = val and val != '0'
+            test = val and val != '0' and val != 'False'
 
             # This overrides doc expansion like `? :<doc>`, where we have to
             # use `*<doc>` instead.
@@ -434,7 +443,7 @@ class RenderContext:
 
             # Db name set: {name:}
             elif cmd[-1] == ':':
-                if top:
+                if self.depth == 0:
                     if self.doc_name:
                         errors.append('doc name redefined: ' + cmd)
                     else:
@@ -525,8 +534,8 @@ class RenderContext:
         else:
             ctx[k] = v
 
-    def render(self, text: str, top: bool = True) -> str:
-        return reg.sub(lambda m: self._repl(m, top), text).strip()
+    def render(self, text: str) -> str:
+        return reg.sub(self._repl, text).strip()
 
     def get_flag(self, key: str, default: bool = False) -> bool:
         v = self.ctx.get(key, default)
@@ -566,7 +575,7 @@ async def handle_render_doc(msg: Message):
     id = msg.message_id
     info = []
 
-    ctx = RenderContext({})
+    ctx = RenderContext({}, this_doc=(id, text))
     rendered = ctx.render(text)
 
     if name := ctx.doc_name:
