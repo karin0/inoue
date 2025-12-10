@@ -303,6 +303,12 @@ all_unary = frozenset('+/$:*`')
 MAX_DEPTH = 20
 
 
+def to_str(v: Value) -> str:
+    if isinstance(v, bool):
+        return '1' if v else '0'
+    return str(v)
+
+
 class RenderContext:
     def __init__(
         self,
@@ -317,12 +323,12 @@ class RenderContext:
         self.first_doc_id: int | None = None
         self.doc_name: str | None = None
 
-    def get_ctx(self, key: str, expr: str) -> Value:
+    def get_ctx(self, key: str, expr: str, *, as_str: bool = False) -> Value:
         if (val := self.ctx.get(key)) is None:
             self.errors.append('undefined: ' + expr)
             return ''
 
-        return val
+        return to_str(val) if as_str else val
 
     # Evaluate expression to a value.
     # This should not have side effects on `ctx`.
@@ -353,7 +359,7 @@ class RenderContext:
                         return ''
 
                 # Not necessarily str!
-                return str(v) if as_str else v
+                return to_str(v) if as_str else v
 
             # Literal: {'raw'}
             if expr[0] == expr[-1] == '\'':
@@ -390,13 +396,14 @@ class RenderContext:
         if (p := expr.find('=', 1)) >= 0:
             key = expr[:p].strip()
             val = self.evaluate(expr[p + 1 :].strip(), as_str=True)
-            return '1' if str(self.get_ctx(key, expr)) == val else '0'
+            now = self.get_ctx(key, expr, as_str=True)
+            return '1' if now == val else '0'
 
         # Context get: {$key} or {key} (out of a condition directive)
         if expr[0] == '$' or not in_directive:
             key = expr.lstrip('$').strip()
-            val = self.get_ctx(key, expr)
-            return str(val) if as_str else val
+            val = self.get_ctx(key, expr, as_str=as_str)
+            return val
 
         # Literal: {raw}
         return expr
