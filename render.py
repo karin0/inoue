@@ -14,6 +14,7 @@ from telegram.error import BadRequest
 from telegram.constants import ReactionEmoji
 
 from util import (
+    MAX_TEXT_LENGTH,
     log,
     get_msg_arg,
     get_msg_url,
@@ -29,6 +30,10 @@ from render_core import RenderContext
 
 CALLBACK_SIGNS = '/+'
 ALL_CALLBACK_SIGNS = frozenset('/+:#`')
+
+
+def encode_flags(flags: dict[str, bool]) -> str:
+    return ''.join((CALLBACK_SIGNS[v] + k) for k, v in flags.items())
 
 
 def make_markup(
@@ -79,7 +84,7 @@ def make_markup(
             state = {}
 
         def push_button(name: str):
-            data = ''.join((CALLBACK_SIGNS[v] + k) for k, v in state.items()) + path
+            data = encode_flags(state) + path
             row.append(InlineKeyboardButton(name, callback_data=data))
 
         for k, v in flags.items():
@@ -117,8 +122,21 @@ def rendered_response(
 
     result = truncate_text(result)
     parse_mode = None
+
     if ctx.get_flag('_pre', True):
         result, parse_mode = pre_block(result)
+        if parse_mode:
+            if flags:
+                suffix = escape(encode_flags(flags))
+                if len(result) + len(suffix) <= MAX_TEXT_LENGTH:
+                    result += suffix
+
+            if footer := ctx.ctx.get('_footer'):
+                suffix = escape(footer)
+                if flags:
+                    suffix = ' ' + suffix
+                if len(result) + len(suffix) <= MAX_TEXT_LENGTH:
+                    result += suffix
 
     return result, parse_mode, make_markup(path, ctx, flags)
 
