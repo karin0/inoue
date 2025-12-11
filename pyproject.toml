@@ -1,0 +1,11 @@
+[project]
+name = "inoue"
+version = "0.1.0"
+authors = [{ name = "karin0", email = "karin0@gmx.com" }]
+requires-python = ">=3.12"
+dependencies = [
+    "lark>=1.3.1",
+    "prettytable>=3.17.0",
+    "python-telegram-bot>=22",
+    "simpleeval>=1.0.3",
+]

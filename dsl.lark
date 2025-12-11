@@ -1,0 +1,75 @@
+start: code_block
+
+// Block
+
+?code_block: "{" block_inner "}"
+
+// Statements, or document definition (cannot be conditional)
+// LIMIT: doc_def must be the first statement in the block.
+
+!doc_def: iden ":"
+!block_inner: doc_def | ([doc_def ";"] stmt_list)
+
+stmt_list: stmt? [";" stmt_list]
+
+!stmt: assign
+     | unary_chain
+     | expr
+     | swap
+     | repl
+     | branch
+
+// Assignments
+
+assign_part: iden "=" (assign_part | expr?)
+
+assign: iden assign_op (assign_part | expr?)
+
+?assign_op: "="  -> assign_op_1
+          | ":=" -> assign_op_2
+          | "?=" -> assign_op_3
+
+// Other statements
+
+branch: expr? "?" stmt_list [":" stmt_list]
+
+swap: iden "^" iden
+
+flag_override: "+" iden  -> flag_set
+             | "/" iden  -> flag_unset
+
+unary_chain: flag_override+ deref?
+
+repl: iden ("|" repl_pair)+
+repl_pair: expr? "/" expr?
+
+// Expressions
+
+// LIMIT: no equality or comparison operators.
+!expr: literal
+     | deref
+     | code_block
+
+?literal: ESCAPED_STRING  -> dq_lit
+        | SQ_STRING       -> sq_lit
+        | RAW_STRING      -> raw_lit
+        | iden            -> naked_lit  // Actually either var or literal, but that breaks LALR's parsing.
+
+?iden: LITERAL
+
+deref: DEREF_OP iden
+DEREF_OP.-100: ":" | "*" | "$"
+
+// Terminals
+
+// Exclude all punctuations except '_', '-', '<', '>', '!' from naked literals.
+LITERAL.-100: /[^\"#$%&'()*+,.\/:;=?@[\\\]^`{|}~]+/
+
+// Literals starting with backtick are NOT enclosed.
+RAW_STRING: "`" /[^{};]+/
+
+SQ_STRING: /'([^'\\]|\\.)*'/
+
+%import common.ESCAPED_STRING
+%import common.WS
+%ignore WS
