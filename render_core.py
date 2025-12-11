@@ -100,6 +100,7 @@ class RenderContext:
     def evaluate(
         self, expr: str, *, in_directive: bool = True, as_str: bool = False
     ) -> Value:
+        log.debug('evaluating: %s', expr)
         # Empty
         if not (expr := expr.strip()):
             return ''
