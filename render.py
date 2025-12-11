@@ -26,7 +26,7 @@ from util import (
     do_notify,
 )
 from db import db
-from render_core import RenderContext
+from lark_core import RenderInterpreter as RenderContext
 
 CALLBACK_SIGNS = '/+'
 ALL_CALLBACK_SIGNS = frozenset('/+:#`')

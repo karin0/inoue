@@ -1,5 +1,6 @@
 import re
 import string
+import warnings
 from collections import UserDict
 from typing import Any, Callable, Iterable
 
@@ -74,6 +75,7 @@ def to_str(v: Value) -> str:
     return str(v)
 
 
+@warnings.deprecated('Use lark_core.RenderInterpreter >_<')
 class RenderContext:
     def __init__(
         self,
