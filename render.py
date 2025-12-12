@@ -145,9 +145,9 @@ def render_text(
     text: str,
     flags: dict[str, bool] | None = None,
     path: str | None = None,
+    doc_id: int | None = None,
 ) -> tuple[str, str | None, InlineKeyboardMarkup | None]:
-    # Real docs don't need `this_doc`, and we don't know their IDs here.
-    this_doc = None if path and path[0] == ':' else (None, text)
+    this_doc = (doc_id, text)
     ctx = RenderContext(dict(flags) if flags is not None else {}, this_doc=this_doc)
     result = ctx.render(text)
     log.info('rendered %d -> %d', len(text), len(result))
@@ -224,6 +224,7 @@ async def handle_render_callback(
     if path[0] == ':' and path[1] in ALL_CALLBACK_SIGNS:
         path = path[1:]
 
+    doc_id = None
     match path[0]:
         case '`':
             data = path[1:]
@@ -237,11 +238,11 @@ async def handle_render_callback(
             if row is None:
                 # TODO: report when doc deleted
                 raise ValueError('unknown doc in render callback: ' + path)
-            _, data = row
+            doc_id, data = row
         case _:
             raise ValueError('bad render callback: ' + data)
 
-    result, parse_mode, markup = render_text(data, flags, path)
+    result, parse_mode, markup = render_text(data, flags, path, doc_id=doc_id)
 
     try:
         if update.callback_query.inline_message_id:
