@@ -1,7 +1,7 @@
 import logging
 from collections import UserDict
 from contextlib import contextmanager
-from typing import Iterable, Type, TypeVar, cast
+from typing import Iterable, Sequence, Type, TypeVar, cast
 
 from simpleeval import simple_eval
 from lark import Lark, Token, Tree
@@ -451,7 +451,19 @@ class RenderInterpreter(Interpreter):
         raise RuntimeError
 
     def expr(self, tree: Tree):
-        raise RuntimeError
+        # Expression statement: {<expr>}
+        # The value is directly appended to output.
+        if isinstance(inner := tree.children[0], Tree):
+            if inner.data == 'block_inner':
+                # Flatten the nested block without capturing.
+                return self.block_inner(inner)
+            elif inner.data == 'assign':
+                # Assignment statement
+                return self._assign_stmt(inner)
+
+        val = self._expr(tree, permissive=self._branch_depth == 0, as_str=True)
+        assert isinstance(val, str), val
+        self._put(val)
 
     def _get_var(self, key: str, *, as_str: bool = False) -> Value:
         if (val := self.ctx.get(key)) is None:
@@ -472,6 +484,15 @@ class RenderInterpreter(Interpreter):
         Naked literals are treated as context vars when `permissive` is True.
         so we write {some_var}, {show_var ? 1 : 0} and {show_var ? $some_var : literal}.
         '''
+        if is_debug:
+            log.debug(
+                '[%d] _expr: %s permissive=%s as_str=%s',
+                MAX_GAS - self._gas,
+                tree,
+                permissive,
+                as_str,
+            )
+
         if self._gas <= 0:
             self._error('out of gas')
             raise Abort()
@@ -484,6 +505,9 @@ class RenderInterpreter(Interpreter):
         match ch.data:
             case 'deref':
                 return self._deref(ch, as_str=as_str)
+
+            case 'assign':
+                return self._assign_expr(ch)
 
             # Equality check: {key == val} (by string representation!)
             # `a==b` means `$a == 'b'`, and `a==$b` means `$a == $b`.
@@ -577,57 +601,40 @@ class RenderInterpreter(Interpreter):
             log.debug('Rendering doc: %s %s', key, doc_id)
             return self._render(doc)
 
-    def branch_or_assign_or_expr(self, tree: Tree):
-        branch = tree.children[1] if len(tree.children) > 1 else None
-        ch = narrow(tree.children[0], Tree)
+    # Due to LALR limitations, assignment chains have very different semantics:
+    # - In expression statements, they set context vars and return ''.
+    # - Otherwise, they check whether all the assigned vars equal the final value, and return '1' or '0'.
+    # But in both cases, the ASSIGN_OP besides the first one must be '='.
+    def _resolve_assign_chain(
+        self, tree: Tree
+    ) -> tuple[Sequence[str], str, Tree | None]:
+        keys = [_iden(tree.children[0])]
+        op = narrow(tree.children[1], Token).value
+        rest = tree.children[2] if len(tree.children) > 2 else None
+        val = None
 
-        if branch:
-            # Conditional branch: {<cond> ? true-directive : false-directive} (false part optional)
-            return self._branch(tree, ch, branch)
+        while len(tree.children) > 2 and (rest := tree.children[2]):
+            rest = narrow(rest, Tree)
+            assert rest.data == 'expr'
+            tree = rest.children[0]
+            if not (isinstance(tree, Tree) and tree.data == 'assign'):
+                val = rest
+                break
+            keys.append(_iden(tree.children[0]))
+            if narrow(tree.children[1], Token).value != '=':
+                self._error('bad assign op in chain: ' + op)
 
-        match ch.data:
-            case 'assign':
-                # Real assignments.
-                self._assign(ch)
-            case 'expr':
-                # Expression statement: {<expr>}
-                # The value is directly appended to output.
+        return keys, op, val
 
-                if (
-                    isinstance(inner := ch.children[0], Tree)
-                    and inner.data == 'block_inner'
-                ):
-                    # Flatten the nested block without capturing.
-                    self.block_inner(inner)
-                    return
+    # Conditional branch: {<cond> ? true-directive : false-directive} (false part optional)
+    def branch(self, tree: Tree):
+        cond = narrow(tree.children[0], Tree)
+        assert cond.data == 'expr'
 
-                val = self._expr(ch, permissive=self._branch_depth == 0, as_str=True)
-                assert isinstance(val, str), val
-                self._put(val)
-
-    def _branch(self, tree: Tree, cond: Tree, branch: Tree | Token):
-        match cond.data:
-            case 'expr':
-                # {<expr> ? ...}
-                val = self._expr(cond, permissive=True)
-                test = val and val != '0'
-
-            case 'assign':
-                # Equality test: {key=<val> ? ...}
-                right = cond.children[1]
-                if not isinstance(right, Tree):
-                    return self._error('condition equality must use =')
-                if right.data != 'expr':
-                    return self._error('condition equality cannot chain')
-                left = cond.children[0]
-                left_val = self._get_var(_iden(left), as_str=True)
-                right_val = self._expr(right, as_str=True)
-                test = left_val == right_val
-
-            case _:
-                raise ValueError(f'Bad branch cond: {cond}')
-
-        if not test and not (branch := tree.children[2]):
+        val = self._expr(cond, permissive=True)
+        if val and val != '0':
+            branch = tree.children[1]
+        elif not (branch := tree.children[2]):
             return
 
         to = narrow(branch, Tree)
@@ -636,72 +643,54 @@ class RenderInterpreter(Interpreter):
         self.stmt_list(to)
         self._branch_depth -= 1
 
-    def assign_part(self, tree: Tree):
-        raise RuntimeError
-
     def assign(self, tree: Tree):
         raise RuntimeError
 
-    def _assign_part(self, tree: Tree, out_keys: list[str]) -> Value:
-        key = _iden(tree.children[0])
-        out_keys.append(key)
+    # Do real assignments here.
+    def _assign_stmt(self, tree: Tree):
+        keys, op, expr = self._resolve_assign_chain(tree)
+        log.debug('Assign stmt: keys=%s op=%r expr=%s', keys, op, expr)
 
-        if len(tree.children) < 2 or (rest := tree.children[1]) is None:
-            return ''
+        match op:
+            case '=':
+                # Context set: {key=value}
+                # {key1=key2=...=value} sets all keys to value
+                f = self.ctx.__setitem__
 
-        match rest.data:
-            case 'assign_part':
-                return self._assign_part(rest, out_keys)
-            case 'expr':
-                return self._expr(rest)
-            case _:
-                raise ValueError(f'Bad assign rest: {rest}')
-
-    def _assign(self, tree: Tree):
-        rest = tree.children[-1]
-        if isinstance(rest, Token):
-            rest = None
-
-        # Context set: {key=value}
-        # {key1=key2=...=value} sets all keys to value
-        if len(tree.children) < 2:
-            # A special case: `iden = <empty expr>`.
-            f = self.ctx.__setitem__
-        elif isinstance((op := tree.children[1]), Token):
-            match op.value:
+            case '?=':
                 # Context set if empty: {key?=value}
                 # {key1?=key2=...=value} sets all keys to value if empty
-                case '?=':
-                    f = self.ctx.setdefault
+                f = self.ctx.setdefault
 
+            case ':=':
                 # Context override: {key:=value}
                 # a. Can never be overridden (except by markup buttons)
                 # b. Does not interrupt the natural order of flags detected in markup
                 # {key1:=key2=...=value} affects all keys
-                case ':=':
-                    f = self.ctx.setdefault_override
+                f = self.ctx.setdefault_override
 
-                case _:
-                    raise ValueError(f'Bad assign op: {tree}')
-        else:
-            f = self.ctx.__setitem__
+            case _:
+                raise ValueError(f'Bad assign op: {tree}')
 
-        keys = [_iden(tree.children[0])]
-
-        if rest is None:
-            val = ''
-        else:
-            match rest.data:
-                case 'assign_part':
-                    val = self._assign_part(rest, keys)
-                case 'expr':
-                    val = self._expr(rest)
-                case _:
-                    raise ValueError(f'Bad assign rest: {rest}')
-
+        val = self._expr(expr) if expr else ''
         for key in keys:
             log.debug('Assigning: %s = %r', key, val)
             f(key, val)
+
+    # Equality test: {key1=key2=...=<expr>}, but not as expression statements.
+    def _assign_expr(self, tree: Tree) -> str:
+        keys, op, expr = self._resolve_assign_chain(tree)
+        log.debug('Assign expr: keys=%s op=%r expr=%s', keys, op, expr)
+        if op != '=':
+            self._error('bad assign op in equality test: ' + op)
+
+        final_val = self._expr(expr, as_str=True)
+        for key in keys:
+            val = self._get_var(key, as_str=True)
+            if val != final_val:
+                return '0'
+
+        return '1'
 
     def _set_var(self, key: str, val: Value | None):
         if val is None:

@@ -16,22 +16,21 @@ stmt_list: stmt? [";" stmt_list]
 !stmt: unary_chain
      | swap
      | repl
-     | branch_or_assign_or_expr
+     | expr
+     | branch
 
 // Assignments
 
-assign_part: iden "=" (assign_part | expr?)
+assign: iden ASSIGN_OP expr?
 
-assign: iden ("=" | ASSIGN_OP) (assign_part | expr?)
-
-ASSIGN_OP: ":=" | "?="
+ASSIGN_OP: "=" | ":=" | "?="
 
 // Other statements
 
 // Expressions cannot be empty in conditions.
 // We have to distinguish between assignments and equality conditions in the interpreter
 // to avoid ambiguity of `=` in LALR.
-branch_or_assign_or_expr: (expr | assign) ["?" stmt_list [":" stmt_list]]
+branch: expr "?" stmt_list [":" stmt_list]
 
 swap: iden "^" iden
 
@@ -49,9 +48,13 @@ repl_pair: expr? "/" expr?
      | deref
      | code_block
      | compare
+     | assign
 
 // Even more equality!
-compare: expr "==" expr
+compare: expr _EQUAL expr
+
+// Higher than ASSIGN_OP.
+_EQUAL.10: "=="
 
 ?literal: ESCAPED_STRING  -> dq_lit
         | SQ_STRING       -> sq_lit
