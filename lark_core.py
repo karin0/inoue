@@ -307,6 +307,16 @@ class RenderInterpreter(Interpreter):
             case 'deref':
                 return self._deref(ch, as_str=as_str)
 
+            # Equality check: {key == val} (by string representation!)
+            # `a==b` means `$a == 'b'`, and `a==$b` means `$a == $b`.
+            case 'compare':
+                left = self._expr(
+                    narrow(ch.children[0], Tree), permissive=True, as_str=True
+                )
+                right = self._expr(narrow(ch.children[1], Tree), as_str=True)
+                return '1' if left == right else '0'
+
+            # Nested block: {{ ... }}
             case 'block_inner':
                 if self._depth >= MAX_DEPTH:
                     self._error('block stack overflow')

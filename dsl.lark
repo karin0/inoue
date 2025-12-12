@@ -31,7 +31,8 @@ assign: iden assign_op (assign_part | expr?)
 
 // Other statements
 
-branch: expr? "?" stmt_list [":" stmt_list]
+// Expressions cannot be empty in conditions.
+branch: expr "?" stmt_list [":" stmt_list]
 
 swap: iden "^" iden
 
@@ -49,6 +50,9 @@ repl_pair: expr? "/" expr?
 !expr: literal
      | deref
      | code_block
+     | compare
+
+compare: expr "==" expr
 
 ?literal: ESCAPED_STRING  -> dq_lit
         | SQ_STRING       -> sq_lit
