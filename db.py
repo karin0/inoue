@@ -86,7 +86,7 @@ class DataStore:
             return row[0]
         return default
 
-    def __getitem__(self, key: str) -> str | None:
+    def __getitem__(self, key: str) -> str:
         if value := self.get(key):
             return value
         raise KeyError(key)

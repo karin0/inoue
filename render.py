@@ -228,9 +228,16 @@ async def handle_render_callback(
         case '`':
             data = path[1:]
         case '#':
-            data = db['r-' + path]
+            data = db.get('r-' + path)
+            if data is None:
+                # TODO: report when cache expired
+                raise ValueError('unknown msg in render callback: ' + path)
         case ':':
-            _, data = db.get_doc(path[1:])
+            row = db.get_doc(path[1:])
+            if row is None:
+                # TODO: report when doc deleted
+                raise ValueError('unknown doc in render callback: ' + path)
+            _, data = row
         case _:
             raise ValueError('bad render callback: ' + data)
 
