@@ -516,6 +516,10 @@ class RenderInterpreter(Interpreter):
                 right = self._evaluate(ch.children[1])
                 return '1' if left == right else '0'
 
+            # Nested expression: {( ... )}
+            case 'expr':
+                return self._expr(ch, as_str=as_str)
+
             # Nested block: {{ ... }}
             case 'block_inner':
                 if self._depth >= MAX_DEPTH:

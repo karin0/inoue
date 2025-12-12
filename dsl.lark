@@ -49,6 +49,9 @@ repl_pair: expr? "/" expr?
      | code_block
      | compare
      | assign
+     | paren
+
+?paren: "(" expr ")"
 
 // Even more equality!
 compare: expr _EQUAL expr
