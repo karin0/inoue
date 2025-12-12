@@ -155,7 +155,7 @@ def _lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str]]:
             raw = False
             chunk = text[cursor + 1 : p]
             r = chunk.replace("'", r"\'")
-            trace('Raw literal:%s\n->\n%s', chunk, r)
+            trace('Raw literal:\n%s\n->\n%s', chunk, r)
             buf.append('\'')
             buf.append(r)
             buf.append('\'')
