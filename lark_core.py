@@ -8,7 +8,7 @@ from lark.visitors import Interpreter
 from lark.exceptions import LarkError
 
 from db import db
-from util import log
+from util import log, notify, shorten
 from render_core import OverriddenDict, Value, MAX_DEPTH, to_str
 
 is_debug = log.isEnabledFor(logging.DEBUG)
@@ -16,17 +16,10 @@ is_debug = log.isEnabledFor(logging.DEBUG)
 parser = Lark.open('dsl.lark', parser='lalr')
 
 
-class LineBreak:
-    pass
-
-
-LINE_BREAK = LineBreak()
-
-
 # First stage: find all "block lines" - lines that ends with `;`, which are treated
 # like a `block_inner`.
 # For the other lines, we lex them again to find the real blocks `{ ... }` inside.
-def lex(text: str) -> Iterator[tuple[bool, str | LineBreak]]:
+def lex(text: str) -> Iterator[tuple[bool, str | None]]:
     lines = []
     for line in text.splitlines(keepends=True):
         if line.rstrip().endswith(';'):
@@ -36,7 +29,7 @@ def lex(text: str) -> Iterator[tuple[bool, str | LineBreak]]:
             # Only `_lex` handles comments.
             yield from _lex('{' + line + '}')
             # Hint the implicit line break after the naked block.
-            yield False, LINE_BREAK
+            yield False, None
         else:
             lines.append(line)
 
@@ -146,6 +139,7 @@ class RenderInterpreter(Interpreter):
         aborted = False
         for is_block, fragment in lex(text):
             if is_block:
+                assert fragment is not None
                 if aborted:
                     log.debug('Skipping aborted block: %r', fragment)
                     continue
@@ -154,8 +148,7 @@ class RenderInterpreter(Interpreter):
                 try:
                     tree = parser.parse(fragment)
                 except LarkError as e:
-                    log.exception('Parse error: %s: %s', type(e).__name__, e)
-                    self._error(f'parse: {type(e).__name__}: {e}')
+                    self._error(f'parse: {fragment!r}: {type(e).__name__}: {e}')
                     continue
 
                 if is_debug:
@@ -165,7 +158,8 @@ class RenderInterpreter(Interpreter):
                 try:
                     self.visit(tree)
                 except Abort:
-                    log.info('Parsing aborted')
+                    with notify.suppress():
+                        log.error('Parsing aborted at fragment: %s', shorten(fragment))
                     aborted = True
                     continue
 
@@ -175,7 +169,7 @@ class RenderInterpreter(Interpreter):
                         break
             else:
                 log.debug('Appending text fragment: %r', fragment)
-                if fragment is LINE_BREAK:
+                if fragment is None:
                     # Merge consecutive line breaks from naked block lines without outputs.
                     if self._dirty:
                         self._output.append('\n')
@@ -338,7 +332,7 @@ class RenderInterpreter(Interpreter):
                 try:
                     v = simple_eval(expr, names=self.ctx.clone())
                 except Exception as e:
-                    self._error(f'evaluate: {type(e).__name__}: {e}')
+                    self._error(f'evaluate: {expr!r}: {type(e).__name__}: {e}')
                     v = ''
                 else:
                     log.debug('evaluated script: %s -> %s', expr, v)
@@ -358,12 +352,12 @@ class RenderInterpreter(Interpreter):
                     .replace('\\\\', '\\')
                 )
 
-            # Raw literal: {`raw text}
+            # Raw literal: {`raw text until the next statement}
             case 'raw_lit':
                 return narrow(ch.children[0], Token).value[1:]
 
             # Ambiguous naked literal / var: {some_name}
-            # Treated as var only if out of any branch directives.
+            # Treated as var only if `permissive` is True and contains no whitespace.
             case 'naked_lit':
                 key = _iden(ch.children[0])
                 if permissive and not any(c.isspace() for c in key):
@@ -390,7 +384,7 @@ class RenderInterpreter(Interpreter):
         if row := self.doc_name == key and self.this_doc or db.get_doc(key):
             doc_id, doc = row
         else:
-            self._error('undefined doc')
+            self._error('undefined doc: ' + key)
             return ''
 
         if self.first_doc_id is None:
