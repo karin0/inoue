@@ -281,11 +281,13 @@ class RenderInterpreter(Interpreter):
         self.first_doc_id: int | None = None
 
         self._output: list[str] = []
-        self._tree: Tree | None = None
         self._depth: int = 0
         self._branch_depth: int = 0
         self._dirty: bool = False
+
+        self._tree: Tree | None = None
         self._gas: int = MAX_GAS
+        self._aborted: bool = False
 
     def _put(self, text: str):
         if text:
@@ -294,7 +296,6 @@ class RenderInterpreter(Interpreter):
             self._output.append(text)
 
     def _render(self, text: str, strip: bool = False) -> str:
-        aborted = False
         for is_block, fragment in lex(text):
             if lex_errors:
                 self.errors.extend(lex_errors)
@@ -302,7 +303,7 @@ class RenderInterpreter(Interpreter):
 
             if is_block:
                 assert fragment is not None
-                if aborted:
+                if self._aborted:
                     log.debug('Skipping aborted block: %r', fragment)
                     continue
 
@@ -321,7 +322,7 @@ class RenderInterpreter(Interpreter):
                 except Abort:
                     with notify.suppress():
                         log.error('Parsing aborted at fragment: %s', shorten(fragment))
-                    aborted = True
+                    self._aborted = True
                     continue
             else:
                 log.debug('Appending text fragment: %r', fragment)
@@ -474,8 +475,8 @@ class RenderInterpreter(Interpreter):
         if self._gas <= 0:
             self._error('out of gas')
             raise Abort()
-
         self._gas -= 1
+
         if not tree:
             return ''
         assert len(tree.children) == 1
