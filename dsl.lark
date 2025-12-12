@@ -1,14 +1,15 @@
-start: code_block
+start: block_inner
 
 // Block
 
 ?code_block: "{" block_inner "}"
 
-// Statements, or document definition (cannot be conditional)
 // LIMIT: doc_def must be the first statement in the block.
+!block_inner: doc_def | ([doc_def ";"] stmt_list)
+
+// Statements, or document definition (cannot be conditional)
 
 !doc_def: iden ":"
-!block_inner: doc_def | ([doc_def ";"] stmt_list)
 
 stmt_list: stmt? [";" stmt_list]
 
@@ -46,12 +47,12 @@ repl_pair: expr? "/" expr?
 
 // Expressions
 
-// LIMIT: no equality or comparison operators.
 !expr: literal
      | deref
      | code_block
      | compare
 
+// Python lexer fixes `=` in conditions to `==` when possible.
 compare: expr "==" expr
 
 ?literal: ESCAPED_STRING  -> dq_lit

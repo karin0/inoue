@@ -1,3 +1,4 @@
+import re
 import logging
 from contextlib import contextmanager
 from typing import Iterator, Type, TypeVar, cast
@@ -16,19 +17,32 @@ is_debug = log.isEnabledFor(logging.DEBUG)
 parser = Lark.open('dsl.lark', parser='lalr')
 
 
+# Fix equality comparison in conditions like `{a=b?...` to `{a==b?...` at block starts.
+# We have to avoid {a=b; c?...}, so this is limited to a complete match from `{` to `?`
+# where `a` and `b` are both literals/idents (which can contain whitespaces).
+def get_equality_fix_reg() -> re.Pattern[str]:
+    iden = parser.get_terminal('LITERAL').pattern.to_regexp()
+    return re.compile(rf'{iden}(=){iden}')
+
+
+reg_equality_fix = get_equality_fix_reg()
+
+
 # First stage: find all "block lines" - lines that ends with `;`, which are treated
 # like a `block_inner`.
 # For the other lines, we lex them again to find the real blocks `{ ... }` inside.
 def lex(text: str) -> Iterator[tuple[bool, str | None]]:
     lines = []
     for line in text.splitlines(keepends=True):
-        if line.rstrip().endswith(';'):
+        if (stem := line.rstrip()).endswith(';'):
             if lines:
                 yield from _lex(''.join(lines))
                 lines.clear()
             # Only `_lex` handles comments.
-            yield from _lex('{' + line + '}')
-            # Hint the implicit line break after the naked block.
+            yield from _lex(stem, block=True)
+            # We are actually consuming the line break here, but yielding a `\n`
+            # each time would result in too many empty lines for consecutive block lines.
+            # `None` hints the implicit line break after the naked block here.
             yield False, None
         else:
             lines.append(line)
@@ -38,13 +52,20 @@ def lex(text: str) -> Iterator[tuple[bool, str | None]]:
 
 
 # Thanks to the first stage, we no longer care about line endings.
-def _lex(text: str) -> Iterator[tuple[bool, str]]:
+def _lex(text: str, *, block: bool = False) -> Iterator[tuple[bool, str]]:
     quote = None
     comment = False
-    buf = []
+    buf = []  # buffering inside code blocks
     escape = False
     cursor = 0  # number of chars processed
-    block_depth = 0
+
+    if block:
+        block_depth = 1
+        block_cursor = 0  # for equality fix
+    else:
+        block_depth = 0
+        block_cursor = None
+
     for p, c in enumerate(text):
         if escape:
             escape = False
@@ -69,12 +90,14 @@ def _lex(text: str) -> Iterator[tuple[bool, str]]:
                 if block_depth == 0:
                     if chunk := text[cursor:p]:
                         yield False, chunk
-                    cursor = p
+                    cursor = p + 1
                 block_depth += 1
+                block_cursor = p + 1
             case '}':
                 block_depth -= 1
+                block_cursor = None
                 if block_depth == 0:
-                    chunk = text[cursor : p + 1].strip()
+                    chunk = text[cursor:p].strip()
                     if buf:
                         chunk = ''.join(buf) + chunk
                         buf.clear()
@@ -89,12 +112,38 @@ def _lex(text: str) -> Iterator[tuple[bool, str]]:
                     match c:
                         case "'" | '"':
                             quote = c
+                            block_cursor = None
                         case '#':
                             comment = True
                             # Flush up before the comment.
                             if chunk := text[cursor:p]:
                                 buf.append(chunk)
                             cursor = p
+                            block_cursor = None
+                        case ';':
+                            block_cursor = None
+                        case '?':
+                            if block_cursor is not None:
+                                # Fix equality comparison.
+                                if m := reg_equality_fix.match(text, block_cursor, p):
+                                    log.debug('Fixing equality at %r', m[0])
+                                    buf.append(text[cursor : m.start(1)])
+                                    buf.append('==')
+                                    cursor = m.end(1)
+                                block_cursor = None
+
+    # Assume a final `}` if `block` is set.
+    if block and block_depth == 1:
+        chunk = text[cursor:].strip()
+        if buf:
+            chunk = ''.join(buf) + chunk
+            buf.clear()
+        if chunk:
+            yield True, chunk
+        return
+
+    if buf:
+        yield False, ''.join(buf)
 
     if chunk := text[cursor:]:
         yield False, chunk
