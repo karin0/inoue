@@ -55,7 +55,6 @@ compare: expr "==" expr
 
 ?literal: ESCAPED_STRING  -> dq_lit
         | SQ_STRING       -> sq_lit
-        | RAW_STRING      -> raw_lit
         | iden            -> naked_lit  // Actually either var or literal, but that breaks LALR's parsing.
 
 ?iden: LITERAL
@@ -67,9 +66,6 @@ DEREF_OP.-100: ":" | "*" | "$"
 
 // Exclude all punctuations except '_', '-', '<', '>', '!' from naked literals.
 LITERAL.-100: /[^\"#$%&'()*+,.\/:;=?@[\\\]^`{|}~]+/
-
-// Literals starting with backtick are NOT enclosed.
-RAW_STRING: "`" /[^{};]+/
 
 SQ_STRING: /'([^'\\]|\\.)*'/
 

@@ -15,6 +15,8 @@ is_debug = log.isEnabledFor(logging.DEBUG)
 
 parser = Lark.open('dsl.lark', parser='lalr')
 
+lex_errors = []
+
 
 # First stage: find all "block lines" - lines that ends with `;`, which are treated
 # like a `block_inner`.
@@ -41,16 +43,18 @@ def lex(text: str) -> Iterator[tuple[bool, str | None]]:
 
 # Thanks to the first stage, we no longer care about line endings.
 def _lex(text: str, *, block: bool = False) -> Iterator[tuple[bool, str]]:
-    quote = None
-    comment = False
-    buf = []  # buffering inside code blocks
-    escape = False
-    cursor = 0  # number of chars processed
-
+    block_starts = []
     if block:
-        block_depth = 1
-    else:
-        block_depth = 0
+        # Pretend a `{` before the start.
+        block_starts.append(-1)
+
+    buf = []  # buffered fragments inside code blocks
+    quote = None
+    raw = False
+    comment = False
+    escape = False
+    escaping_indices = []
+    cursor = 0  # number of chars processed
 
     for p, c in enumerate(text):
         if escape:
@@ -65,34 +69,67 @@ def _lex(text: str, *, block: bool = False) -> Iterator[tuple[bool, str]]:
             comment = False
 
         if quote:
-            if c == '\\':
+            # The escaping char `\` in string literals is rehandled by the
+            # parser later. We don't remove it from the fragment.
+            # But in raw literals, `\` is NOT special.
+            if not raw and c == '\\':
                 escape = True
             elif c == quote:
                 quote = None
             continue
 
+        # Raw literals starting with '`' are NOT enclosed.
+        if raw:
+            if c != ';' and c != '{' and c != '}':
+                # Statement boundaries ';' and '{' and '}' terminate raw literals,
+                # but they are escaped in (and only in) quotes.
+                # Escaping char `\` is NOT special in raw literals.
+                if c == '"' or c == "'":
+                    quote = c
+                continue
+            raw = False
+            chunk = text[cursor + 1 : p]
+            r = chunk.replace("'", r"\'")
+            log.debug('Raw literal:%s\n->\n%s', chunk, r)
+            buf.append('\'')
+            buf.append(r)
+            buf.append('\'')
+            cursor = p
+
         match c:
             case '{':
-                if block_depth == 0:
-                    if chunk := text[cursor:p]:
-                        yield False, chunk
-                    cursor = p + 1
-                block_depth += 1
+                if not block_starts:
+                    c = cursor
+                    # Remove escaping `\` before `{`.
+                    for i in escaping_indices:
+                        assert c < i < p
+                        yield False, text[c:i]
+                        c = i + 1
+                    escaping_indices.clear()
+                    if c < p:
+                        yield False, text[c:p]
+                    cursor = p
+
+                block_starts.append(p)
+
             case '}':
-                block_depth -= 1
-                if block_depth == 0:
-                    chunk = text[cursor:p].strip()
-                    if buf:
-                        chunk = ''.join(buf) + chunk
-                        buf.clear()
+                if not block_starts:
+                    continue
+                block_starts.pop()
+                if not block_starts:
+                    chunk = text[cursor:p]
+                    buf.append(chunk)
+                    # Remove the block start `{`.
+                    # We cannot save `p+1` directly when `{` is found, in case of
+                    # unclosed blocks that are recovered as final texts later.
+                    chunk = ''.join(buf)[1:].strip()
+                    buf.clear()
                     if chunk:
                         yield True, chunk
                     cursor = p + 1
-            case '\\':
-                escape = True
 
             case _:
-                if block_depth:
+                if block_starts:
                     match c:
                         case "'" | '"':
                             quote = c
@@ -102,21 +139,50 @@ def _lex(text: str, *, block: bool = False) -> Iterator[tuple[bool, str]]:
                             if chunk := text[cursor:p]:
                                 buf.append(chunk)
                             cursor = p
+                        case '`':
+                            raw = True
+                            # Flush up before the raw literal.
+                            if chunk := text[cursor:p]:
+                                buf.append(chunk)
+                            cursor = p
 
-    # Assume a final `}` if `block` is set.
-    if block and block_depth == 1:
-        chunk = text[cursor:].strip()
-        if buf:
-            chunk = ''.join(buf) + chunk
-            buf.clear()
-        if chunk:
+                # We only handles escaping '\' chars inside quotes (which is inside blocks)
+                # or outside any blocks (which escapes '{' and '}').
+                # The latter ones here must be removed from the output fragments.
+                elif c == '\\':
+                    escape = True
+                    escaping_indices.append(p)
+
+    # Pretend a final `}` if `block` is set.
+    if block and len(block_starts) == 1:
+        chunk = text[cursor:]
+        buf.append(chunk)
+        if chunk := ''.join(buf).strip():
             yield True, chunk
         return
 
-    if buf:
-        yield False, ''.join(buf)
+    if block_starts:
+        # Unclosed block! Reparse the inner of the first unclosed block to recover.
+        msg = f'Unclosed block starting at position {block_starts} {cursor}'
+        lex_errors.append(msg)
+        log.debug('%s', msg)
 
-    if chunk := text[cursor:]:
+        p = block_starts[0]
+        if p >= 0:
+            yield False, text[p]
+        yield from _lex(text[p + 1 :])
+        return
+
+    # `buf` must be empty, since `block_starts` is empty.
+    assert not buf
+
+    c = cursor
+    for i in escaping_indices:
+        assert i > c
+        yield False, text[c:i]
+        c = i + 1
+
+    if chunk := text[c:]:
         yield False, chunk
 
 
@@ -139,7 +205,10 @@ class Abort(Exception):
 
 class RenderInterpreter(Interpreter):
     def __init__(
-        self, overrides: dict[str, Value], *, this_doc: tuple[int, str] | None = None
+        self,
+        overrides: dict[str, Value],
+        *,
+        this_doc: tuple[int | None, str] | None = None,
     ):
         super().__init__()
         self.ctx = OverriddenDict(overrides)
@@ -158,6 +227,10 @@ class RenderInterpreter(Interpreter):
     def _render(self, text: str) -> str:
         aborted = False
         for is_block, fragment in lex(text):
+            if lex_errors:
+                self.errors.extend(lex_errors)
+                lex_errors.clear()
+
             if is_block:
                 assert fragment is not None
                 if aborted:
@@ -202,6 +275,8 @@ class RenderInterpreter(Interpreter):
         return r
 
     def render(self, text: str) -> str:
+        if not self.this_doc:
+            self.this_doc = (None, text)
         # Internal document expansion does not trim spaces.
         return self._render(text).strip()
 
@@ -364,10 +439,6 @@ class RenderInterpreter(Interpreter):
                     .replace("\\'", "'")
                     .replace('\\\\', '\\')
                 )
-
-            # Raw literal: {`raw text until the next statement}
-            case 'raw_lit':
-                return narrow(ch.children[0], Token).value[1:]
 
             # Ambiguous naked literal / var: {some_name}
             # Treated as var only if `permissive` is True and contains no whitespace.
