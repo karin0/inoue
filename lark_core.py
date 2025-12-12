@@ -11,10 +11,10 @@ from db import db
 from util import log, notify, shorten
 from render_core import OverriddenDict, Value, MAX_DEPTH, to_str
 
+MAX_GAS = 1000
+
 is_debug = log.isEnabledFor(logging.DEBUG)
-
 parser = Lark.open('dsl.lark', parser='lalr')
-
 lex_errors = []
 
 
@@ -223,8 +223,15 @@ class RenderInterpreter(Interpreter):
         self._depth: int = 0
         self._branch_depth: int = 0
         self._dirty: bool = False
+        self._gas: int = MAX_GAS
 
-    def _render(self, text: str) -> str:
+    def _put(self, text: str):
+        if text:
+            if not (self._dirty or text.isspace()):
+                self._dirty = True
+            self._output.append(text)
+
+    def _render(self, text: str, strip: bool = False) -> str:
         aborted = False
         for is_block, fragment in lex(text):
             if lex_errors:
@@ -247,7 +254,6 @@ class RenderInterpreter(Interpreter):
                 if is_debug:
                     log.debug('Parsed tree: %s', tree.pretty())
 
-                n = len(self._output)
                 try:
                     self.visit(tree)
                 except Abort:
@@ -255,11 +261,6 @@ class RenderInterpreter(Interpreter):
                         log.error('Parsing aborted at fragment: %s', shorten(fragment))
                     aborted = True
                     continue
-
-                for s in self._output[n:]:
-                    if s and not s.isspace():
-                        self._dirty = True
-                        break
             else:
                 log.debug('Appending text fragment: %r', fragment)
                 if fragment is None:
@@ -268,26 +269,48 @@ class RenderInterpreter(Interpreter):
                         self._output.append('\n')
                         self._dirty = False
                 else:
-                    self._output.append(fragment)
+                    self._put(fragment)
 
         r = ''.join(self._output)
         log.debug('Rendered result: %r, Errors: %r', r, self.errors)
-        return r
+
+        if strip:
+            return r.strip()
+
+        r = r.lstrip()
+        if len(s := r.rstrip()) != len(r) and s and r.find('\n', len(s)) >= 0:
+            return s + '\n'
+
+        return s
 
     def render(self, text: str) -> str:
         if not self.this_doc:
             self.this_doc = (None, text)
         # Internal document expansion does not trim spaces.
-        return self._render(text).strip()
+        return self._render(text, strip=True)
 
     def get_flag(self, key: str, default: bool = False) -> bool:
         val = self.ctx.get(key, default)
         return bool(val) and val != '0'
 
     def visit(self, tree: Tree):
+        if self._gas <= 0:
+            self._error('out of gas')
+            raise Abort()
+        self._gas -= 1
+
         assert isinstance(tree, Tree)
-        log.debug('Visit %s: %d %s', tree.data, len(tree.children), tree.children)
         self._tree = tree
+
+        if is_debug:
+            log.debug(
+                '[%d %d] %s: %d %s',
+                self._depth,
+                MAX_GAS - self._gas,
+                tree.data,
+                len(tree.children),
+                tree.children,
+            )
         return super().visit(tree)
 
     def _tree_ctx(self) -> str:
@@ -342,24 +365,24 @@ class RenderInterpreter(Interpreter):
             else:
                 raise ValueError(f'Bad block_inner child: {ch}')
 
-    def stmt_list(self, tree: Tree[Tree]):
-        if (stmt := tree.children[0]) is None:
-            return
-        stmt = narrow(stmt, Tree)
-        match stmt.data:
-            case 'stmt':
-                assert len(stmt.children) == 1
-                ch = narrow(stmt.children[0], Tree)
-                self.visit(ch)
-            case 'stmt_list':
-                self.stmt_list(stmt)
-            case _:
-                raise ValueError(f'Bad stmt_list child: {stmt}')
+    def stmt_list(self, tree: Tree):
+        # Flatten right-recursion.
+        while (tree := self._stmt_list(tree)) is not None:
+            pass
 
-        if len(tree.children) > 1 and (rest := tree.children[1]):
+    def _stmt_list(self, tree: Tree) -> Tree | None:
+        if (stmt := tree.children[0]) is not None:
+            match (stmt := narrow(stmt, Tree)).data:
+                case 'stmt':
+                    assert len(stmt.children) == 1
+                    self.visit(narrow(stmt.children[0], Tree))
+                case 'stmt_list':
+                    return stmt
+
+        if len(tree.children) > 1 and (rest := tree.children[1]) is not None:
             rest = narrow(rest, Tree)
             assert rest.data == 'stmt_list'
-            self.stmt_list(rest)
+            return rest
 
     def stmt(self, tree: Tree):
         raise RuntimeError
@@ -374,13 +397,23 @@ class RenderInterpreter(Interpreter):
         log.debug('Got var: %s = %r', key, val)
         return to_str(val) if as_str else val
 
+    def _evaluate(self, tree: Tree | Token, permissive: bool = False) -> str:
+        s = self._expr(narrow(tree, Tree), as_str=True, permissive=permissive)
+        assert isinstance(s, str), s
+        return s
+
     def _expr(
         self, tree: Tree | None, *, as_str: bool = False, permissive: bool = False
     ) -> Value:
         '''
         Naked literals are treated as context vars when `permissive` is True.
-        so we write {some_var}, {show_var ? 1 : 0} and {show_var ? $some_var : default literal}.
+        so we write {some_var}, {show_var ? 1 : 0} and {show_var ? $some_var : literal}.
         '''
+        if self._gas <= 0:
+            self._error('out of gas')
+            raise Abort()
+
+        self._gas -= 1
         if not tree:
             return ''
         assert len(tree.children) == 1
@@ -392,10 +425,8 @@ class RenderInterpreter(Interpreter):
             # Equality check: {key == val} (by string representation!)
             # `a==b` means `$a == 'b'`, and `a==$b` means `$a == $b`.
             case 'compare':
-                left = self._expr(
-                    narrow(ch.children[0], Tree), permissive=True, as_str=True
-                )
-                right = self._expr(narrow(ch.children[1], Tree), as_str=True)
+                left = self._evaluate(ch.children[0], True)
+                right = self._evaluate(ch.children[1])
                 return '1' if left == right else '0'
 
             # Nested block: {{ ... }}
@@ -406,7 +437,7 @@ class RenderInterpreter(Interpreter):
 
                 with self._push():
                     self.block_inner(ch)
-                    return ''.join(self._output)
+                    return ''.join(self._output).strip()
 
             # Python expression: {"1 + 1"}
             case 'dq_lit':
@@ -484,7 +515,6 @@ class RenderInterpreter(Interpreter):
             return self._render(doc)
 
     def branch_or_assign_or_expr(self, tree: Tree):
-        assert len(tree.children) <= 3
         branch = tree.children[1] if len(tree.children) > 1 else None
         ch = narrow(tree.children[0], Tree)
 
@@ -499,9 +529,18 @@ class RenderInterpreter(Interpreter):
             case 'expr':
                 # Expression statement: {<expr>}
                 # The value is directly appended to output.
+
+                if (
+                    isinstance(inner := ch.children[0], Tree)
+                    and inner.data == 'block_inner'
+                ):
+                    # Flatten the nested block without capturing.
+                    self.block_inner(inner)
+                    return
+
                 val = self._expr(ch, permissive=self._branch_depth == 0, as_str=True)
                 assert isinstance(val, str), val
-                self._output.append(val)
+                self._put(val)
 
     def _branch(self, tree: Tree, cond: Tree, branch: Tree | Token):
         match cond.data:
@@ -625,16 +664,13 @@ class RenderInterpreter(Interpreter):
             match len(pair.children):
                 case 2:
                     pat, sub = pair.children
-                    pat = self._expr(pat, as_str=True)
-                    assert isinstance(pat, str)
-                    sub = self._expr(sub, as_str=True)
-                    assert isinstance(sub, str)
+                    pat = self._evaluate(pat)
+                    sub = self._evaluate(sub)
                 case 1:
-                    pat = pair.children[0]
-                    pat = self._expr(pat, as_str=True)
-                    assert isinstance(pat, str)
+                    pat = self._evaluate(pair.children[0])
                     sub = ''
                 case _:
+                    self._error('bad repl pair')
                     continue
             val = val.replace(pat, sub)
         self.ctx[key] = val
@@ -652,6 +688,6 @@ class RenderInterpreter(Interpreter):
                 case 'deref':
                     r = self._deref(ch, as_str=True)
                     assert isinstance(r, str)
-                    self._output.append(r)
+                    self._put(r)
                 case _:
                     raise ValueError(f'Bad unary_chain: {ch}')
