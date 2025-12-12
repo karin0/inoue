@@ -1,3 +1,4 @@
+import os
 import logging
 from collections import UserDict
 from contextlib import contextmanager
@@ -75,7 +76,9 @@ def to_str(v: Value) -> str:
 MAX_DEPTH = 20
 MAX_GAS = 1000
 
-is_debug = log.isEnabledFor(logging.DEBUG)
+is_tracing = os.environ.get('TRACE') == '1' and log.isEnabledFor(logging.DEBUG)
+trace = log.debug if is_tracing else lambda *_: None
+
 parser = Lark.open('dsl.lark', parser='lalr')
 lex_errors = []
 
@@ -152,7 +155,7 @@ def _lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str]]:
             raw = False
             chunk = text[cursor + 1 : p]
             r = chunk.replace("'", r"\'")
-            log.debug('Raw literal:%s\n->\n%s', chunk, r)
+            trace('Raw literal:%s\n->\n%s', chunk, r)
             buf.append('\'')
             buf.append(r)
             buf.append('\'')
@@ -227,7 +230,7 @@ def _lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str]]:
         # Unclosed block! Reparse the inner of the first unclosed block to recover.
         msg = f'Unclosed block starting at position {block_starts} {cursor}'
         lex_errors.append(msg)
-        log.debug('%s', msg)
+        trace('%s', msg)
 
         p = block_starts[0]
         if p >= 0:
@@ -304,18 +307,18 @@ class RenderInterpreter(Interpreter):
             if is_block:
                 assert fragment is not None
                 if self._aborted:
-                    log.debug('Skipping aborted block: %r', fragment)
+                    trace('Skipping aborted block: %r', fragment)
                     continue
 
-                log.debug('Rendering block: %r', fragment)
+                trace('Rendering block: %r', fragment)
                 try:
                     tree = parser.parse(fragment)
                 except LarkError as e:
                     self._error(f'parse: {fragment!r}: {type(e).__name__}: {e}')
                     continue
 
-                if is_debug:
-                    log.debug('Parsed tree: %s', tree.pretty())
+                if is_tracing:
+                    trace('Parsed tree: %s', tree.pretty())
 
                 try:
                     self.visit(tree)
@@ -325,7 +328,7 @@ class RenderInterpreter(Interpreter):
                     self._aborted = True
                     continue
             else:
-                log.debug('Appending text fragment: %r', fragment)
+                trace('Appending text fragment: %r', fragment)
                 if fragment is None:
                     # Merge consecutive line breaks from naked block lines without outputs.
                     if self._dirty:
@@ -335,7 +338,7 @@ class RenderInterpreter(Interpreter):
                     self._put(fragment)
 
         r = ''.join(self._output)
-        log.debug('Rendered result: %r, Errors: %r', r, self.errors)
+        trace('Rendered result: %r, Errors: %r', r, self.errors)
 
         if strip:
             return r.strip()
@@ -365,8 +368,8 @@ class RenderInterpreter(Interpreter):
         assert isinstance(tree, Tree)
         self._tree = tree
 
-        if is_debug:
-            log.debug(
+        if is_tracing:
+            trace(
                 '[%d %d] %s: %d %s',
                 self._depth,
                 MAX_GAS - self._gas,
@@ -383,7 +386,7 @@ class RenderInterpreter(Interpreter):
 
     def _error(self, msg: str):
         ctx = self._tree_ctx()
-        log.debug('Error: %s: %s', msg, ctx)
+        trace('Error: %s: %s', msg, ctx)
         self.errors.append(f'{msg}: {ctx}')
 
         if len(self.errors) > 5:
@@ -392,7 +395,7 @@ class RenderInterpreter(Interpreter):
 
     @contextmanager
     def _push(self):
-        log.debug('Push: %d %s', self._depth, self._output)
+        trace('Push: %d %s', self._depth, self._output)
         old_output = self._output
         old_branch_depth = self._branch_depth
         old_dirty = self._dirty
@@ -404,7 +407,7 @@ class RenderInterpreter(Interpreter):
             yield
         finally:
             self._depth -= 1
-            log.debug('Pop: %d %s %s', self._depth, self._output, old_output)
+            trace('Pop: %d %s %s', self._depth, self._output, old_output)
             self._output = old_output
             self._branch_depth = old_branch_depth
             self._dirty = old_dirty
@@ -419,7 +422,7 @@ class RenderInterpreter(Interpreter):
                     self._error('doc name redefined')
                 else:
                     key = _iden(ch.children[0])
-                    log.debug('Set doc name: %s', key)
+                    trace('Set doc name: %s', key)
                     self.doc_name = key
 
         if len(tree.children) > 1 and (ch := tree.children[-1]):
@@ -469,7 +472,7 @@ class RenderInterpreter(Interpreter):
         if (val := self.ctx.get(key)) is None:
             self._error('undefined: ' + key)
             return ''
-        log.debug('Got var: %s = %r', key, val)
+        trace('Got var: %s = %r', key, val)
         return to_str(val) if as_str else val
 
     def _evaluate(self, tree: Tree | Token, permissive: bool = False) -> str:
@@ -484,8 +487,8 @@ class RenderInterpreter(Interpreter):
         Naked literals are treated as context vars when `permissive` is True.
         so we write {some_var}, {show_var ? 1 : 0} and {show_var ? $some_var : literal}.
         '''
-        if is_debug:
-            log.debug(
+        if is_tracing:
+            trace(
                 '[%d] _expr: %s permissive=%s as_str=%s',
                 MAX_GAS - self._gas,
                 tree,
@@ -545,7 +548,7 @@ class RenderInterpreter(Interpreter):
                     self._error(f'evaluate: {expr!r}: {type(e).__name__}: {e}')
                     v = ''
                 else:
-                    log.debug('evaluated script: %s -> %s', expr, v)
+                    trace('evaluated script: %s -> %s', expr, v)
                     # Ensure a `Value`.
                     if v is None:
                         return ''
@@ -602,7 +605,7 @@ class RenderInterpreter(Interpreter):
             return ''
 
         with self._push():
-            log.debug('Rendering doc: %s %s', key, doc_id)
+            trace('Rendering doc: %s %s', key, doc_id)
             return self._render(doc)
 
     # Due to LALR limitations, assignment chains have very different semantics:
@@ -653,7 +656,7 @@ class RenderInterpreter(Interpreter):
     # Do real assignments here.
     def _assign_stmt(self, tree: Tree):
         keys, op, expr = self._resolve_assign_chain(tree)
-        log.debug('Assign stmt: keys=%s op=%r expr=%s', keys, op, expr)
+        trace('Assign stmt: keys=%s op=%r expr=%s', keys, op, expr)
 
         match op:
             case '=':
@@ -678,13 +681,13 @@ class RenderInterpreter(Interpreter):
 
         val = self._expr(expr) if expr else ''
         for key in keys:
-            log.debug('Assigning: %s = %r', key, val)
+            trace('Assigning: %s = %r', key, val)
             f(key, val)
 
     # Equality test: {key1=key2=...=<expr>}, but not as expression statements.
     def _assign_expr(self, tree: Tree) -> str:
         keys, op, expr = self._resolve_assign_chain(tree)
-        log.debug('Assign expr: keys=%s op=%r expr=%s', keys, op, expr)
+        trace('Assign expr: keys=%s op=%r expr=%s', keys, op, expr)
         if op != '=':
             self._error('bad assign op in equality test: ' + op)
 
