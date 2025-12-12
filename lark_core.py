@@ -1,4 +1,3 @@
-import re
 import logging
 from contextlib import contextmanager
 from typing import Iterator, Type, TypeVar, cast
@@ -15,17 +14,6 @@ from render_core import OverriddenDict, Value, MAX_DEPTH, to_str
 is_debug = log.isEnabledFor(logging.DEBUG)
 
 parser = Lark.open('dsl.lark', parser='lalr')
-
-
-# Fix equality comparison in conditions like `{a=b?...` to `{a==b?...` at block starts.
-# We have to avoid {a=b; c?...}, so this is limited to a complete match from `{` to `?`
-# where `a` and `b` are both literals/idents (which can contain whitespaces).
-def get_equality_fix_reg() -> re.Pattern[str]:
-    iden = parser.get_terminal('LITERAL').pattern.to_regexp()
-    return re.compile(rf'{iden}(=){iden}')
-
-
-reg_equality_fix = get_equality_fix_reg()
 
 
 # First stage: find all "block lines" - lines that ends with `;`, which are treated
@@ -61,10 +49,8 @@ def _lex(text: str, *, block: bool = False) -> Iterator[tuple[bool, str]]:
 
     if block:
         block_depth = 1
-        block_cursor = 0  # for equality fix
     else:
         block_depth = 0
-        block_cursor = None
 
     for p, c in enumerate(text):
         if escape:
@@ -92,10 +78,8 @@ def _lex(text: str, *, block: bool = False) -> Iterator[tuple[bool, str]]:
                         yield False, chunk
                     cursor = p + 1
                 block_depth += 1
-                block_cursor = p + 1
             case '}':
                 block_depth -= 1
-                block_cursor = None
                 if block_depth == 0:
                     chunk = text[cursor:p].strip()
                     if buf:
@@ -112,25 +96,12 @@ def _lex(text: str, *, block: bool = False) -> Iterator[tuple[bool, str]]:
                     match c:
                         case "'" | '"':
                             quote = c
-                            block_cursor = None
                         case '#':
                             comment = True
                             # Flush up before the comment.
                             if chunk := text[cursor:p]:
                                 buf.append(chunk)
                             cursor = p
-                            block_cursor = None
-                        case ';':
-                            block_cursor = None
-                        case '?':
-                            if block_cursor is not None:
-                                # Fix equality comparison.
-                                if m := reg_equality_fix.match(text, block_cursor, p):
-                                    log.debug('Fixing equality at %r', m[0])
-                                    buf.append(text[cursor : m.start(1)])
-                                    buf.append('==')
-                                    cursor = m.end(1)
-                                block_cursor = None
 
     # Assume a final `}` if `block` is set.
     if block and block_depth == 1:
@@ -304,14 +275,7 @@ class RenderInterpreter(Interpreter):
             case 'stmt':
                 assert len(stmt.children) == 1
                 ch = narrow(stmt.children[0], Tree)
-                if ch.data == 'expr':
-                    val = self._expr(
-                        ch, permissive=self._branch_depth == 0, as_str=True
-                    )
-                    assert isinstance(val, str), val
-                    self._output.append(val)
-                else:
-                    self.visit(ch)
+                self.visit(ch)
             case 'stmt_list':
                 self.stmt_list(stmt)
             case _:
@@ -448,19 +412,52 @@ class RenderInterpreter(Interpreter):
             log.debug('Rendering doc: %s %s', key, doc_id)
             return self._render(doc)
 
-    # Conditional: {cond ? true-directive : false-directive} (false part optional)
-    def branch(self, tree: Tree):
+    def branch_or_assign_or_expr(self, tree: Tree):
         assert len(tree.children) <= 3
-        cond = narrow(tree.children[0], Tree)
-        assert cond.data == 'expr'
-        val = self._expr(cond, permissive=True)
+        branch = tree.children[1] if len(tree.children) > 1 else None
+        ch = narrow(tree.children[0], Tree)
 
-        if val and val != '0':
-            ch = tree.children[1]
-        elif not (ch := tree.children[2]):
+        if branch:
+            # Conditional branch: {<cond> ? true-directive : false-directive} (false part optional)
+            return self._branch(tree, ch, branch)
+
+        match ch.data:
+            case 'assign':
+                # Real assignments.
+                self._assign(ch)
+            case 'expr':
+                # Expression statement: {<expr>}
+                # The value is directly appended to output.
+                val = self._expr(ch, permissive=self._branch_depth == 0, as_str=True)
+                assert isinstance(val, str), val
+                self._output.append(val)
+
+    def _branch(self, tree: Tree, cond: Tree, branch: Tree | Token):
+        match cond.data:
+            case 'expr':
+                # {<expr> ? ...}
+                val = self._expr(cond, permissive=True)
+                test = val and val != '0'
+
+            case 'assign':
+                # Equality test: {key=<val> ? ...}
+                right = cond.children[1]
+                if not isinstance(right, Tree):
+                    return self._error('condition equality must use =')
+                if right.data != 'expr':
+                    return self._error('condition equality cannot chain')
+                left = cond.children[0]
+                left_val = self._get_var(_iden(left), as_str=True)
+                right_val = self._expr(right, as_str=True)
+                test = left_val == right_val
+
+            case _:
+                raise ValueError(f'Bad branch cond: {cond}')
+
+        if not test and not (branch := tree.children[2]):
             return
 
-        to = narrow(ch, Tree)
+        to = narrow(branch, Tree)
         assert to.data == 'stmt_list'
         self._branch_depth += 1
         self.stmt_list(to)
@@ -469,13 +466,14 @@ class RenderInterpreter(Interpreter):
     def assign_part(self, tree: Tree):
         raise RuntimeError
 
+    def assign(self, tree: Tree):
+        raise RuntimeError
+
     def _assign_part(self, tree: Tree, out_keys: list[str]) -> Value:
-        chs = tree.children
-        key = _iden(chs[0])
+        key = _iden(tree.children[0])
         out_keys.append(key)
 
-        rest = chs[1] if len(chs) > 1 else None
-        if rest is None:
+        if (rest := tree.children[1]) is None:
             return ''
 
         match rest.data:
@@ -486,22 +484,37 @@ class RenderInterpreter(Interpreter):
             case _:
                 raise ValueError(f'Bad assign rest: {rest}')
 
-    def assign(self, tree: Tree):
-        chs = tree.children
-        op = narrow(chs[1], Tree).data
-        match op:
-            case 'assign_op_1':
-                f = self.ctx.__setitem__
-            case 'assign_op_2':
-                f = self.ctx.setdefault_override
-            case 'assign_op_3':
-                f = self.ctx.setdefault
-            case _:
-                raise ValueError(f'Bad assign op: {tree}')
+    def _assign(self, tree: Tree):
+        rest = tree.children[-1]
+        if isinstance(rest, Token):
+            rest = None
 
-        keys = [_iden(chs[0])]
+        # Context set: {key=value}
+        # {key1=key2=...=value} sets all keys to value
+        if len(tree.children) < 2:
+            # A special case: `iden = <empty expr>`.
+            f = self.ctx.__setitem__
+        elif isinstance((op := tree.children[1]), Token):
+            match op.value:
+                # Context set if empty: {key?=value}
+                # {key1?=key2=...=value} sets all keys to value if empty
+                case '?=':
+                    f = self.ctx.setdefault
 
-        rest = chs[2] if len(chs) > 2 else None
+                # Context override: {key:=value}
+                # a. Can never be overridden (except by markup buttons)
+                # b. Does not interrupt the natural order of flags detected in markup
+                # {key1:=key2=...=value} affects all keys
+                case ':=':
+                    f = self.ctx.setdefault_override
+
+                case _:
+                    raise ValueError(f'Bad assign op: {tree}')
+        else:
+            f = self.ctx.__setitem__
+
+        keys = [_iden(tree.children[0])]
+
         if rest is None:
             val = ''
         else:

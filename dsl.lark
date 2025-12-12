@@ -4,36 +4,34 @@ start: block_inner
 
 ?code_block: "{" block_inner "}"
 
-// LIMIT: doc_def must be the first statement in the block.
+// LIMIT: doc_def must be the first statement in the block, and cannot be conditional.
 !block_inner: doc_def | ([doc_def ";"] stmt_list)
 
-// Statements, or document definition (cannot be conditional)
+// Statements... or document definition.
 
 !doc_def: iden ":"
 
 stmt_list: stmt? [";" stmt_list]
 
-!stmt: assign
-     | unary_chain
-     | expr
+!stmt: unary_chain
      | swap
      | repl
-     | branch
+     | branch_or_assign_or_expr
 
 // Assignments
 
 assign_part: iden "=" (assign_part | expr?)
 
-assign: iden assign_op (assign_part | expr?)
+assign: iden ("=" | ASSIGN_OP) (assign_part | expr?)
 
-?assign_op: "="  -> assign_op_1
-          | ":=" -> assign_op_2
-          | "?=" -> assign_op_3
+ASSIGN_OP: ":=" | "?="
 
 // Other statements
 
 // Expressions cannot be empty in conditions.
-branch: expr "?" stmt_list [":" stmt_list]
+// We have to distinguish between assignments and equality conditions in the interpreter
+// to avoid ambiguity of `=` in LALR.
+branch_or_assign_or_expr: (expr | assign) ["?" stmt_list [":" stmt_list]]
 
 swap: iden "^" iden
 
@@ -52,7 +50,7 @@ repl_pair: expr? "/" expr?
      | code_block
      | compare
 
-// Python lexer fixes `=` in conditions to `==` when possible.
+// Even more equality!
 compare: expr "==" expr
 
 ?literal: ESCAPED_STRING  -> dq_lit
