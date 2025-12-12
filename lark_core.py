@@ -1,6 +1,6 @@
 import logging
 from contextlib import contextmanager
-from typing import Iterator, Type, TypeVar, cast
+from typing import Iterable, Type, TypeVar, cast
 
 from simpleeval import simple_eval
 from lark import Lark, Token, Tree
@@ -21,7 +21,7 @@ lex_errors = []
 # First stage: find all "block lines" - lines that ends with `;`, which are treated
 # like a `block_inner`.
 # For the other lines, we lex them again to find the real blocks `{ ... }` inside.
-def lex(text: str) -> Iterator[tuple[bool, str | None]]:
+def lex(text: str) -> Iterable[tuple[bool, str | None]]:
     lines = []
     for line in text.splitlines(keepends=True):
         if (stem := line.rstrip()).endswith(';'):
@@ -42,7 +42,7 @@ def lex(text: str) -> Iterator[tuple[bool, str | None]]:
 
 
 # Thanks to the first stage, we no longer care about line endings.
-def _lex(text: str, *, block: bool = False) -> Iterator[tuple[bool, str]]:
+def _lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str]]:
     block_starts = []
     if block:
         # Pretend a `{` before the start.
@@ -583,7 +583,7 @@ class RenderInterpreter(Interpreter):
         key = _iden(tree.children[0])
         out_keys.append(key)
 
-        if (rest := tree.children[1]) is None:
+        if len(tree.children) < 2 or (rest := tree.children[1]) is None:
             return ''
 
         match rest.data:
