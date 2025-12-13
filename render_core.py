@@ -312,8 +312,9 @@ class RenderInterpreter(Interpreter):
         self._dirty: bool = False
 
         self._tree: Tree | None = None
-        self._gas: int = MAX_GAS
+        self._scopes: list[str] = []
         self._aborted: bool = False
+        self._gas: int = MAX_GAS
 
     def _put(self, text: str):
         if text:
@@ -502,13 +503,39 @@ class RenderInterpreter(Interpreter):
         self._stmt_list(to)
         self._branch_depth -= 1
 
+    # Nested block: {{ ... }}
+    # With scope: {@name {...}} (name optional, defaults to '_')
+    def _code_block(self, tree: Tree):
+        inner = narrow(tree.children[2], Tree)
+        assert inner.data == 'block_inner'
+
+        if (op := tree.children[0]) is not None:
+            assert narrow(op, Token).type == 'SCOPE_OP'
+            if (name := tree.children[1]) is None:
+                name = '_'
+            else:
+                name = _iden(name)
+
+            if self._scopes:
+                new_scope = self._scopes[-1] + '_' + name
+            else:
+                new_scope = name
+
+            trace('Enter scope: %s -> %s', self._scopes, new_scope)
+            self._scopes.append(new_scope)
+            self._block_inner(inner)
+            self._scopes.pop()
+            trace('Exit scope: %s -> %s', new_scope, self._scopes)
+        else:
+            self._block_inner(inner)
+
     def expr(self, tree: Tree):
         # Expression statement: {<expr>}
         # The value is directly appended to output.
         if isinstance(inner := tree.children[0], Tree):
-            if inner.data == 'block_inner':
+            if inner.data == 'code_block':
                 # Flatten the nested block without capturing.
-                return self._block_inner(inner)
+                return self._code_block(inner)
             elif inner.data == 'assign':
                 # Assignment statement
                 return self._assign_stmt(inner)
@@ -517,12 +544,33 @@ class RenderInterpreter(Interpreter):
         assert isinstance(val, str), val
         self._put(val)
 
-    def _get_var(self, key: str, *, as_str: bool = False) -> Value:
-        if (val := self.ctx.get(key)) is None:
-            self._error('undefined: ' + key)
-            return ''
+    def _get_key_var(
+        self, key: str, default: Value | None = '', *, as_str: bool = False
+    ) -> tuple[str, Value | None]:
+        if self._scopes:
+            for scope in reversed(self._scopes):
+                new_key = scope + '_' + key
+                if (val := self.ctx.get(new_key)) is not None:
+                    key = new_key
+                    break
+            else:
+                if (val := self.ctx.get(key)) is None:
+                    scope = self._scopes[-1]
+                    if default is not None:
+                        self._error(f'undefined: {key} @ {scope}')
+                    return scope + '_' + key, default
+        elif (val := self.ctx.get(key)) is None:
+            if default is not None:
+                self._error('undefined: ' + key)
+            return key, default
+
         trace('Got var: %s = %r', key, val)
-        return to_str(val) if as_str else val
+        return key, to_str(val) if as_str else val
+
+    def _get_var(self, key: str, *, as_str: bool = False) -> Value:
+        key, val = self._get_key_var(key, as_str=as_str)
+        assert val is not None, key
+        return val
 
     def _evaluate(self, tree: Tree | Token | None, *, permissive: bool = False) -> str:
         if tree is None:
@@ -577,13 +625,13 @@ class RenderInterpreter(Interpreter):
                 return self._expr(ch, as_str=as_str)
 
             # Nested block: {{ ... }}
-            case 'block_inner':
+            case 'code_block':
                 if self._depth >= MAX_DEPTH:
                     self._error('block stack overflow')
                     return ''
 
                 with self._push():
-                    self._block_inner(ch)
+                    self._code_block(ch)
                     return ''.join(self._output).strip()
 
             # Python expression: {"1 + 1"}
@@ -742,6 +790,8 @@ class RenderInterpreter(Interpreter):
 
         val = self._expr(expr) if expr else ''
         for key in keys:
+            if self._scopes:
+                key = self._scopes[-1] + '_' + key
             trace('Assigning: %s = %r', key, val)
             f(key, val)
 
@@ -770,15 +820,15 @@ class RenderInterpreter(Interpreter):
     def swap(self, tree: Tree):
         key1 = _iden(tree.children[0])
         key2 = _iden(tree.children[1])
-        val1 = self.ctx.get(key1)
-        val2 = self.ctx.get(key2)
+        key1, val1 = self._get_key_var(key1, None)
+        key2, val2 = self._get_key_var(key2, None)
         self._set_var(key1, val2)
         self._set_var(key2, val1)
 
     # Context inplace replacement: {key|pat1/rep1|pat2/rep2|...}
     def repl(self, tree: Tree):
         key = _iden(tree.children[0])
-        val = self._get_var(key, as_str=True)
+        key, val = self._get_key_var(key, as_str=True)
         assert isinstance(val, str)
         for pair in tree.children[1:]:
             pat, sub = pair.children

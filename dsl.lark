@@ -2,7 +2,8 @@ start: block_inner
 
 // Block
 
-?code_block: "{" block_inner "}"
+code_block: [SCOPE_OP [iden]] "{" block_inner "}"
+SCOPE_OP: "@"
 
 // LIMIT: `doc` must be before any statements in the block.
 // Use `*doc` for document expansion inside statements.
@@ -19,12 +20,6 @@ stmt_list: stmt? [";" stmt_list]
      | repl
      | expr
      | branch
-
-// Assignments
-
-assign: iden ASSIGN_OP [expr]
-
-ASSIGN_OP: "=" | ":=" | "?="
 
 // Other statements
 
@@ -48,6 +43,10 @@ repl_pair: [expr] "/" [expr]
      | paren
 
 ?paren: "(" [expr] ")"
+
+// "Assignments" are technically expressions, but have different semantics as statements.
+ASSIGN_OP: "=" | ":=" | "?="
+assign: iden ASSIGN_OP [expr]
 
 UNARY_OP: "+" | "-" | "*" | "$"
 unary: UNARY_OP iden
