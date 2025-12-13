@@ -53,8 +53,8 @@ UNARY_OP: "+" | "-" | "*" | "$"
 unary: UNARY_OP iden
 !unary_chain: unary+
 
-// Even more equality!
-compare: [expr] _EQUAL [expr]
+// Even more equality! Expressions cannot be empty here either.
+compare: expr _EQUAL expr
 
 // Higher than ASSIGN_OP.
 _EQUAL.10: "=="
