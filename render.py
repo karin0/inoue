@@ -35,6 +35,11 @@ from render_core import RenderInterpreter as RenderContext
 CALLBACK_SIGNS = '-+/'
 ALL_CALLBACK_SIGNS = frozenset('-+/:#`')
 
+SPECIAL_FLAG_ICONS = {
+    '_pre': '📋',
+    '_fold': '💌',
+}
+
 
 def encode_flags(flags: dict[str, bool]) -> str:
     return ''.join((CALLBACK_SIGNS[v] + k) for k, v in flags.items())
@@ -105,7 +110,8 @@ def make_markup(
             old = k in state
             state[k] = not v
 
-            push_button(k + (':=' if old else '=') + '01'[v])
+            icon = ctx.ctx.get(f'_icon_{k}') or SPECIAL_FLAG_ICONS.get(k, k)
+            push_button(icon + (':=' if old else '=') + '01'[v])
 
             if old:
                 state[k] = v
@@ -116,7 +122,7 @@ def make_markup(
             push_button('🔄')
 
     if doc_id:
-        row.append(InlineKeyboardButton('📄', get_msg_url(doc_id)))
+        row.append(InlineKeyboardButton('🔗', get_msg_url(doc_id)))
 
     # Group 5 buttons per row
     rows = [row[i : i + 5] for i in range(0, len(row), 5)]
