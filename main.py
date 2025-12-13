@@ -1,5 +1,6 @@
 import os
 import asyncio
+import logging
 import functools
 from typing import Callable, Coroutine, Iterable
 
@@ -246,7 +247,8 @@ async def post_init(app: Application) -> None:
     init_util(bot)
     db.connect('sendai.db')
     await bot.set_my_commands(tuple((s, s) for s, _ in commands))
-    await do_notify(*stats('Sendai initiated'))
+    if not log.isEnabledFor(logging.DEBUG):
+        await do_notify(*stats('Sendai initiated'))
 
 
 async def post_stop(_: Application) -> None:
