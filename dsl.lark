@@ -4,17 +4,18 @@ start: block_inner
 
 ?code_block: "{" block_inner "}"
 
-// LIMIT: doc_def must be the first statement in the block, and cannot be conditional.
-!block_inner: doc_def | ([doc_def ";"] stmt_list)
+// LIMIT: `doc` must be before any statements in the block.
+// Use `*doc` for document expansion inside statements.
+!block_inner: [(doc_def | doc_ref) (";" doc_ref)*] stmt_list
 
-// Statements... or document definition.
+// Statements... or document definitions/references.
 
 !doc_def: iden ":"
+!doc_ref: ":" iden
 
 stmt_list: stmt? [";" stmt_list]
 
-?stmt: unary_chain
-     | swap
+?stmt: swap
      | repl
      | expr
      | branch
@@ -34,24 +35,23 @@ branch: expr "?" stmt_list [":" stmt_list]
 
 swap: iden "^" iden
 
-flag_override: "+" iden  -> flag_set
-             | "/" iden  -> flag_unset
-
-unary_chain: flag_override+ deref?
-
 repl: iden ("|" repl_pair)+
 repl_pair: [expr] "/" [expr]
 
 // Expressions
 
 !expr: literal
-     | deref
+     | unary_chain
      | code_block
      | compare
      | assign
      | paren
 
 ?paren: "(" [expr] ")"
+
+UNARY_OP: "+" | "-" | "*" | "$"
+unary: UNARY_OP iden
+!unary_chain: unary+
 
 // Even more equality!
 compare: [expr] _EQUAL [expr]
@@ -65,13 +65,10 @@ _EQUAL.10: "=="
 
 ?iden: LITERAL
 
-deref: DEREF_OP iden
-DEREF_OP.-100: ":" | "*" | "$"
-
 // Terminals
 
-// Exclude all punctuations except '_', '-', '<', '>', '!' from naked literals.
-LITERAL.-100: /[^\"#$%&'()*+,.\/:;=?@[\\\]^`{|}~]+/
+// Exclude all punctuations except '_', '<', '>', '!' from naked literals.
+LITERAL.-100: /[^\"#$%&'()*+\-,.\/:;=?@[\\\]^`{|}~]+/
 
 SQ_STRING: /'([^'\\]|\\.)*'/
 

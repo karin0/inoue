@@ -96,10 +96,12 @@ def lex(text: str) -> Iterable[tuple[bool, str | None]]:
                 lines.clear()
             # Only `_lex` handles comments.
             yield from _lex(stem, block=True)
-            # We are actually consuming the line break here, but yielding a `\n`
-            # each time would result in too many empty lines for consecutive block lines.
-            # `None` hints the implicit line break after the naked block here.
-            yield False, None
+
+            if len(line) != len(stem):
+                # We are actually consuming the line break here, but yielding a `\n`
+                # each time would result in too many empty lines for consecutive block lines.
+                # `None` hints the implicit line break after the naked block here.
+                yield False, None
         else:
             lines.append(line)
 
@@ -400,6 +402,15 @@ class RenderInterpreter(Interpreter):
             )
         return super().visit(tree)
 
+    # Override lark visitor to raise on unhandled nodes.
+    def __getattr__(self, name: str):
+        raise NotImplementedError(name)
+
+    def start(self, tree: Tree):
+        ch = narrow(tree.children[0], Tree)
+        assert ch.data == 'block_inner'
+        return self._block_inner(ch)
+
     def _tree_ctx(self) -> str:
         if self._tree is None:
             return 'unknown'
@@ -433,26 +444,32 @@ class RenderInterpreter(Interpreter):
             self._branch_depth = old_branch_depth
             self._dirty = old_dirty
 
-    def block_inner(self, tree: Tree):
-        if ch := tree.children[0]:
-            # Db doc name set: {name:}
-            ch = narrow(ch, Tree)
-            assert ch.data == 'doc_def', ch
-            if self._depth == 0:
-                if self.doc_name:
-                    self._error('doc name redefined')
-                else:
-                    key = _iden(ch.children[0])
-                    trace('Set doc name: %s', key)
-                    self.doc_name = key
+    def _block_inner(self, tree: Tree):
+        stmts = tree.children.pop()
+        for ch in tree.children:
+            if not isinstance(ch, Tree):
+                continue
+            match ch.data:
+                # Db doc name set: {name:}
+                case 'doc_def':
+                    if self._depth == 0:
+                        key = _iden(ch.children[0])
+                        if self.doc_name:
+                            self._error(f'doc name redefined: {self.doc_name} -> {key}')
+                        else:
+                            trace('Set doc name: %s', key)
+                            self.doc_name = key
+                case 'doc_ref':
+                    iden = _iden(ch.children[-1])
+                    self._put(self._doc_ref(iden))
+                case _:
+                    raise ValueError(f'Bad block_inner child: {ch}')
 
-        if len(tree.children) > 1 and (ch := tree.children[-1]):
-            if ch.data == 'stmt_list':
-                self.stmt_list(ch)
-            else:
-                raise ValueError(f'Bad block_inner child: {ch}')
+        stmts = narrow(stmts, Tree)
+        assert stmts.data == 'stmt_list', stmts
+        self._stmt_list(stmts)
 
-    def stmt_list(self, tree: Tree):
+    def _stmt_list(self, tree: Tree):
         # Flatten right-recursion.
         while True:
             if (stmt := tree.children[0]) is not None:
@@ -482,7 +499,7 @@ class RenderInterpreter(Interpreter):
         to = narrow(branch, Tree)
         assert to.data == 'stmt_list'
         self._branch_depth += 1
-        self.stmt_list(to)
+        self._stmt_list(to)
         self._branch_depth -= 1
 
     def expr(self, tree: Tree):
@@ -491,7 +508,7 @@ class RenderInterpreter(Interpreter):
         if isinstance(inner := tree.children[0], Tree):
             if inner.data == 'block_inner':
                 # Flatten the nested block without capturing.
-                return self.block_inner(inner)
+                return self._block_inner(inner)
             elif inner.data == 'assign':
                 # Assignment statement
                 return self._assign_stmt(inner)
@@ -542,8 +559,8 @@ class RenderInterpreter(Interpreter):
         ch = narrow(ch, Tree)
 
         match ch.data:
-            case 'deref':
-                return self._deref(ch, as_str=as_str)
+            case 'unary_chain':
+                return self._unary_chain(ch, as_str=as_str)
 
             case 'assign':
                 return self._assign_expr(ch)
@@ -566,7 +583,7 @@ class RenderInterpreter(Interpreter):
                     return ''
 
                 with self._push():
-                    self.block_inner(ch)
+                    self._block_inner(ch)
                     return ''.join(self._output).strip()
 
             # Python expression: {"1 + 1"}
@@ -612,16 +629,45 @@ class RenderInterpreter(Interpreter):
             case _:
                 raise ValueError(f'Bad expr: {tree.pretty()}')
 
-    def _deref(self, tree: Tree, *, as_str: bool = False) -> Value:
+    def _unary_chain(self, tree: Tree, *, as_str: bool = False) -> Value:
+        if len(tree.children) == 1:
+            return self._unary(narrow(tree.children[0], Tree), as_str=as_str)
+
+        out = []
+        assert tree.children, tree
+        for ch in tree.children:
+            val = self._unary(narrow(ch, Tree), as_str=True)
+            assert isinstance(val, str)
+            trace('Unary chain part: %r', val)
+            out.append(val)
+
+        return ''.join(out)
+
+    def _unary(self, tree: Tree, *, as_str: bool = False) -> Value:
         op = narrow(tree.children[0], Token).value
         key = _iden(tree.children[1])
 
-        # Context var get: {$name}
-        if op == '$':
-            return self._get_var(key, as_str=as_str)
+        match op:
+            case '+':
+                self.ctx.setdefault_override(key, '1')
+                return ''
 
-        # Db doc get: {:name} or {*name}
+            case '-':
+                self.ctx.setdefault_override(key, '0')
+                return ''
 
+            # Variable read: {$key}
+            case '$':
+                return self._get_var(key, as_str=as_str)
+
+            # Db doc expand: {:doc} or {*doc}
+            case ':' | '*':
+                return self._doc_ref(key)
+
+            case _:
+                raise ValueError(f'Bad deref op: {op}')
+
+    def _doc_ref(self, key: str) -> str:
         # Allow self-reference in `handle_render` and `handle_render_doc`,
         # where the doc is not saved yet.
         # Note that `doc_id` can be None in `handle_render`, where the
@@ -667,9 +713,6 @@ class RenderInterpreter(Interpreter):
                 self._error('bad assign op in chain: ' + op)
 
         return keys, op, val
-
-    def assign(self, tree: Tree):
-        raise RuntimeError
 
     # Do real assignments here.
     def _assign_stmt(self, tree: Tree):
@@ -744,20 +787,3 @@ class RenderInterpreter(Interpreter):
 
             # Write back each time.
             self.ctx[key] = val = val.replace(pat, sub)
-
-    def unary_chain(self, tree: Tree):
-        for ch in tree.children:
-            ch = narrow(ch, Tree)
-            match ch.data:
-                case 'flag_set':
-                    key = _iden(ch.children[0])
-                    self.ctx.setdefault_override(key, '1')
-                case 'flag_unset':
-                    key = _iden(ch.children[0])
-                    self.ctx.setdefault_override(key, '0')
-                case 'deref':
-                    r = self._deref(ch, as_str=True)
-                    assert isinstance(r, str)
-                    self._put(r)
-                case _:
-                    raise ValueError(f'Bad unary_chain: {ch}')
