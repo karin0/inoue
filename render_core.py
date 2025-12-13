@@ -454,25 +454,36 @@ class RenderInterpreter(Interpreter):
 
     def stmt_list(self, tree: Tree):
         # Flatten right-recursion.
-        while (tree := self._stmt_list(tree)) is not None:
-            pass
+        while True:
+            if (stmt := tree.children[0]) is not None:
+                if (stmt := narrow(stmt, Tree)).data == 'stmt_list':
+                    tree = stmt
+                    continue
+                self.visit(stmt)
 
-    def _stmt_list(self, tree: Tree) -> Tree | None:
-        if (stmt := tree.children[0]) is not None:
-            match (stmt := narrow(stmt, Tree)).data:
-                case 'stmt':
-                    assert len(stmt.children) == 1
-                    self.visit(narrow(stmt.children[0], Tree))
-                case 'stmt_list':
-                    return stmt
+            if len(tree.children) > 1 and (rest := tree.children[1]) is not None:
+                rest = narrow(rest, Tree)
+                assert rest.data == 'stmt_list'
+                tree = rest
+            else:
+                break
 
-        if len(tree.children) > 1 and (rest := tree.children[1]) is not None:
-            rest = narrow(rest, Tree)
-            assert rest.data == 'stmt_list'
-            return rest
+    # Conditional branch: {<cond> ? true-directive : false-directive} (false part optional)
+    def branch(self, tree: Tree):
+        cond = narrow(tree.children[0], Tree)
+        assert cond.data == 'expr'
 
-    def stmt(self, tree: Tree):
-        raise RuntimeError
+        val = self._expr(cond, permissive=True)
+        if val and val != '0':
+            branch = tree.children[1]
+        elif not (branch := tree.children[2]):
+            return
+
+        to = narrow(branch, Tree)
+        assert to.data == 'stmt_list'
+        self._branch_depth += 1
+        self.stmt_list(to)
+        self._branch_depth -= 1
 
     def expr(self, tree: Tree):
         # Expression statement: {<expr>}
@@ -496,13 +507,15 @@ class RenderInterpreter(Interpreter):
         trace('Got var: %s = %r', key, val)
         return to_str(val) if as_str else val
 
-    def _evaluate(self, tree: Tree | Token, permissive: bool = False) -> str:
+    def _evaluate(self, tree: Tree | Token | None, *, permissive: bool = False) -> str:
+        if tree is None:
+            return ''
         s = self._expr(narrow(tree, Tree), as_str=True, permissive=permissive)
         assert isinstance(s, str), s
         return s
 
     def _expr(
-        self, tree: Tree | None, *, as_str: bool = False, permissive: bool = False
+        self, tree: Tree, *, as_str: bool = False, permissive: bool = False
     ) -> Value:
         '''
         Naked literals are treated as context vars when `permissive` is True.
@@ -522,10 +535,12 @@ class RenderInterpreter(Interpreter):
             raise Abort()
         self._gas -= 1
 
-        if not tree:
-            return ''
         assert len(tree.children) == 1
-        ch = narrow(tree.children[0], Tree)
+        if (ch := tree.children[0]) is None:
+            # Empty parens: {( )}
+            return ''
+        ch = narrow(ch, Tree)
+
         match ch.data:
             case 'deref':
                 return self._deref(ch, as_str=as_str)
@@ -536,7 +551,7 @@ class RenderInterpreter(Interpreter):
             # Equality check: {key == val} (by string representation!)
             # `a==b` means `$a == 'b'`, and `a==$b` means `$a == $b`.
             case 'compare':
-                left = self._evaluate(ch.children[0], True)
+                left = self._evaluate(ch.children[0], permissive=True)
                 right = self._evaluate(ch.children[1])
                 return '1' if left == right else '0'
 
@@ -595,7 +610,7 @@ class RenderInterpreter(Interpreter):
                 return key
 
             case _:
-                raise ValueError(f'Bad literal: {tree}')
+                raise ValueError(f'Bad expr: {tree.pretty()}')
 
     def _deref(self, tree: Tree, *, as_str: bool = False) -> Value:
         op = narrow(tree.children[0], Token).value
@@ -638,10 +653,9 @@ class RenderInterpreter(Interpreter):
     ) -> tuple[Sequence[str], str, Tree | None]:
         keys = [_iden(tree.children[0])]
         op = narrow(tree.children[1], Token).value
-        rest = tree.children[2] if len(tree.children) > 2 else None
         val = None
 
-        while len(tree.children) > 2 and (rest := tree.children[2]):
+        while rest := tree.children[2]:
             rest = narrow(rest, Tree)
             assert rest.data == 'expr'
             tree = rest.children[0]
@@ -653,23 +667,6 @@ class RenderInterpreter(Interpreter):
                 self._error('bad assign op in chain: ' + op)
 
         return keys, op, val
-
-    # Conditional branch: {<cond> ? true-directive : false-directive} (false part optional)
-    def branch(self, tree: Tree):
-        cond = narrow(tree.children[0], Tree)
-        assert cond.data == 'expr'
-
-        val = self._expr(cond, permissive=True)
-        if val and val != '0':
-            branch = tree.children[1]
-        elif not (branch := tree.children[2]):
-            return
-
-        to = narrow(branch, Tree)
-        assert to.data == 'stmt_list'
-        self._branch_depth += 1
-        self.stmt_list(to)
-        self._branch_depth -= 1
 
     def assign(self, tree: Tree):
         raise RuntimeError
@@ -698,7 +695,7 @@ class RenderInterpreter(Interpreter):
                 f = self.ctx.setdefault_override
 
             case _:
-                raise ValueError(f'Bad assign op: {tree}')
+                raise ValueError(f'Bad assign op: {tree.pretty()}')
 
         val = self._expr(expr) if expr else ''
         for key in keys:
@@ -712,7 +709,7 @@ class RenderInterpreter(Interpreter):
         if op != '=':
             self._error('bad assign op in equality test: ' + op)
 
-        final_val = self._expr(expr, as_str=True)
+        final_val = self._expr(expr, as_str=True) if expr else ''
         for key in keys:
             val = self._get_var(key, as_str=True)
             if val != final_val:
@@ -741,19 +738,12 @@ class RenderInterpreter(Interpreter):
         val = self._get_var(key, as_str=True)
         assert isinstance(val, str)
         for pair in tree.children[1:]:
-            match len(pair.children):
-                case 2:
-                    pat, sub = pair.children
-                    pat = self._evaluate(pat)
-                    sub = self._evaluate(sub)
-                case 1:
-                    pat = self._evaluate(pair.children[0])
-                    sub = ''
-                case _:
-                    self._error('bad repl pair')
-                    continue
-            val = val.replace(pat, sub)
-        self.ctx[key] = val
+            pat, sub = pair.children
+            pat = self._evaluate(pat)
+            sub = self._evaluate(sub)
+
+            # Write back each time.
+            self.ctx[key] = val = val.replace(pat, sub)
 
     def unary_chain(self, tree: Tree):
         for ch in tree.children:

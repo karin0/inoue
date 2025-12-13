@@ -13,7 +13,7 @@ start: block_inner
 
 stmt_list: stmt? [";" stmt_list]
 
-!stmt: unary_chain
+?stmt: unary_chain
      | swap
      | repl
      | expr
@@ -21,7 +21,7 @@ stmt_list: stmt? [";" stmt_list]
 
 // Assignments
 
-assign: iden ASSIGN_OP expr?
+assign: iden ASSIGN_OP [expr]
 
 ASSIGN_OP: "=" | ":=" | "?="
 
@@ -40,7 +40,7 @@ flag_override: "+" iden  -> flag_set
 unary_chain: flag_override+ deref?
 
 repl: iden ("|" repl_pair)+
-repl_pair: expr? "/" expr?
+repl_pair: [expr] "/" [expr]
 
 // Expressions
 
@@ -51,10 +51,10 @@ repl_pair: expr? "/" expr?
      | assign
      | paren
 
-?paren: "(" expr ")"
+?paren: "(" [expr] ")"
 
 // Even more equality!
-compare: expr _EQUAL expr
+compare: [expr] _EQUAL [expr]
 
 // Higher than ASSIGN_OP.
 _EQUAL.10: "=="
