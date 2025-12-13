@@ -1,6 +1,7 @@
 import os
 import logging
-from collections import UserDict
+from collections import UserDict, OrderedDict
+from collections.abc import MutableMapping
 from contextlib import contextmanager
 from typing import Callable, Iterable, Sequence, Type, TypeVar, cast
 
@@ -16,6 +17,48 @@ from util import log, notify, shorten
 # Other types should have been disallowed in `simpleeval`.
 type Value = str | int | float | bool | complex | bytes
 
+MAX_DEPTH = 20
+MAX_GAS = 1000
+
+LRU_CAPACITY = 128
+
+
+class LRUDict(MutableMapping[str, Value]):
+    def __init__(self):
+        self._data = OrderedDict()
+
+    def __contains__(self, key) -> bool:
+        return key in self._data
+
+    def __getitem__(self, key: str) -> Value:
+        self._data.move_to_end(key)
+        return self._data[key]
+
+    def __setitem__(self, key: str, value: Value) -> None:
+        self._data[key] = value
+        self._data.move_to_end(key)
+        if len(self._data) > LRU_CAPACITY:
+            self._data.popitem(last=False)
+
+    def __delitem__(self, key: str) -> None:
+        del self._data[key]
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+
+# Static context variables are persisted across different `RenderInterpreter` instances.
+persisted = LRUDict()
+PM_PREFIX = 'pm.'
+
+
+def get_pm_key(key: str) -> str | None:
+    if len(pm_key := key.removeprefix(PM_PREFIX)) != len(key):
+        return pm_key
+
 
 class OverriddenDict(UserDict):
     def __init__(self, overrides: dict[str, Value]):
@@ -25,23 +68,44 @@ class OverriddenDict(UserDict):
     def __getitem__(self, key: str) -> Value:
         if (v := self.overrides.get(key)) is not None:
             return v
+        if pm_key := get_pm_key(key):
+            return persisted[pm_key]
         return self.data[key]
 
     # For `get` method to work.
-    def __contains__(self, key: str) -> bool:
-        return key in self.overrides or key in self.data
+    def __contains__(self, key: str) -> bool:  # type: ignore[override]
+        if key in self.overrides:
+            return True
+        if pm_key := get_pm_key(key):
+            return pm_key in persisted
+        return key in self.data
 
-    def setdefault(self, key: str, default: Value) -> Value:
-        # For `?=` operator.
-        #
-        # We always set the default in the underlying dict, even if the value
+    def __setitem__(self, key: str, val: str):
+        # For `=` operator.
+        if pm_key := get_pm_key(key):
+            if key not in self.overrides:
+                persisted[pm_key] = val
+            return
+
+        # We always set the value in the underlying dict, even if the value
         # is overridden, so the natural order of keys is preserved as defined by
         # documents and won't change after markup buttons are activated.
-        #
-        # For the same purpose, `__setitem__` (for `=` operator) is not overridden.
+        self.data[key] = val
+
+    def setdefault(self, key: str, default: Value) -> Value:  # type: ignore[override]
+        # For `?=` operator.
+        if pm_key := get_pm_key(key):
+            if (r := self.overrides.get(key)) is not None:
+                return r
+            return persisted.setdefault(pm_key, default)
+
+        # For same purpose as in `__setitem__`, we always set the value
+        # in the underlying dict.
+        # The static (persisted) keys are bypassed anyway.
         r0 = self.data.setdefault(key, default)
         if (r := self.overrides.get(key)) is not None:
             return r
+
         return r0
 
     def setdefault_override(self, key: str, value: Value) -> Value:
@@ -63,9 +127,10 @@ class OverriddenDict(UserDict):
 
     def finalize(self) -> Iterable[tuple[str, Value]]:
         # Keys from the underlying dict are yielded first, in their natural order.
-        r = self.data
-        r.update(self.overrides)
-        return r.items()
+        # Technically the side effects of this method shouldn't affect our behavior,
+        # since existing overrides can never be removed or modified.
+        self.data.update(self.overrides)
+        return self.data.items()
 
 
 def to_str(v: Value) -> str:
@@ -74,13 +139,9 @@ def to_str(v: Value) -> str:
     return str(v)
 
 
-MAX_DEPTH = 20
-MAX_GAS = 1000
-
 is_tracing = os.environ.get('TRACE') == '1' and log.isEnabledFor(logging.DEBUG)
 trace = log.debug if is_tracing else lambda *_: None
 
-parser = Lark.open('dsl.lark', parser='lalr')
 lex_errors = []
 
 
@@ -274,6 +335,8 @@ def _lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str]]:
         yield False, chunk
 
 
+parser = Lark.open('dsl.lark', parser='lalr')
+
 T = TypeVar('T', bound=Tree | Token)
 
 
@@ -312,7 +375,7 @@ class RenderInterpreter(Interpreter):
         self._dirty: bool = False
 
         self._tree: Tree | None = None
-        self._scopes: list[str] = []
+        self._scopes: list[str] = ['']
         self._aborted: bool = False
         self._gas: int = MAX_GAS
 
@@ -517,10 +580,7 @@ class RenderInterpreter(Interpreter):
             else:
                 name = _iden(name)
 
-            if self._scopes:
-                new_scope = self._scopes[-1] + name + '.'
-            else:
-                new_scope = name + '.'
+            new_scope = self._scopes[-1] + name + '.'
 
             trace('Enter scope: %s -> %s', self._scopes, new_scope)
             self._scopes.append(new_scope)
@@ -553,31 +613,25 @@ class RenderInterpreter(Interpreter):
         assert isinstance(val, str), val
         self._put(val)
 
-    def _get_key_var(
+    def _resolve_var(
         self, key: str, default: Value | None = '', *, as_str: bool = False
     ) -> tuple[str, Value | None]:
-        if self._scopes:
-            for scope in reversed(self._scopes):
-                new_key = scope + key
-                if (val := self.ctx.get(new_key)) is not None:
-                    key = new_key
-                    break
-            else:
-                if (val := self.ctx.get(key)) is None:
-                    scope = self._scopes[-1]
-                    if default is not None:
-                        self._error(f'undefined: {key} @ {scope}')
-                    return scope + key, default
-        elif (val := self.ctx.get(key)) is None:
+        for scope in reversed(self._scopes):
+            new_key = scope + key
+            if (val := self.ctx.get(new_key)) is not None:
+                key = new_key
+                break
+        else:
+            scope = self._scopes[-1]
             if default is not None:
-                self._error('undefined: ' + key)
-            return key, default
+                self._error(f'undefined: {key} @ {scope}')
+            return scope + key, default
 
         trace('Got var: %s = %r', key, val)
         return key, to_str(val) if as_str else val
 
     def _get_var(self, key: str, *, as_str: bool = False) -> Value:
-        key, val = self._get_key_var(key, as_str=as_str)
+        key, val = self._resolve_var(key, as_str=as_str)
         assert val is not None, key
         return val
 
@@ -802,9 +856,8 @@ class RenderInterpreter(Interpreter):
 
         val = self._expr(expr) if expr else ''
         for key in keys:
-            if self._scopes:
-                # Cannot assign to outer scopes. No `global` or `nonlocal`.
-                key = self._scopes[-1] + key
+            # Cannot assign to outer scopes. No `global` or `nonlocal`.
+            key = self._scopes[-1] + key
             trace('Assigning: %s = %r', key, val)
             f(key, val)
 
@@ -833,15 +886,15 @@ class RenderInterpreter(Interpreter):
     def swap(self, tree: Tree):
         key1 = _iden(tree.children[0])
         key2 = _iden(tree.children[1])
-        key1, val1 = self._get_key_var(key1, None)
-        key2, val2 = self._get_key_var(key2, None)
+        key1, val1 = self._resolve_var(key1, None)
+        key2, val2 = self._resolve_var(key2, None)
         self._set_var(key1, val2)
         self._set_var(key2, val1)
 
     # Context inplace replacement: {key|pat1/rep1|pat2/rep2|...}
     def repl(self, tree: Tree):
         key = _iden(tree.children[0])
-        key, val = self._get_key_var(key, as_str=True)
+        key, val = self._resolve_var(key, as_str=True)
         assert isinstance(val, str)
         for pair in tree.children[1:]:
             pat, sub = pair.children
