@@ -1,5 +1,3 @@
-import os
-import logging
 from contextlib import contextmanager
 from typing import Callable, Iterable, Sequence, Type, TypeVar, cast
 
@@ -9,13 +7,17 @@ from lark.exceptions import LarkError
 
 from db import db
 from util import log, notify, shorten
-from render_context import Value, to_str, OverriddenDict, simple_eval
+from render_context import (
+    is_tracing,
+    trace,
+    Value,
+    to_str,
+    OverriddenDict,
+    ScopedContext,
+)
 
 MAX_DEPTH = 20
 MAX_GAS = 1000
-
-is_tracing = os.environ.get('TRACE') == '1' and log.isEnabledFor(logging.DEBUG)
-trace = log.debug if is_tracing else lambda *_: None
 
 lex_errors = []
 
@@ -249,8 +251,8 @@ class RenderInterpreter(Interpreter):
         self._branch_depth: int = 0
         self._dirty: bool = False
 
+        self._scope = ScopedContext(self.ctx, self._error)
         self._tree: Tree | None = None
-        self._scopes: list[str] = ['']
         self._aborted: bool = False
         self._gas: int = MAX_GAS
 
@@ -455,13 +457,9 @@ class RenderInterpreter(Interpreter):
             else:
                 name = _iden(name)
 
-            new_scope = self._scopes[-1] + name + '.'
-
-            trace('Enter scope: %s -> %s', self._scopes, new_scope)
-            self._scopes.append(new_scope)
+            self._scope.push(name)
             self._block_inner(inner)
-            self._scopes.pop()
-            trace('Exit scope: %s -> %s', new_scope, self._scopes)
+            self._scope.pop()
         else:
             self._block_inner(inner)
 
@@ -487,28 +485,6 @@ class RenderInterpreter(Interpreter):
         val = self._expr(tree, permissive=self._branch_depth == 0, as_str=True)
         assert isinstance(val, str), val
         self._put(val)
-
-    def _resolve_var(
-        self, key: str, default: Value | None = '', *, as_str: bool = False
-    ) -> tuple[str, Value | None]:
-        for scope in reversed(self._scopes):
-            new_key = scope + key
-            if (val := self.ctx.get(new_key)) is not None:
-                key = new_key
-                break
-        else:
-            scope = self._scopes[-1]
-            if default is not None:
-                self._error(f'undefined: {key} @ {scope}')
-            return scope + key, default
-
-        trace('Got var: %s = %r', key, val)
-        return key, to_str(val) if as_str else val
-
-    def _get_var(self, key: str, *, as_str: bool = False) -> Value:
-        key, val = self._resolve_var(key, as_str=as_str)
-        assert val is not None, key
-        return val
 
     def _evaluate(self, tree: Tree | Token | None, *, permissive: bool = False) -> str:
         if tree is None:
@@ -577,6 +553,7 @@ class RenderInterpreter(Interpreter):
                     return ''.join(self._output).strip()
 
             # Python expression: {"1 + 1"}
+            # This should be non-mutating, i.e. side-effect free.
             case 'dq_lit':
                 expr = (
                     narrow(ch.children[0], Token)
@@ -586,18 +563,13 @@ class RenderInterpreter(Interpreter):
                     .replace('\\\\', '\\')
                 )
                 try:
-                    v = simple_eval(expr, names=self.ctx.clone())
+                    val = self._scope.eval(expr)
                 except Exception as e:
                     self._error(f'evaluate: {expr!r}: {type(e).__name__}: {e}')
-                    v = ''
-                else:
-                    trace('evaluated script: %s -> %s', expr, v)
-                    # Ensure a `Value`.
-                    if v is None:
-                        return ''
+                    return ''
 
                 # Not necessarily str!
-                return to_str(v) if as_str else v
+                return to_str(val) if as_str else val
 
             # Literal: {'single quoted'}
             case 'sq_lit':
@@ -613,7 +585,7 @@ class RenderInterpreter(Interpreter):
             case 'naked_lit':
                 key = _iden(ch.children[0])
                 if permissive and not any(c.isspace() for c in key):
-                    return self._get_var(key, as_str=as_str)
+                    return self._scope.get(key, as_str=as_str)
                 return key
 
             case _:
@@ -647,7 +619,7 @@ class RenderInterpreter(Interpreter):
 
             # Variable read: {$key}
             case '$':
-                return self._get_var(key, as_str=as_str)
+                return self._scope.get(key, as_str=as_str)
 
             # Db doc expand: {*doc} (same as {:doc})
             case '*':
@@ -732,9 +704,8 @@ class RenderInterpreter(Interpreter):
         val = self._expr(expr) if expr else ''
         for key in keys:
             # Cannot assign to outer scopes. No `global` or `nonlocal`.
-            key = self._scopes[-1] + key
-            trace('Assigning: %s = %r', key, val)
-            f(key, val)
+            # However, outer vars can still be "mutated" via `swap` or `repl`.
+            self._scope.set(key, val, f)
 
     # Equality test: {key1=key2=...=<expr>}, but not as expression statements.
     def _assign_expr(self, tree: Tree) -> str:
@@ -745,32 +716,27 @@ class RenderInterpreter(Interpreter):
 
         final_val = self._expr(expr, as_str=True) if expr else ''
         for key in keys:
-            val = self._get_var(key, as_str=True)
+            val = self._scope.get(key, as_str=True)
             if val != final_val:
                 return '0'
 
         return '1'
 
-    def _set_var(self, key: str, val: Value | None):
-        if val is None:
-            self.ctx.pop(key, None)
-        else:
-            self.ctx[key] = val
-
     # Context swap: {key1^key2}
+    # To be "atomic", This allows modifying vars in outer scopes.
     def swap(self, tree: Tree):
         key1 = _iden(tree.children[0])
         key2 = _iden(tree.children[1])
-        key1, val1 = self._resolve_var(key1, None)
-        key2, val2 = self._resolve_var(key2, None)
-        self._set_var(key1, val2)
-        self._set_var(key2, val1)
+        key1, val1 = self._scope.resolve_raw(key1)
+        key2, val2 = self._scope.resolve_raw(key2)
+        self._scope.set_or_del_raw(key1, val2)
+        self._scope.set_or_del_raw(key2, val1)
 
     # Context inplace replacement: {key|pat1/rep1|pat2/rep2|...}
     def repl(self, tree: Tree):
         key = _iden(tree.children[0])
-        key, val = self._resolve_var(key, as_str=True)
-        assert isinstance(val, str)
+        key, val = self._scope.resolve_raw(key, '', as_str=True)
+        assert isinstance(val, str), val
         for pair in tree.children[1:]:
             pat, sub = pair.children
             pat = self._evaluate(pat)

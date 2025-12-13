@@ -1,8 +1,15 @@
-from typing import Iterable
+import os
+import logging
+from typing import Any, Callable, Iterable
 from collections import UserDict, OrderedDict
 from collections.abc import MutableMapping
 
 from simpleeval import simple_eval
+
+from util import log
+
+is_tracing = os.environ.get('TRACE') == '1' and log.isEnabledFor(logging.DEBUG)
+trace = log.debug if is_tracing else lambda *_: None
 
 # Allowed types for context values, as allowed by `simpleeval` by default (except None).
 # Other types should have been disallowed in `simpleeval`.
@@ -23,6 +30,7 @@ class LRUDict(MutableMapping[str, Value]):
         return self._data[key]
 
     def __setitem__(self, key: str, value: Value) -> None:
+        trace('PM set: %s = %r', key, value)
         self._data[key] = value
         self._data.move_to_end(key)
         if len(self._data) > LRU_CAPACITY:
@@ -36,6 +44,9 @@ class LRUDict(MutableMapping[str, Value]):
 
     def __len__(self) -> int:
         return len(self._data)
+
+    def clear(self) -> None:
+        return self._data.clear()
 
 
 # Static context variables are persisted across different `RenderInterpreter` instances.
@@ -108,11 +119,6 @@ class OverriddenDict(UserDict):
         # `overrides`.
         return self.overrides.setdefault(key, value)
 
-    def clone(self) -> 'OverriddenDict':
-        new = OverriddenDict(self.overrides.copy())
-        new.data = self.data.copy()
-        return new
-
     def finalize(self) -> Iterable[tuple[str, Value]]:
         # Keys from the underlying dict are yielded first, in their natural order.
         # Technically the side effects of this method shouldn't affect our behavior,
@@ -125,3 +131,92 @@ def to_str(v: Value) -> str:
     if isinstance(v, bool):
         return '1' if v else '0'
     return str(v)
+
+
+class ScopeProxy:
+    def __init__(self, ctx: OverriddenDict, prefix: str):
+        self._data = ctx
+        self._prefix = prefix
+
+    def __getattr__(self, name: str) -> Value:
+        r = self._data[self._prefix + name]
+        trace('Scope proxy got: %s + %s = %r', self._prefix, name, r)
+        return r
+
+
+class ScopedContext:
+    def __init__(self, ctx: OverriddenDict, error_func: Callable[[str], None]):
+        self._scopes: list[str] = ['']
+        self._prefixes = {'root': ''}
+        self._data = ctx
+        self._error = error_func
+
+    def push(self, name: str):
+        new = self._scopes[-1] + name + '.'
+        trace('Entering scope: %s', new)
+        self._scopes.append(new)
+        self._prefixes[name] = new
+
+    def pop(self):
+        last = self._scopes.pop()
+        trace('Leaving scope: %s', last)
+
+    def resolve_raw(
+        self, name: str, default: Value | None = None, as_str: bool = False
+    ) -> tuple[str, Value | None]:
+        for scope in reversed(self._scopes):
+            key = scope + name
+            if (val := self._data.get(key)) is not None:
+                break
+            trace('Var not found in scope: %s', key)
+        else:
+            key = self._scopes[-1] + name
+            if default is not None:
+                self._error('undefined: ' + key)
+            # `as_str` is ignored when `default` is used.
+            return key, default
+
+        trace('Got var: %s = %r', key, val)
+        return key, to_str(val) if as_str else val
+
+    def get(self, name: str, *, as_str: bool = False) -> Value:
+        _, val = self.resolve_raw(name, '', as_str=as_str)
+        assert val is not None
+        return val
+
+    def set(self, name: str, val: Value, setter: Callable[[str, Value], Any]):
+        # `key, _ = self.resolve_raw(name)` ...?
+        # We don't resolve the key here, since we always want to set
+        # in the current scope.
+        key = self._scopes[-1] + name
+        r = setter(key, val)
+        trace('Assigning: %s = %r -> %r (%s)', key, val, r, setter.__name__)
+
+    def set_or_del_raw(self, key: str, val: Value | None):
+        trace('Set or del: %s = %r', key, val)
+        if val is None:
+            self._data.pop(key, None)
+        else:
+            self._data[key] = val
+
+    # For `simpleeval` usage.
+    def __getitem__(self, name: str) -> Value | ScopeProxy:
+        if (prefix := self._prefixes.get(name)) is not None:
+            return ScopeProxy(self._data, prefix)
+
+        key, val = self.resolve_raw(name)
+        trace('Getting item: %s -> %r', key, val)
+        if val is None:
+            raise KeyError((key, name))
+
+        return val
+
+    def eval(self, expr: str) -> Value:
+        val = simple_eval(expr, names=self)
+        trace('Evaluated: %s -> %s', expr, val)
+
+        # Ensure a `Value`.
+        if val is None:
+            return ''
+
+        return val
