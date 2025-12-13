@@ -460,6 +460,7 @@ class RenderInterpreter(Interpreter):
                         else:
                             trace('Set doc name: %s', key)
                             self.doc_name = key
+                # Db doc expand: {:doc} (same as {*doc} in unary expressions)
                 case 'doc_ref':
                     iden = _iden(ch.children[-1])
                     self._put(self._doc_ref(iden))
@@ -708,8 +709,8 @@ class RenderInterpreter(Interpreter):
             case '$':
                 return self._get_var(key, as_str=as_str)
 
-            # Db doc expand: {:doc} or {*doc}
-            case ':' | '*':
+            # Db doc expand: {*doc} (same as {:doc})
+            case '*':
                 return self._doc_ref(key)
 
             case _:
