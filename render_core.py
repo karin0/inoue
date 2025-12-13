@@ -2,7 +2,7 @@ import os
 import logging
 from collections import UserDict
 from contextlib import contextmanager
-from typing import Iterable, Sequence, Type, TypeVar, cast
+from typing import Callable, Iterable, Sequence, Type, TypeVar, cast
 
 from simpleeval import simple_eval
 from lark import Lark, Token, Tree
@@ -534,12 +534,20 @@ class RenderInterpreter(Interpreter):
         # Expression statement: {<expr>}
         # The value is directly appended to output.
         if isinstance(inner := tree.children[0], Tree):
-            if inner.data == 'code_block':
-                # Flatten the nested block without capturing.
-                return self._code_block(inner)
-            elif inner.data == 'assign':
-                # Assignment statement
-                return self._assign_stmt(inner)
+            match inner.data:
+                case 'assign':
+                    # Hijack the assignment "expression". Different semantics as statements.
+                    return self._assign_stmt(inner)
+                case 'unary_chain':
+                    # Optimize: flatten the unary chain directly to output, without capturing.
+                    val = self._unary_chain(inner, as_str=True, put=self._put)
+                    if val is not None:
+                        assert isinstance(val, str)
+                        self._put(val)
+                    return
+                case 'code_block':
+                    # Optimize: flatten the nested block.
+                    return self._code_block(inner)
 
         val = self._expr(tree, permissive=self._branch_depth == 0, as_str=True)
         assert isinstance(val, str), val
@@ -609,7 +617,11 @@ class RenderInterpreter(Interpreter):
 
         match ch.data:
             case 'unary_chain':
-                return self._unary_chain(ch, as_str=as_str)
+                out = []
+                val = self._unary_chain(ch, as_str=as_str, put=out.append)
+                if val is None:
+                    return ''.join(out)
+                return val
 
             case 'assign':
                 return self._assign_expr(ch)
@@ -678,19 +690,18 @@ class RenderInterpreter(Interpreter):
             case _:
                 raise ValueError(f'Bad expr: {tree.pretty()}')
 
-    def _unary_chain(self, tree: Tree, *, as_str: bool = False) -> Value:
+    def _unary_chain(
+        self, tree: Tree, *, as_str: bool = False, put: Callable[[str], None]
+    ) -> Value | None:
         if len(tree.children) == 1:
             return self._unary(narrow(tree.children[0], Tree), as_str=as_str)
 
-        out = []
         assert tree.children, tree
         for ch in tree.children:
             val = self._unary(narrow(ch, Tree), as_str=True)
             assert isinstance(val, str)
             trace('Unary chain part: %r', val)
-            out.append(val)
-
-        return ''.join(out)
+            put(val)
 
     def _unary(self, tree: Tree, *, as_str: bool = False) -> Value:
         op = narrow(tree.children[0], Token).value
