@@ -246,7 +246,7 @@ class RenderInterpreter(Interpreter):
         self.doc_name: str | None = None
         self.first_doc_id: int | None = None
 
-        self._output: list[str] = []
+        self._output: list[Value] = []
         self._depth: int = 0
         self._branch_depth: int = 0
         self._dirty: bool = False
@@ -261,6 +261,27 @@ class RenderInterpreter(Interpreter):
             if not (self._dirty or text.isspace()):
                 self._dirty = True
             self._output.append(text)
+
+    # Keep the original type to preserve types in code_block as expression when possible.
+    def _put_val(self, val: Value):
+        if isinstance(val, str):
+            self._put(val)
+        else:
+            self._dirty = True
+            self._output.append(val)
+
+    # The output implementation is responsible for filtering out any empty strings,
+    # like in `_put` or `_unary_chain`.
+    def _gather_output(self, out: list[Value], *, as_str: bool = False) -> Value:
+        match len(out):
+            case 0:
+                return ''
+            case 1:
+                # Keep the original type for single output as possible.
+                val = out[0]
+                return to_str(val) if as_str else val
+            case _:
+                return ''.join(to_str(x) for x in out)
 
     def _render(self, text: str, strip: bool = False) -> str:
         for is_block, fragment in lex(text):
@@ -301,7 +322,8 @@ class RenderInterpreter(Interpreter):
                 else:
                     self._put(fragment)
 
-        r = ''.join(self._output)
+        r = self._gather_output(self._output, as_str=True)
+        assert isinstance(r, str)
         trace('Rendered result: %r, Errors: %r', r, self.errors)
 
         if strip:
@@ -473,18 +495,13 @@ class RenderInterpreter(Interpreter):
                     return self._assign_stmt(inner)
                 case 'unary_chain':
                     # Optimize: flatten the unary chain directly to output, without capturing.
-                    val = self._unary_chain(inner, as_str=True, put=self._put)
-                    if val is not None:
-                        assert isinstance(val, str)
-                        self._put(val)
-                    return
+                    return self._unary_chain(inner, put=self._put_val)
                 case 'code_block':
                     # Optimize: flatten the nested block.
                     return self._code_block(inner)
 
-        val = self._expr(tree, permissive=self._branch_depth == 0, as_str=True)
-        assert isinstance(val, str), val
-        self._put(val)
+        val = self._expr(tree, permissive=self._branch_depth == 0)
+        self._put_val(val)
 
     def _evaluate(self, tree: Tree | Token | None, *, permissive: bool = False) -> str:
         if tree is None:
@@ -523,10 +540,13 @@ class RenderInterpreter(Interpreter):
         match ch.data:
             case 'unary_chain':
                 out = []
-                val = self._unary_chain(ch, as_str=as_str, put=out.append)
-                if val is None:
-                    return ''.join(out)
-                return val
+
+                def put(val: Value):
+                    if val != '':
+                        out.append(val)
+
+                self._unary_chain(ch, put=put)
+                return self._gather_output(out, as_str=as_str)
 
             case 'assign':
                 return self._assign_expr(ch)
@@ -550,7 +570,7 @@ class RenderInterpreter(Interpreter):
 
                 with self._push():
                     self._code_block(ch)
-                    return ''.join(self._output).strip()
+                    return self._gather_output(self._output, as_str=as_str)
 
             # Python expression: {"1 + 1"}
             # This should be non-mutating, i.e. side-effect free.
@@ -591,16 +611,10 @@ class RenderInterpreter(Interpreter):
             case _:
                 raise ValueError(f'Bad expr: {tree.pretty()}')
 
-    def _unary_chain(
-        self, tree: Tree, *, as_str: bool = False, put: Callable[[str], None]
-    ) -> Value | None:
-        if len(tree.children) == 1:
-            return self._unary(narrow(tree.children[0], Tree), as_str=as_str)
-
+    def _unary_chain(self, tree: Tree, *, put: Callable[[Value], None]):
         assert tree.children, tree
         for ch in tree.children:
-            val = self._unary(narrow(ch, Tree), as_str=True)
-            assert isinstance(val, str)
+            val = self._unary(narrow(ch, Tree))
             trace('Unary chain part: %r', val)
             put(val)
 
