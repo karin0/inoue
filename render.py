@@ -28,8 +28,9 @@ from util import (
 from db import db
 from render_core import RenderInterpreter as RenderContext
 
-CALLBACK_SIGNS = '/+'
-ALL_CALLBACK_SIGNS = frozenset('/+:#`')
+# '/' is kept for compatibility, which was used for '-'.
+CALLBACK_SIGNS = '-+/'
+ALL_CALLBACK_SIGNS = frozenset('-+/:#`')
 
 
 def encode_flags(flags: dict[str, bool]) -> str:
@@ -42,8 +43,8 @@ def make_markup(
     if not path:
         return None
 
-    # query data: ('/'|'+' <flag-key>)* <path-header: ':'|'#'|'`'> <path-body>
-    # where '/' means 0, '+' means 1
+    # query data: ('-'|'+' <flag-key>)* <path-header: ':'|'#'|'`'> <path-body>
+    # where '-' means 0, '+' means 1
 
     size = len(path.encode('utf-8'))
     if state:
