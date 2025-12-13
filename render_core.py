@@ -513,14 +513,14 @@ class RenderInterpreter(Interpreter):
         if (op := tree.children[0]) is not None:
             assert narrow(op, Token).type == 'SCOPE_OP'
             if (name := tree.children[1]) is None:
-                name = '_'
+                name = ''
             else:
                 name = _iden(name)
 
             if self._scopes:
-                new_scope = self._scopes[-1] + '_' + name
+                new_scope = self._scopes[-1] + name + '.'
             else:
-                new_scope = name
+                new_scope = name + '.'
 
             trace('Enter scope: %s -> %s', self._scopes, new_scope)
             self._scopes.append(new_scope)
@@ -550,7 +550,7 @@ class RenderInterpreter(Interpreter):
     ) -> tuple[str, Value | None]:
         if self._scopes:
             for scope in reversed(self._scopes):
-                new_key = scope + '_' + key
+                new_key = scope + key
                 if (val := self.ctx.get(new_key)) is not None:
                     key = new_key
                     break
@@ -559,7 +559,7 @@ class RenderInterpreter(Interpreter):
                     scope = self._scopes[-1]
                     if default is not None:
                         self._error(f'undefined: {key} @ {scope}')
-                    return scope + '_' + key, default
+                    return scope + key, default
         elif (val := self.ctx.get(key)) is None:
             if default is not None:
                 self._error('undefined: ' + key)
@@ -792,7 +792,8 @@ class RenderInterpreter(Interpreter):
         val = self._expr(expr) if expr else ''
         for key in keys:
             if self._scopes:
-                key = self._scopes[-1] + '_' + key
+                # Cannot assign to outer scopes. No `global` or `nonlocal`.
+                key = self._scopes[-1] + key
             trace('Assigning: %s = %r', key, val)
             f(key, val)
 

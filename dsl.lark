@@ -66,8 +66,8 @@ _EQUAL.10: "=="
 
 // Terminals
 
-// Exclude all punctuations except '_', '<', '>', '!' from naked literals.
-LITERAL.-100: /[^\"#$%&'()*+\-,.\/:;=?@[\\\]^`{|}~]+/
+// Exclude all punctuations except '_', '<', '>', '!', '.' from naked literals.
+LITERAL.-100: /[^\"#$%&'()*+\-,\/:;=?@[\\\]^`{|}~]+/
 
 SQ_STRING: /'([^'\\]|\\.)*'/
 

@@ -110,7 +110,8 @@ def make_markup(
             old = k in state
             state[k] = not v
 
-            icon = ctx.ctx.get(f'_icon_{k}') or SPECIAL_FLAG_ICONS.get(k, k)
+            if (icon := ctx.ctx.get('_icon.' + k)) is None:
+                icon = SPECIAL_FLAG_ICONS.get(k, k)
             push_button(icon + (':=' if old else '=') + '01'[v])
 
             if old:
