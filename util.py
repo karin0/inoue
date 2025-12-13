@@ -3,6 +3,7 @@ import asyncio
 import logging
 import traceback
 
+from html import escape as html_escape
 from typing import Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -282,3 +283,11 @@ def pre_block(s: str, *, do_truncate: bool = True) -> tuple[str, str | None]:
     if do_truncate:
         s = truncate_text(s)
     return s, None
+
+
+def blockquote_block(s: str) -> tuple[str, str | None]:
+    if len(s) + 36 <= MAX_TEXT_LENGTH:
+        text = '<blockquote expandable>' + html_escape(s) + '</blockquote>'
+        if len(text) <= MAX_TEXT_LENGTH:
+            return text, 'HTML'
+    return truncate_text(s), None

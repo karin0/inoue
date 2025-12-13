@@ -1,3 +1,4 @@
+import html
 import asyncio
 
 from telegram import (
@@ -22,7 +23,9 @@ from util import (
     shorten,
     truncate_text,
     escape,
+    html_escape,
     pre_block,
+    blockquote_block,
     do_notify,
 )
 from db import db
@@ -89,6 +92,16 @@ def make_markup(
             row.append(InlineKeyboardButton(name, callback_data=data))
 
         for k, v in flags.items():
+            if not v:
+                # Hide conflicting options.
+                if (
+                    k == '_pre'
+                    and flags.get('_fold') in ('1', True)
+                    or k == '_fold'
+                    and flags.get('_pre') in ('1', True)
+                ):
+                    continue
+
             old = k in state
             state[k] = not v
 
@@ -124,20 +137,25 @@ def rendered_response(
     result = truncate_text(result)
     parse_mode = None
 
-    if ctx.get_flag('_pre', True):
+    if ctx.get_flag('_fold'):
+        result, parse_mode = blockquote_block(result)
+        do_escape = html_escape
+    elif ctx.get_flag('_pre', True):
         result, parse_mode = pre_block(result)
-        if parse_mode:
-            if flags:
-                suffix = escape(encode_flags(flags))
-                if len(result) + len(suffix) <= MAX_TEXT_LENGTH:
-                    result += suffix
+        do_escape = escape
 
-            if footer := ctx.ctx.get('_footer'):
-                suffix = escape(footer)
-                if flags:
-                    suffix = ' ' + suffix
-                if len(result) + len(suffix) <= MAX_TEXT_LENGTH:
-                    result += suffix
+    if parse_mode:
+        if flags:
+            suffix = do_escape(encode_flags(flags))
+            if len(result) + len(suffix) <= MAX_TEXT_LENGTH:
+                result += suffix
+
+        if footer := ctx.ctx.get('_footer'):
+            suffix = do_escape(footer)
+            if flags:
+                suffix = ' ' + suffix
+            if len(result) + len(suffix) <= MAX_TEXT_LENGTH:
+                result += suffix
 
     return result, parse_mode, make_markup(path, ctx, flags)
 
