@@ -13,7 +13,8 @@ from db import db
 from util import log, notify, shorten
 
 # Allowed types for context values, as allowed by `simpleeval` by default (except None).
-type Value = str | int | float | bool
+# Other types should have been disallowed in `simpleeval`.
+type Value = str | int | float | bool | complex | bytes
 
 
 class OverriddenDict(UserDict):
@@ -143,7 +144,8 @@ def _lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str]]:
                 quote = None
             continue
 
-        # Raw literals starting with '`' are NOT enclosed.
+        # Raw literals starting with '`' are NOT enclosed and consumes all the
+        # rest of the statement, i.e., until the next statement boundary.
         if raw:
             if c != ';' and c != '{' and c != '}':
                 # Statement boundaries ';' and '{' and '}' terminate raw literals,
@@ -154,10 +156,9 @@ def _lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str]]:
                 continue
             raw = False
             chunk = text[cursor + 1 : p]
-            r = chunk.replace("'", r"\'")
-            trace('Raw literal:\n%s\n->\n%s', chunk, r)
+            trace('Raw literal:\n%s', chunk)
             buf.append('\'')
-            buf.append(r)
+            buf.append(chunk.replace("'", r"\'"))
             buf.append('\'')
             cursor = p
 
@@ -178,15 +179,21 @@ def _lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str]]:
                 block_starts.append(p)
 
             case '}':
-                if not block_starts:
+                if not block_starts or (block and len(block_starts) == 1):
+                    # An plain '}' as text, when no block is open.
+                    # But, when `block` is set, we cannot close the first (pretended) block here,
+                    # or stuff afterwards would be "leaked" as text fragments and injected into
+                    # our output.
+                    # We leave it to cause a Lark parse error later.
                     continue
                 block_starts.pop()
                 if not block_starts:
                     chunk = text[cursor:p]
                     buf.append(chunk)
-                    # Remove the block start `{`.
-                    # We cannot save `p+1` directly when `{` is found, in case of
+                    # Remove the block start '{'.
+                    # We cannot save `p+1` directly when '{' is found, in case of
                     # unclosed blocks that are recovered as final texts later.
+                    # The '{' must exist there, as we cannot reach here if `block` is set.
                     chunk = ''.join(buf)[1:].strip()
                     buf.clear()
                     if chunk:
@@ -219,7 +226,18 @@ def _lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str]]:
                     escaping_indices.append(p)
 
     # Pretend a final `}` if `block` is set.
-    if block and len(block_starts) == 1:
+    if block:
+        assert block_starts
+        if len(block_starts) > 1:
+            # There are NO text fragments or unclosed blocks in `block` mode, as the
+            # entire input is treated as a single block, where we are only expected
+            # to preprocess comments and raw literals with the `buf`.
+            # Trying to recover would leak text fragments inside the block, so we
+            # also leave it to cause a Lark parse error later.
+            msg = f'Unbalanced line block starting at position {block_starts} {cursor}'
+            lex_errors.append(msg)
+            trace('%s %s', msg, text)
+
         chunk = text[cursor:]
         buf.append(chunk)
         if chunk := ''.join(buf).strip():
@@ -235,7 +253,10 @@ def _lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str]]:
         p = block_starts[0]
         if p >= 0:
             yield False, text[p]
-        yield from _lex(text[p + 1 :])
+
+        rest = text[p + 1 :]
+        trace('Recovering rest: %s', rest)
+        yield from _lex(rest)
         return
 
     # `buf` must be empty, since `block_starts` is empty.
