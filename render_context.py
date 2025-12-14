@@ -1,6 +1,6 @@
 import os
 import logging
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, TypeGuard
 from collections import UserDict, OrderedDict
 from collections.abc import MutableMapping
 
@@ -14,6 +14,24 @@ trace = log.debug if is_tracing else lambda *_: None
 # Allowed types for context values, as allowed by `simpleeval` by default (except None).
 # Other types should have been disallowed in `simpleeval`.
 type Value = str | int | float | bool | complex | bytes
+
+
+def is_value_type(v: Any) -> TypeGuard[Value]:
+    return isinstance(v, (str, int, float, bool, complex, bytes))
+
+
+def to_str(v: Value) -> str:
+    if isinstance(v, str):
+        return v
+    if isinstance(v, (int, float, complex)):
+        return str(v)
+    if isinstance(v, bool):
+        return '1' if v else '0'
+    if isinstance(v, bytes):
+        return v.decode('utf-8', errors='replace')
+    log.warning('to_str: unexpected type: %r %r', type(v), v)
+    return ''
+
 
 LRU_CAPACITY = 128
 
@@ -146,12 +164,6 @@ class OverriddenDict(UserDict):
             trace('  (pm) %s = %r', k, v)
 
 
-def to_str(v: Value) -> str:
-    if isinstance(v, bool):
-        return '1' if v else '0'
-    return str(v)
-
-
 class ScopeProxy:
     def __init__(self, ctx: OverriddenDict, prefix: str):
         self._data = ctx
@@ -226,7 +238,16 @@ class ScopedContext:
             self._data[key] = val
 
     # For `simpleeval` usage.
-    def __getitem__(self, name: str) -> Value | ScopeProxy:
+    def __getitem__(self, name: str) -> Value | ScopeProxy | None:
+        if (func := self._funcs.get(name)) is not None:
+            # Call the function without arguments implicitly.
+            r = func()
+            if r is None or is_value_type(r):
+                trace('Implicit function result: %s() -> %r', name, r)
+                return r
+            log.warning('Unsafe function result: %s() -> %r (%r)', name, r, type(r))
+            return None
+
         if (prefix := self._prefixes.get(name)) is not None:
             return ScopeProxy(self._data, prefix)
 
@@ -243,6 +264,10 @@ class ScopedContext:
 
         # Ensure a `Value`.
         if val is None:
+            return ''
+
+        if not is_value_type(val):
+            log.warning('Unsafe eval result: %s -> %r (%r)', expr, val, type(val))
             return ''
 
         return val
