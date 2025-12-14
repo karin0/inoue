@@ -24,7 +24,7 @@ if os.environ.get('TRACE_TEST') == '1':
     log_instance.error.side_effect = log_effect
 
 from render_core import Value, Engine
-from render_context import persisted
+from render_core.context import persisted
 
 test_text = """
 Hello World
