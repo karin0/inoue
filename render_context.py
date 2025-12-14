@@ -1,8 +1,8 @@
 import os
 import logging
-from typing import Any, Callable, Iterable, TypeGuard
+from typing import Any, Callable, TypeGuard
 from collections import UserDict, OrderedDict
-from collections.abc import MutableMapping
+from collections.abc import ItemsView, MutableMapping
 
 from simpleeval import simple_eval, DEFAULT_FUNCTIONS
 
@@ -110,8 +110,8 @@ class OverriddenDict(UserDict):
         if key not in self.overrides:
             del self.data[key]
 
+    # For `=` operator.
     def __setitem__(self, key: str, val: Value):
-        # For `=` operator.
         if pm_key := get_pm_key(key):
             if key not in self.overrides:
                 persisted[pm_key] = val
@@ -122,35 +122,33 @@ class OverriddenDict(UserDict):
         # documents and won't change after markup buttons are activated.
         self.data[key] = val
 
-    def setdefault(self, key: str, default: Value) -> Value:  # type: ignore[override]
-        # For `?=` operator.
+    # For `?=` operator.
+    # This acts like `setdefault(key, '')` before the actual `__setitem__` call.
+    def touch(self, key: str) -> Value | None:
         if pm_key := get_pm_key(key):
             if (r := self.overrides.get(key)) is not None:
                 return r
-            return persisted.setdefault(pm_key, default)
+            return persisted.get(pm_key)
 
-        # For same purpose as in `__setitem__`, we always set the value
+        # For same purpose as in `__setitem__`, we always ensure the key exists
         # in the underlying dict.
         # The static (persisted) keys are bypassed anyway.
-        r0 = self.data.setdefault(key, default)
+        r0 = self.data.setdefault(key, '')
         if (r := self.overrides.get(key)) is not None:
             return r
 
         return r0
 
+    # For `:=` operator.
+    # This only affects the `overrides` dict, which has higher priority than
+    # the underlying dict by their *values*, but are placed after those touched
+    # by `=` and `?=` in the natural order of *keys*.
+    # However, the existing `overrides` keys are frozen and can never be modified
+    # or removed.
     def setdefault_override(self, key: str, value: Value) -> Value:
-        # For `:=` operator.
-        #
-        # This only affects the `overrides` dict, which has higher priority than
-        # the underlying dict by their *values*, but are placed after those touched
-        # by `=` and `?=` in the natural order of *keys*.
-        #
-        # There is no need to write back the overridden *value* either here or
-        # in `__setitem__`, since `finalize()` already reflects the values from
-        # `overrides`.
         return self.overrides.setdefault(key, value)
 
-    def finalize(self) -> Iterable[tuple[str, Value]]:
+    def items(self) -> ItemsView[str, Value]:
         # Keys from the underlying dict are yielded first, in their natural order.
         # Technically the side effects of this method shouldn't affect our behavior,
         # since existing overrides can never be removed or modified.
@@ -158,7 +156,7 @@ class OverriddenDict(UserDict):
         return self.data.items()
 
     def debug(self):
-        for k, v in self.finalize():
+        for k, v in self.items():
             trace('  %s = %r', k, v)
         for k, v in persisted.items():
             trace('  (pm) %s = %r', k, v)
@@ -221,6 +219,9 @@ class ScopedContext:
         _, val = self.resolve_raw(name, '', as_str=as_str)
         assert val is not None
         return val
+
+    def current_key(self, name: str) -> str:
+        return self._scopes[-1] + name
 
     def set(self, name: str, val: Value, setter: Callable[[str, Value], Any]):
         # `key, _ = self.resolve_raw(name)` ...?

@@ -26,7 +26,7 @@ from util import (
     pre_block,
     blockquote_block,
     do_notify,
-    encode_chat_id
+    encode_chat_id,
 )
 from db import db
 from render_core import RenderInterpreter as RenderContext
@@ -62,7 +62,7 @@ def make_markup(
         return None
 
     flags = {}
-    for k, v in ctx.ctx.finalize():
+    for k, v in ctx.ctx.items():
         if v == '0' or v == 0:  # This covers `False` as well.
             v = False
         elif v == '1' or v == 1:

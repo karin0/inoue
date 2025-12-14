@@ -820,17 +820,31 @@ class RenderInterpreter(Interpreter):
                 # {key1=key2=...=value} sets all keys to value
                 f = self.ctx.__setitem__
 
-            case '?=':
-                # Context set if empty: {key?=value}
-                # {key1?=key2=...=value} sets all keys to value if empty
-                f = self.ctx.setdefault
-
             case ':=':
                 # Context override: {key:=value}
                 # a. Can never be overridden (except by markup buttons)
                 # b. Does not interrupt the natural order of flags detected in markup
                 # {key1:=key2=...=value} affects all keys
                 f = self.ctx.setdefault_override
+
+            case '?=':
+                # Context set if empty (undefined or falsy): {key?=value}
+                # {key1?=key2=...=value} assigns the value to the empty keys only
+                # Note that the evaluation is deferred (conditional) in this case,
+                # like a `OnceCell` initialization.
+                val = '' if expr is None else None
+                for key in keys:
+                    key = self._scope.current_key(key)
+                    old = self.ctx.touch(key)
+                    if not old or old == '0':
+                        if val is None:
+                            val = self._expr(expr)  # type: ignore[assignment]
+                        self.ctx[key] = val
+                    else:
+                        trace('"?=": Skip for non-empty key: %s = %r', key, old)
+                if val is None:
+                    trace('"?=": Skipped evaluation for %s', keys)
+                return
 
             case _:
                 raise ValueError(f'Bad assign op: {tree.pretty()}')
