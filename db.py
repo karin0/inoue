@@ -1,5 +1,10 @@
 import atexit
+import logging
 from sqlite3 import connect, Connection
+
+from context import is_guest
+
+log = logging.getLogger('sendai.db')
 
 
 class DataStore:
@@ -34,6 +39,7 @@ class DataStore:
                 END;
                 '''
             )
+        log.debug('Connected to db: %s', file)
 
     def close(self):
         c = self.conn
@@ -47,8 +53,22 @@ class DataStore:
         return f'{n} docs, {m} keys'
 
     def get_doc(self, name: str) -> tuple[int, str] | None:
+        if is_guest():
+            if name.startswith('doc'):
+                log.debug('get_doc: allowed guest access to doc: %s', name)
+            else:
+                log.debug('get_doc: disallowed guest access to doc: %s', name)
+                return None
+
         cursor = self.conn.execute('SELECT id, text FROM Doc WHERE name = ?', (name,))
         return cursor.fetchone()
+
+    def get_doc_by_id(self, id: int) -> str | None:
+        '''
+        Note that this does not check guest context!
+        '''
+        cursor = self.conn.execute('SELECT text FROM Doc WHERE id = ?', (id,))
+        return cursor.fetchone()[0]
 
     # Works like INSERT OR REPLACE, but returns the replaced records.
     def save_doc(

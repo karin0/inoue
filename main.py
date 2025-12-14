@@ -26,8 +26,10 @@ from util import (
     USER_ID,
     CHAN_ID,
     GROUP_ID,
+    GUEST_USER_IDS,
     init_util,
     use_msg,
+    use_is_guest,
     get_msg,
     get_msg_arg,
     do_notify,
@@ -80,14 +82,23 @@ def auth(
                     # auto-forwarded to GROUP_ID.
                     chat.id == GROUP_ID
                     and (msg := effective_msg)
-                    and msg.from_user.id == ChatID.SERVICE_CHAT
+                    and (from_user := msg.from_user)
+                    and from_user.id == ChatID.SERVICE_CHAT
                     and msg.is_automatic_forward
                     and isinstance(origin := msg.forward_origin, MessageOriginChannel)
                     and origin.chat.id == CHAN_ID
                 )
 
+        if not valid and sender_id in GUEST_USER_IDS:
+            log.warning('Allowing guest access: %s: %s', sender_id, update)
+            is_guest = True
+            valid = True
+        else:
+            is_guest = False
+
         log.debug('Entering %s from %s: %s', func.__name__, src, update)
 
+        item = callback = query = None
         if msg := update.message:
             log.info('%s: msg %s', src, shorten(msg.text))
         elif msg := update.edited_message:
@@ -96,9 +107,9 @@ def auth(
             log.info('%s: channel post %s', src, shorten(item.text))
         elif item := update.edited_channel_post:
             log.info('%s: edited post %s', src, shorten(item.text))
-        elif query := update.callback_query:
-            msg = update.callback_query.message
-            log.info('%s: callback %s', src, shorten(query.data))
+        elif callback := update.callback_query:
+            msg = callback.message
+            log.info('%s: callback %s', src, shorten(callback.data))
         elif query := update.inline_query:
             log.info('%s: inline %s', src, shorten(query.query))
         else:
@@ -108,10 +119,17 @@ def auth(
             log.warning('Message mismatch: %s vs %s', item, effective_msg)
 
         if not valid:
-            log.warning('Drop unauthorized update from %s: %s', src, update)
+            log.warning(
+                '%s: Drop unauthorized update from %s: %s\nSender: %s\nChat: %s',
+                func.__name__,
+                src,
+                update,
+                sender,
+                chat,
+            )
             return
 
-        with use_msg(msg):
+        with use_msg(msg), use_is_guest(is_guest):
             try:
                 return await func(update, ctx)
             except Exception as e:
@@ -131,7 +149,8 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # `render` handles Doc messages that are forwarded from CHAN_ID to its discussion group.
     if (
-        isinstance(origin := msg.forward_origin, MessageOriginChannel)
+        msg.is_automatic_forward
+        and isinstance(origin := msg.forward_origin, MessageOriginChannel)
         and msg.chat_id == GROUP_ID
         and origin.chat.id == CHAN_ID
     ):
@@ -282,6 +301,8 @@ def main():
     for name, func in commands:
         if name == 'rg':
             f = rg = auth(handle_rg)
+        elif name == 'render':
+            f = auth(handle_render, permissive=True)
         else:
             f = auth(func)
         app.add_handler(CommandHandler(name, f))

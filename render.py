@@ -27,6 +27,7 @@ from util import (
     pre_block,
     blockquote_block,
     do_notify,
+    encode_chat_id
 )
 from db import db
 from render_core import RenderInterpreter as RenderContext
@@ -201,7 +202,8 @@ async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
     else:
         return await reply_text(msg, 'Specify text or reply to a message to render.')
 
-    path = f'#{msg.message_id}'
+    chat_prefix = encode_chat_id(msg, '')
+    path = f'#{chat_prefix}{msg.message_id}'
     db['r-' + path] = text
     return await reply_text(msg, *render_text(text, path=path), allow_not_modified=True)
 
@@ -270,11 +272,14 @@ async def handle_render_callback(
 
     result, parse_mode, markup = render_text(data, flags, path, doc_id=doc_id)
 
+    query = update.callback_query
+    assert query is not None
+
     try:
-        if update.callback_query.inline_message_id:
+        if query.inline_message_id:
             await ctx.bot.edit_message_text(
                 text=result,
-                inline_message_id=update.callback_query.inline_message_id,
+                inline_message_id=query.inline_message_id,
                 reply_markup=markup,
                 parse_mode=parse_mode,
             )
@@ -282,7 +287,7 @@ async def handle_render_callback(
             await ctx.bot.edit_message_text(
                 text=result,
                 chat_id=update.effective_chat.id,
-                message_id=update.callback_query.message.message_id,
+                message_id=query.message.message_id,
                 reply_markup=markup,
                 parse_mode=parse_mode,
             )

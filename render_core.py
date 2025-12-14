@@ -302,7 +302,9 @@ class RenderInterpreter(Interpreter):
         self._branch_depth: int = 0
         self._dirty: bool = False
 
-        self._scope = ScopedContext(self.ctx, self._error)
+        self._scope = ScopedContext(
+            self.ctx, self._error, {'__file__': self._get_doc_func}
+        )
         self._tree: Tree | None = None
         self._aborted: bool = False
         self._gas: int = MAX_GAS
@@ -438,7 +440,7 @@ class RenderInterpreter(Interpreter):
 
     def _error(self, msg: str):
         ctx = self._tree_ctx()
-        trace('Error: %s: %s', msg, ctx)
+        log.debug('Error: %s: %s', msg, ctx)
         self.errors.append(f'{msg}: {ctx}')
 
         if len(self.errors) > 5:
@@ -699,22 +701,39 @@ class RenderInterpreter(Interpreter):
             case _:
                 raise ValueError(f'Bad deref op: {op}')
 
-    def _doc_ref(self, key: str) -> str:
-        # Special magic to get the current document content.
-        if key == '__file__':
-            if self.this_doc:
-                return self.this_doc[1]
-            return ''
-
+    def _get_doc(self, key: str) -> tuple[int | None, str]:
         # Allow self-reference in `handle_render` and `handle_render_doc`,
         # where the doc is not saved yet.
         # Note that `doc_id` can be None in `handle_render`, where the
         # `doc_name` is transient and only used for recursion.
         if row := self.doc_name == key and self.this_doc or db.get_doc(key):
-            doc_id, doc = row
-        else:
-            self._error('undefined doc: ' + key)
-            return ''
+            return row
+        self._error('undefined doc: ' + key)
+        return None, ''
+
+    # Used in dq_lit evaluation as `__file__` function.
+    def _get_doc_func(self, key=None) -> str:
+        if isinstance(key, str):
+            return self._get_doc(key)[1]
+
+        if isinstance(key, int):
+            if self.first_doc_id is None:
+                self._error('unknown doc')
+                return ''
+            if (doc := db.get_doc_by_id(self.first_doc_id)) is None:
+                self._error(f'missing doc: {self.first_doc_id}')
+                return ''
+            return doc
+
+        # Self-mapping when no argument is given.
+        if self.this_doc:
+            return self.this_doc[1]
+
+        self._error('unknown doc')
+        return ''
+
+    def _doc_ref(self, key: str) -> str:
+        doc_id, doc = self._get_doc(key)
 
         if self.first_doc_id is None:
             self.first_doc_id = doc_id

@@ -13,11 +13,15 @@ from telegram.constants import MessageLimit
 from telegram.helpers import escape_markdown
 
 from db import db
+from context import ctx_is_guest
 
 USER_ID = int(os.environ['USER_ID'])
 CHAN_ID = int(os.environ['CHAN_ID'])
 GROUP_ID = int(os.environ['GROUP_ID'])
 BOT_NAME = os.environ['BOT_NAME']
+GUEST_USER_IDS = frozenset(
+    int(x.strip()) for x in os.environ['GUEST_USER_IDS'].split(',')
+)
 
 MAX_TEXT_LENGTH = MessageLimit.MAX_TEXT_LENGTH
 
@@ -97,8 +101,8 @@ def init_util(b: Bot):
 
 @contextmanager
 def use_msg(m: Message | None):
-    if m and m.chat.id != USER_ID:
-        if m.chat.id != GROUP_ID:
+    if m and m.chat_id != USER_ID:
+        if m.chat_id not in GUEST_USER_IDS and m.chat_id != GROUP_ID:
             log.warning('Bad use_msg: %s', m)
         m = None
 
@@ -107,6 +111,19 @@ def use_msg(m: Message | None):
         yield m
     finally:
         msg.reset(token)
+
+
+@contextmanager
+def use_is_guest(is_guest: bool):
+    if is_guest:
+        token_guest = ctx_is_guest.set(True)
+    else:
+        token_guest = None
+    try:
+        yield
+    finally:
+        if token_guest is not None:
+            ctx_is_guest.reset(token_guest)
 
 
 async def do_notify(
@@ -182,6 +199,24 @@ def get_deep_link_url(arg: str) -> str:
     return f'https://t.me/{BOT_NAME}?start={arg}'
 
 
+def encode_chat_id(m: Message, default: str = 'u') -> str:
+    chat_id = m.chat_id
+    if chat_id == USER_ID:
+        return default
+    if chat_id == CHAN_ID:
+        return 'c'
+    if chat_id == GROUP_ID:
+        return 'g'
+    if chat_id in GUEST_USER_IDS:
+        log.warning('reply_text: guest chat: %s', m)
+        return f'G{chat_id}'
+    raise ValueError(f'Bad chat for {m}')
+
+
+def is_id_trusted(sender_id: int) -> bool:
+    return sender_id in (USER_ID, CHAN_ID, GROUP_ID)
+
+
 # Note: the return value could be `None` if `allow_not_modified` is set.
 async def reply_text(
     update: MessageSource,
@@ -193,12 +228,9 @@ async def reply_text(
     allow_not_modified: bool = False,
 ) -> Message | None:
     m = get_msg(update)
-    if m.chat_id == USER_ID:
-        chat_kind = 'u'
-    elif m.chat_id == GROUP_ID:
-        chat_kind = 'g'
-    else:
-        raise ValueError(f'Bad chat for {m}')
+    chat_kind = encode_chat_id(m)
+    if chat_kind == 'c':
+        log.warning('reply_text: channel chat: %s', m)
     key = f'{chat_kind}-{m.message_id}'
 
     # Can only be called when `key` is missing in the cache.

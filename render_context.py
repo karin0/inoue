@@ -4,7 +4,7 @@ from typing import Any, Callable, Iterable
 from collections import UserDict, OrderedDict
 from collections.abc import MutableMapping
 
-from simpleeval import simple_eval
+from simpleeval import simple_eval, DEFAULT_FUNCTIONS
 
 from util import log
 
@@ -164,11 +164,18 @@ class ScopeProxy:
 
 
 class ScopedContext:
-    def __init__(self, ctx: OverriddenDict, error_func: Callable[[str], None]):
+    def __init__(
+        self,
+        ctx: OverriddenDict,
+        error_func: Callable[[str], None],
+        funcs: dict[str, Callable],
+    ):
         self._scopes: list[str] = ['']
         self._prefixes = {'root': ''}
         self._data = ctx
         self._error = error_func
+        self._funcs = DEFAULT_FUNCTIONS.copy()
+        self._funcs.update(funcs)
 
     def push(self, name: str):
         new = self._scopes[-1] + name + '.'
@@ -231,7 +238,7 @@ class ScopedContext:
         return val
 
     def eval(self, expr: str) -> Value:
-        val = simple_eval(expr, names=self)
+        val = simple_eval(expr, functions=self._funcs, names=self)
         trace('Evaluated: %s -> %s', expr, val)
 
         # Ensure a `Value`.
