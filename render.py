@@ -29,7 +29,7 @@ from util import (
     encode_chat_id,
 )
 from db import db
-from render_core import RenderInterpreter as RenderContext
+from render_core import Engine
 
 # '/' is kept for compatibility, which was used for '-'.
 CALLBACK_SIGNS = '-+/'
@@ -46,7 +46,7 @@ def encode_flags(flags: dict[str, bool]) -> str:
 
 
 def make_markup(
-    path: str | None, ctx: RenderContext, state: dict[str, bool] | None
+    path: str | None, ctx: Engine, state: dict[str, bool] | None
 ) -> InlineKeyboardMarkup | None:
     if not path:
         return None
@@ -135,7 +135,7 @@ def rendered_response(
     flags: dict[str, bool] | None,
     path: str | None,
     result: str,
-    ctx: RenderContext,
+    ctx: Engine,
 ) -> tuple[str, str | None, InlineKeyboardMarkup | None]:
     result = result or '[empty]'
     if errors := ctx.errors:
@@ -174,7 +174,7 @@ def render_text(
     doc_id: int | None = None,
 ) -> tuple[str, str | None, InlineKeyboardMarkup | None]:
     this_doc = (doc_id, text)
-    ctx = RenderContext(dict(flags) if flags is not None else {}, this_doc=this_doc)
+    ctx = Engine(dict(flags) if flags is not None else {}, this_doc=this_doc)
     result = ctx.render(text)
     log.info('rendered %d -> %d', len(text), len(result))
 
@@ -328,7 +328,7 @@ async def handle_render_doc(msg: Message):
     id = msg.message_id
     info = []
 
-    ctx = RenderContext({}, this_doc=(id, text))
+    ctx = Engine({}, this_doc=(id, text))
     rendered = ctx.render(text)
 
     if name := ctx.doc_name:

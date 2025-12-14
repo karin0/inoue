@@ -286,7 +286,7 @@ class Exit(Exception):
     pass
 
 
-class RenderInterpreter(Interpreter):
+class Engine(Interpreter):
     def __init__(
         self,
         overrides: dict[str, Value],
