@@ -517,30 +517,35 @@ class RenderInterpreter(Interpreter):
         # statements in a recursive stmt_list.
         # We keep only the first stmt and execute the rest unconditionally.
         left = tree.children[1]
-        if (right := tree.children[2]) is not None:
-            right = narrow(right, Tree)
-            assert right.data == 'stmt_list'
-            rest = right.children[1]
-            right = right.children[0]
-            visit = not test
+        right = tree.children[2]
+        if tree.children[3] is None:
+            if right is not None:
+                right = narrow(right, Tree)
+                assert right.data == 'stmt_list'
+                right, rest = right.children
+                visit = not test
+            else:
+                left = narrow(left, Tree)
+                assert left.data == 'stmt_list'
+                left, rest = left.children
+                visit = test
         else:
-            left = narrow(left, Tree)
-            assert left.data == 'stmt_list'
-            rest = left.children[1]
-            left = left.children[0]
-            visit = test
+            if (to := left if test else right) is not None:
+                to = narrow(to, Tree)
+                self._branch_depth += 1
+                assert to.data == 'stmt_list'
+                self._stmt_list(to)
+                self._branch_depth -= 1
+            return
 
         if (to := left if test else right) is not None:
             to = narrow(to, Tree)
-
             self._branch_depth += 1
-
             if visit:
                 self.visit(to)
             else:
                 assert to.data == 'stmt_list'
                 self._stmt_list(to)
-
             self._branch_depth -= 1
 
         if rest is not None:

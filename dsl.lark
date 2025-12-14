@@ -24,9 +24,11 @@ stmt_list: [stmt] [";" stmt_list]
 // Other statements
 
 // Expressions cannot be empty in conditions.
-// Despite the grammar, the semantics only associate the first statement in the
-// last branch. The rest are executed unconditionally.
-branch: expr "?" stmt_list [":" stmt_list]
+// Despite the grammar, when the end branch marker `!` is absent, the semantics
+// only associate the first statement in the last branch, and the rest are executed
+// unconditionally.
+branch: expr "?" stmt_list [":" stmt_list] [BRANCH_END]
+BRANCH_END: "!"
 
 swap: iden "^" iden
 
@@ -68,8 +70,8 @@ _EQUAL.10: "=="
 
 // Terminals
 
-// Exclude all punctuations except '_', '<', '>', '!', '.' from naked literals.
-LITERAL.-100: /[^\"#$%&'()*+\-,\/:;=?@[\\\]^`{|}~]+/
+// Exclude all punctuations except '_', '<', '>', '.' from naked literals.
+LITERAL.-100: /[^\"#$%&'()*+\-,\/:;=?!@[\\\]^`{|}~]+/
 
 SQ_STRING: /'([^'\\]|\\.)*'/
 
