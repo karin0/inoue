@@ -51,11 +51,12 @@ class Engine(Interpreter):
         self,
         overrides: dict[str, Value],
         *,
-        this_doc: tuple[int | None, str] | None = None,
+        doc_id: int | None = None,
     ):
         super().__init__()
         self.ctx = OverriddenDict(overrides)
-        self.this_doc = this_doc
+        self._doc_id = doc_id
+        self._doc_text = ''
 
         self.errors: list[str] = []
         self.doc_name: str | None = None
@@ -175,8 +176,7 @@ class Engine(Interpreter):
         return s
 
     def render(self, text: str) -> str:
-        if not self.this_doc:
-            self.this_doc = (None, text)
+        self._doc_text = text
         # Internal document expansion does not trim spaces.
         r = self._render(text, strip=True)
         if is_tracing:
@@ -556,7 +556,9 @@ class Engine(Interpreter):
         # where the doc is not saved yet.
         # Note that `doc_id` can be None in `handle_render`, where the
         # `doc_name` is transient and only used for recursion.
-        if row := self.doc_name == key and self.this_doc or db.get_doc(key):
+        if self.doc_name == key:
+            return self._doc_id, self._doc_text
+        if row := db.get_doc(key):
             return row
         self._error('undefined doc: ' + key)
         return None, ''
@@ -576,11 +578,7 @@ class Engine(Interpreter):
             return doc
 
         # Self-mapping when no argument is given.
-        if self.this_doc:
-            return self.this_doc[1]
-
-        self._error('unknown doc')
-        return ''
+        return self._doc_text
 
     def _doc_ref(self, key: str) -> str:
         doc_id, doc = self._get_doc(key)

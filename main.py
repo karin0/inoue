@@ -163,7 +163,7 @@ def auth(
 
 async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if post := update.edited_channel_post or update.channel_post:
-        return await handle_render_doc(post)
+        return await handle_render_doc(update, post)
 
     if not (msg := get_msg(update)):
         return
@@ -228,7 +228,7 @@ async def handle_inline_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.inline_query
     data = query.query.strip()
     if query and data:
-        await handle_render_inline_query(query, data)
+        await handle_render_inline_query(update, query, data)
 
 
 def stats(header=ME) -> tuple[str]:

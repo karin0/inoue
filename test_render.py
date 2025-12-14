@@ -238,7 +238,7 @@ class TestRenderContext(unittest.TestCase):
 bomb: ; n ?= "10"; n; n = "n - 1";
 n ? *bomb : Boom!;
 '''.strip()
-        ctx = Engine({}, this_doc=(0, text))
+        ctx = Engine({})
         result = ctx.render(text)
         a = [str(x) for x in range(10, 0, -1)]
         a.append('Boom')

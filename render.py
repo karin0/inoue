@@ -29,7 +29,7 @@ from util import (
     encode_chat_id,
 )
 from db import db
-from render_core import Engine
+from render_core import Engine, Value
 
 # '/' is kept for compatibility, which was used for '-'.
 CALLBACK_SIGNS = '-+/'
@@ -167,14 +167,35 @@ def rendered_response(
     return result, parse_mode, make_markup(path, ctx, flags)
 
 
+def create_engine(
+    update: Update,
+    flags: dict[str, bool] | None = None,
+    *,
+    doc_id: int | None = None,
+) -> Engine:
+    overrides: dict[str, Value] = dict(flags) if flags is not None else {}
+    source = None
+    if user := update.effective_user:
+        overrides['_user_id'] = str(user.id)
+        overrides['_user_name'] = source = user.full_name
+    if chat := update.effective_chat:
+        overrides['_chat_id'] = str(chat.id)
+        if title := chat.title:
+            overrides['_chat_title'] = title
+            source = f'{title} @ {source}' if source else title
+    if source:
+        overrides['_source'] = source
+    if msg := update.effective_message:
+        overrides['_msg_id'] = str(msg.message_id)
+    return Engine(overrides, doc_id=doc_id)
+
+
 def render_text(
+    ctx: Engine,
     text: str,
     flags: dict[str, bool] | None = None,
     path: str | None = None,
-    doc_id: int | None = None,
 ) -> tuple[str, str | None, InlineKeyboardMarkup | None]:
-    this_doc = (doc_id, text)
-    ctx = Engine(dict(flags) if flags is not None else {}, this_doc=this_doc)
     result = ctx.render(text)
     log.info('rendered %d -> %d', len(text), len(result))
 
@@ -204,7 +225,8 @@ async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
     chat_prefix = encode_chat_id(msg, '')
     path = f'#{chat_prefix}{msg.message_id}'
     db['r-' + path] = text
-    return await reply_text(msg, *render_text(text, path=path), allow_not_modified=True)
+    res = render_text(create_engine(update), text, path=path)
+    return await reply_text(msg, *res, allow_not_modified=True)
 
 
 preview_cache = {}
@@ -221,8 +243,8 @@ async def handle_render_group(msg: Message, origin_id: int):
         log.warning('Preview cache not empty: %s', left)
 
 
-async def handle_render_inline_query(query: InlineQuery, text: str):
-    result, parse_mode, markup = render_text(text)
+async def handle_render_inline_query(update: Update, query: InlineQuery, text: str):
+    result, parse_mode, markup = render_text(create_engine(update), text)
     r = InlineQueryResultArticle(
         id='1',
         title=f'Render: {len(result)}',
@@ -269,7 +291,8 @@ async def handle_render_callback(
         case _:
             raise ValueError('bad render callback: ' + data)
 
-    result, parse_mode, markup = render_text(data, flags, path, doc_id=doc_id)
+    engine = create_engine(update, flags, doc_id=doc_id)
+    result, parse_mode, markup = render_text(engine, data, flags, path)
 
     query = update.callback_query
     assert query is not None
@@ -321,16 +344,15 @@ def _report(
     out.append(f'{escape(action)} {msg_info}')
 
 
-async def handle_render_doc(msg: Message):
+async def handle_render_doc(update: Update, msg: Message):
     if not (text := msg.text) or not (text := text.strip()):
         return
 
     id = msg.message_id
-    info = []
-
-    ctx = Engine({}, this_doc=(id, text))
+    ctx = create_engine(update, doc_id=id)
     rendered = ctx.render(text)
 
+    info = []
     if name := ctx.doc_name:
         preview_cache[id] = (name, rendered, ctx)
         old_by_id, old_by_name = db.save_doc(id, name, text)
