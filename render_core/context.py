@@ -1,5 +1,7 @@
 import os
+import time
 import logging
+from datetime import datetime
 from typing import Any, Callable, TypeGuard
 from collections import UserDict, OrderedDict
 from collections.abc import ItemsView, MutableMapping
@@ -29,7 +31,7 @@ def to_str(v: Value) -> str:
         return '1' if v else '0'
     if isinstance(v, bytes):
         return v.decode('utf-8', errors='replace')
-    log.warning('to_str: unexpected type: %r %r', type(v), v)
+    log.error('to_str: unexpected type: %r %r', type(v), v)
     return ''
 
 
@@ -162,6 +164,21 @@ class OverriddenDict(UserDict):
             trace('  (pm) %s = %r', k, v)
 
 
+def date_func() -> str:
+    return datetime.today().isoformat()
+
+
+def today_func() -> str:
+    return datetime.today().strftime('%c')
+
+
+EVAL_FUNCS = {
+    '__time__': time.time,
+    '__date__': date_func,
+    '__today__': today_func,
+}
+
+
 class ScopeProxy:
     def __init__(self, ctx: OverriddenDict, prefix: str):
         self._data = ctx
@@ -184,8 +201,7 @@ class ScopedContext:
         self._prefixes = {'root': ''}
         self._data = ctx
         self._error = error_func
-        self._funcs = DEFAULT_FUNCTIONS.copy()
-        self._funcs.update(funcs)
+        self._funcs = dict(DEFAULT_FUNCTIONS, **EVAL_FUNCS, **funcs)
 
     def push(self, name: str):
         new = self._scopes[-1] + name + '.'
@@ -240,24 +256,24 @@ class ScopedContext:
 
     # For `simpleeval` usage.
     def __getitem__(self, name: str) -> Value | ScopeProxy | None:
+        key, val = self.resolve_raw(name)
+        trace('Getting item: %s -> %r', key, val)
+        if val is not None:
+            return val
+
+        if (prefix := self._prefixes.get(name)) is not None:
+            return ScopeProxy(self._data, prefix)
+
         if (func := self._funcs.get(name)) is not None:
             # Call the function without arguments implicitly.
             r = func()
             if r is None or is_value_type(r):
                 trace('Implicit function result: %s() -> %r', name, r)
                 return r
-            log.warning('Unsafe function result: %s() -> %r (%r)', name, r, type(r))
+            log.error('Unsafe function result: %s() -> %r (%r)', name, r, type(r))
             return None
 
-        if (prefix := self._prefixes.get(name)) is not None:
-            return ScopeProxy(self._data, prefix)
-
-        key, val = self.resolve_raw(name)
-        trace('Getting item: %s -> %r', key, val)
-        if val is None:
-            raise KeyError((key, name))
-
-        return val
+        raise KeyError(key)
 
     def eval(self, expr: str) -> Value:
         val = simple_eval(expr, functions=self._funcs, names=self)

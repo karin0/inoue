@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import unittest
 from unittest.mock import MagicMock
 
@@ -13,7 +14,6 @@ sys.modules['util'].shorten = lambda x: x
 
 log_instance = MagicMock()
 sys.modules['util'].log = log_instance
-
 
 if os.environ.get('TRACE_TEST') == '1':
     out = open('test.log', 'w', encoding='utf-8')
@@ -65,9 +65,9 @@ d?=D; e?=E; f?=F;
 """
 
 
-class TestRenderContext(unittest.TestCase):
+class TestRender(unittest.TestCase):
     def setUp(self):
-        db_instance.get_doc.return_value = None
+        db_instance.reset_mock()
         persisted.clear()
 
     def render_it(
@@ -204,8 +204,58 @@ class TestRenderContext(unittest.TestCase):
     def test_eval(self):
         ctx = {'price': '100', 'tax': '0.08'}
         expr = '{"float(price) * (1 + float(tax)) > 105"?Expensive:Cheap}'
-        result = self.render_it(expr, ctx)
-        self.assertEqual(result, "Expensive")
+        self.assertEqual(self.render_it(expr, ctx), "Expensive")
+
+        self.assertAlmostEqual(
+            float(self.render_it('"__time__";')), time.time(), delta=2
+        )
+
+        self.render_it('"100 ** 100 ** 100 ** 100";', e='Sorry')
+        self.render_it('"\'qwq\' * int(1e9)";', e='Sorry')
+        self.render_it('a="1 << 100000"; a;', e='Sorry')
+        self.render_it('s=qwq; a="(x for x in s)";', e='Sorry')
+        self.render_it('s=qwq; a="[x for x in s]";', e='Sorry')
+        self.render_it('s=qwq; a="{x:x for x in s}";', e='Sorry')
+        for s in ('lambda x: x', '[]', '()', '(1,)', '{}'):
+            self.render_it(f'"{s}";', e='Sorry')
+        for s in (
+            'list',
+            'tuple',
+            'dict',
+            'set',
+            'range',
+            'help',
+            'frozenset',
+            'bytearray',
+            'memoryview',
+            'open',
+            'os',
+            'sys',
+            '__import__',
+            'vars',
+        ):
+            self.render_it(f'a="{s}";', e='not defined')
+            self.render_it(f'a="{s}()";', e='not defined')
+        for p in (
+            '__class__',
+            '__bases__',
+            '__subclasses__',
+            '__globals__',
+            '__code__',
+            '__module__',
+            '__name__',
+            '__closure__',
+            '__self__',
+            '__func__',
+            '__dict__',
+            '__call__',
+        ):
+            self.render_it(f'a="{p}";', e='not defined')
+            self.render_it(f'a="int.{p}";', e='Sorry')
+            self.render_it(f'a="(1).{p}";', e='Sorry')
+            self.render_it(f'a="(1,).{p}";', e='Sorry')
+            self.render_it(f'a="\'\'.{p}";', e='Sorry')
+            self.render_it(f'a="None.{p}";', e='Sorry')
 
     def test_context_assignment(self):
         text = "{target=World}Hello {target}!"
@@ -277,11 +327,17 @@ n ? *bomb : Boom!;
         self.assertEqual(self.render_it(q), q)
         q = r'''s=`"'s=`' + s + '; ' + s + ';'"; "'s=`' + s + '; ' + s + ';'";'''
         self.assertEqual(self.render_it(q), q)
-        q = r'''I am also a quine!'''
+        q = r'''
+Write the following sentence twice, the second time within quotes.
+"Write the following sentence twice, the second time within quotes."
+'''.strip()
         self.assertEqual(self.render_it(q), q)
-        q = r'''"__file__()";'''
+        q = r'#/bin/cat'
+        self.assertEqual(self.render_it(q), q)
+        q = r'''"__file__";'''
         self.assertEqual(self.render_it(q), q)
         self.assertEqual(self.render_it(q * 2), q * 4)
+        self.assertEqual(self.render_it(q * 3), q * 9)
 
     def test_replace(self):
         self.assertEqual(self.render_it('s=114514; s|4/9; s;'), '119519')
