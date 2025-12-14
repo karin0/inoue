@@ -578,9 +578,9 @@ class RenderInterpreter(Interpreter):
         # The value is directly appended to output.
         if isinstance(inner := tree.children[0], Tree):
             match inner.data:
-                case 'assign':
-                    # Hijack the assignment "expression". Different semantics as statements.
-                    return self._assign_stmt(inner)
+                case 'assign_or_equal':
+                    # Hijack the AOE "expression". Different semantics as statements.
+                    return self._assign(inner)
                 case 'unary_chain':
                     # Optimize: flatten the unary chain directly to output, without capturing.
                     return self._unary_chain(inner, put=self._put_val)
@@ -642,8 +642,8 @@ class RenderInterpreter(Interpreter):
                 self._unary_chain(ch, put=put)
                 return self._gather_output(out, as_str=as_str)
 
-            case 'assign':
-                return self._assign_expr(ch)
+            case 'assign_or_equal':
+                return self._equal(ch)
 
             # Equality check: {key == val} (by string representation!)
             # `a==b` means `$a == 'b'`, and `a==$b` means `$a == $b`.
@@ -660,6 +660,15 @@ class RenderInterpreter(Interpreter):
 
                 with self._push():
                     self._code_block(ch)
+                    return self._gather_output(self._output, as_str=as_str)
+
+            case 'branch':
+                if self._depth >= MAX_DEPTH:
+                    self._error('block stack overflow')
+                    raise Abort()
+
+                with self._push():
+                    self.branch(ch)
                     return self._gather_output(self._output, as_str=as_str)
 
             # Python expression: {"1 + 1"}
@@ -778,13 +787,11 @@ class RenderInterpreter(Interpreter):
             trace('Rendering doc: %s %s', key, doc_id)
             return self._render(doc)
 
-    # Due to LALR limitations, assignment chains have very different semantics:
+    # Due to LALR limitations, AOE chains have very different semantics:
     # - In expression statements, they set context vars and return ''.
     # - Otherwise, they check whether all the assigned vars equal the final value, and return '1' or '0'.
     # But in both cases, the ASSIGN_OP besides the first one must be '='.
-    def _resolve_assign_chain(
-        self, tree: Tree
-    ) -> tuple[Sequence[str], str, Tree | None]:
+    def _resolve_aoe_chain(self, tree: Tree) -> tuple[Sequence[str], str, Tree | None]:
         keys = [_iden(tree.children[0])]
         op = narrow(tree.children[1], Token).value
         val = None
@@ -793,7 +800,7 @@ class RenderInterpreter(Interpreter):
             rest = narrow(rest, Tree)
             assert rest.data == 'expr'
             tree = rest.children[0]
-            if not (isinstance(tree, Tree) and tree.data == 'assign'):
+            if not (isinstance(tree, Tree) and tree.data == 'assign_or_equal'):
                 val = rest
                 break
             keys.append(_iden(tree.children[0]))
@@ -803,9 +810,9 @@ class RenderInterpreter(Interpreter):
         return keys, op, val
 
     # Do real assignments here.
-    def _assign_stmt(self, tree: Tree):
-        keys, op, expr = self._resolve_assign_chain(tree)
-        trace('Assign stmt: keys=%s op=%r expr=%s', keys, op, expr)
+    def _assign(self, tree: Tree):
+        keys, op, expr = self._resolve_aoe_chain(tree)
+        trace('Assign: keys=%s op=%r expr=%s', keys, op, expr)
 
         match op:
             case '=':
@@ -835,9 +842,9 @@ class RenderInterpreter(Interpreter):
             self._scope.set(key, val, f)
 
     # Equality test: {key1=key2=...=<expr>}, but not as expression statements.
-    def _assign_expr(self, tree: Tree) -> str:
-        keys, op, expr = self._resolve_assign_chain(tree)
-        trace('Assign expr: keys=%s op=%r expr=%s', keys, op, expr)
+    def _equal(self, tree: Tree) -> str:
+        keys, op, expr = self._resolve_aoe_chain(tree)
+        trace('Equal: keys=%s op=%r expr=%s', keys, op, expr)
         if op != '=':
             self._error('bad assign op in equality test: ' + op)
 

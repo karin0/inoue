@@ -27,6 +27,8 @@ stmt_list: [stmt] [";" stmt_list]
 // Despite the grammar, when the end branch marker `!` is absent, the semantics
 // only associate the first statement in the last branch, and the rest are executed
 // unconditionally.
+// `branch` is not treated as an expression due to ambiguity of `assign_or_equal`,
+// Like in `a = $b ? c : d`.
 branch: expr "?" stmt_list [":" stmt_list] [BRANCH_END]
 BRANCH_END: "!"
 
@@ -41,16 +43,16 @@ repl_pair: [expr] "/" [expr]
      | unary_chain
      | code_block
      | compare
-     | assign
+     | assign_or_equal
      | paren
 
 ?paren: "(" [expr] ")"
 
 // "Assignments" are technically expressions, but have different semantics as statements.
-// We have to distinguish between assignments and equality conditions in the interpreter
-// to avoid ambiguity of `=` in LALR.
+// We have to distinguish between assignments and equality conditions manually in
+// the interpreter to avoid ambiguity of `=` in LALR.
+assign_or_equal: iden ASSIGN_OP [expr]
 ASSIGN_OP: "=" | ":=" | "?="
-assign: iden ASSIGN_OP [expr]
 
 UNARY_OP: "+" | "-" | "*" | "$"
 unary: UNARY_OP iden
