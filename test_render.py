@@ -1,0 +1,632 @@
+import os
+import sys
+import unittest
+from unittest.mock import MagicMock
+
+sys.modules['db'] = MagicMock()
+
+db_instance = MagicMock()
+sys.modules['db'].db = db_instance
+
+sys.modules['util'] = MagicMock()
+sys.modules['util'].shorten = lambda x: x
+
+log_instance = MagicMock()
+sys.modules['util'].log = log_instance
+
+
+if os.environ.get('TRACE_TEST') == '1':
+    out = open('test.log', 'w', encoding='utf-8')
+    log_effect = lambda m, *a: print(m % a if a else m, file=out)
+    log_instance.debug.side_effect = log_effect
+    log_instance.info.side_effect = log_effect
+    log_instance.warning.side_effect = log_effect
+    log_instance.error.side_effect = log_effect
+
+from render_core import Value, Engine
+from render_context import persisted
+
+test_text = """
+Hello World
+{ user_name = user_nickname = 'Alice' }
+{ user_name_o := user_nickname_o = 'Alice' }
+{ user_name_2 = 'Alice' }
+{ default ?= 'N/A' }
+{ +is_login -is_active *qwq }
+{ is_login ?
+    "'User: ' + user_name"
+    :
+    is_active ?
+    { 'Active user: '; $user_name }
+}
+{ count := 1; +is_active }
+{ count_2 := x; +is_active }
+{ user_name }
+{ $user_nickname }
+{ user_name_o }
+{ "default + user_nickname_o" }
+{ raw_text = `This is naked`included!the!b`ac`kti`cks! ; $raw_text }
+{ a = b = c = d }
+{ a ? b } { c ?: d }
+this=that; this; `this; {'is'}; `naked;
+hello
+  the
+    wonderful
+     美丽新   world.
+$this;
+a=is also; a; 'naked';
+d?=D; e?=E; f?=F;
+{ a; b; c; d; e; f; count; count_2; raw_text }
+{ doc3:}
+{ :doc1 }
+{ :doc2 }
+{ price="100"; tax="0.08";}
+{"float(price) * (1 + float(tax)) > 105"?Expensive: Cheap}
+"""
+
+
+class TestRenderContext(unittest.TestCase):
+    def setUp(self):
+        db_instance.get_doc.return_value = None
+        persisted.clear()
+
+    def render_it(
+        self,
+        text: str,
+        overrides: dict[str, Value] | None = None,
+        *,
+        e: str | tuple[str, ...] = '',
+    ) -> str:
+        if overrides is None:
+            overrides = {}
+        ctx = Engine(overrides)
+        r = ctx.render(text)
+        if e:
+            if isinstance(e, str):
+                e = (e,)
+            for e in e:
+                self.assertTrue(
+                    any(e in str(err) for err in ctx.errors),
+                    f'Render: {text} expected error: {e}, got: {ctx.errors}',
+                )
+        else:
+            self.assertFalse(
+                ctx.errors,
+                f'Render: {text}\nerrors: {ctx.errors}\nctx: {ctx.ctx.items()}',
+            )
+        return r
+
+    def render_it_all(
+        self, text: str, overrides: dict[str, 'Value'] | None = None
+    ) -> tuple[str, Engine]:
+        if overrides is None:
+            overrides = {}
+        ctx = Engine(overrides)
+        r = ctx.render(text)
+        self.assertFalse(ctx.errors, f'Render: {text} errors: {ctx.errors}')
+        return r, ctx
+
+    def test_variable_substitution(self):
+        ctx = {'name': 'Sendai', 'role': 'Robot'}
+        text = "I am {name}, a {role}."
+        result = self.render_it(text, ctx)
+        self.assertEqual(result, "I am Sendai, a Robot.")
+
+    def test_flags(self):
+        result, ctx_on = self.render_it_all(
+            "{is_visible?Show:Hide}", {'is_visible': '1'}
+        )
+        self.assertEqual(result, "Show")
+
+        result, ctx_off = self.render_it_all(
+            "{is_visible?Show:Hide}", {'is_visible': '0'}
+        )
+        self.assertEqual(result, "Hide")
+        self.assertFalse(ctx_off.get_flag('is_visible'))
+        self.assertTrue(ctx_on.get_flag('is_visible'))
+
+    def test_flag_chain(self):
+        self.assertEqual(self.render_it('+a-b+c$a; b; c;'), '101')
+
+        def side_effect(name):
+            if name == 'doc':
+                return (1, 'd?=2; a; b; c; d;')
+            return None
+
+        db_instance.get_doc.side_effect = side_effect
+
+        self.assertEqual(self.render_it('-a-b+c*doc;'), '0012')
+        self.assertEqual(self.render_it('+a+b+c; *doc;'), '1112')
+        self.assertEqual(self.render_it('+a+b+c;\n:doc;'), '1112')
+        self.assertEqual(self.render_it('d=10; +a+b+c*doc*doc*doc;'), '11110' * 3)
+        self.assertEqual(
+            self.render_it('d=10; +a+b+c;\n:doc; :doc; :doc; *doc;'), '11110' * 4
+        )
+
+    def test_compare(self):
+        ctx = {'status': '200'}
+
+        self.assertEqual(self.render_it("{status=200?OK:ERR}", ctx), "OK")
+        self.assertEqual(self.render_it("{status==200?OK:ERR}", ctx), "OK")
+        self.assertEqual(self.render_it("{status=404?OK:ERR}", ctx), "ERR")
+        self.assertEqual(self.render_it("{status==404?OK:ERR}", ctx), "ERR")
+        self.assertEqual(self.render_it("{status={ b=200; b } ? OK : ERR}", ctx), "OK")
+        self.assertEqual(self.render_it("{status=={ b=200; b } ? OK : ERR}", ctx), "OK")
+
+        # No longer allowed; `==` must have both sides now.
+        # self.assertEqual(self.render_it('{a==?OK:ERR}', ctx, e='undefined'), "OK")
+        # self.assertEqual(self.render_it('{==a?OK:ERR}', ctx), "ERR")
+        # self.assertEqual(self.render_it('{==?OK:ERR}', ctx), "OK")
+
+    def test_assign(self):
+        ctx = {'status': '200'}
+        self.assertEqual(self.render_it("{s=OK}\ns;", ctx), "OK")
+        self.assertEqual(
+            self.render_it("{s={{ b=200; b } ? OK : ERR}}a\nb;s;", ctx), "a\n200OK"
+        )
+        self.assertEqual(
+            self.render_it("status={; c=\"100+100\"; c} ? OK : ERR;", ctx), "OK"
+        )
+        self.assertEqual(
+            self.render_it("status={; c=\"100+100\"; `200} ? OK : ERR;", ctx), "OK"
+        )
+
+        self.assertEqual(
+            self.render_it("{c?=d=e=100; c=d=200; status=c=d=200?OK:ERR}", ctx), "OK"
+        )
+        self.assertEqual(
+            self.render_it("{c:=d=e=200; c=d=100; status=c=d=200?OK:ERR}", ctx), "OK"
+        )
+        self.assertEqual(
+            self.render_it(
+                "{c:=d=e=200; c=d=f=g=100; s=xyxzyqx; s|y/c=e=200|x/c=$f|z/g=$f|q/g=f; d=c=d=200? $s :ERR; }",
+                ctx,
+            ),
+            "0101100",
+        )
+        self.assertEqual(
+            self.render_it(
+                '{c=d=e=200; f=100; x=(c=d=f); y=(c=d=e); z=(c?=d=e); w=(c:=d=$e); "x+y+z+w" }',
+                ctx,
+                e='bad assign op',
+            ),
+            "0001",
+        )
+
+        # Lazy evaluation is only for `?=`.
+        self.assertEqual(self.render_it('a=1; b=1; a={b=2; \'3\'}; a; b;'), '32')
+        self.assertEqual(self.render_it('a=1; b=1; a?={b=2; \'3\'}; a; b;'), '11')
+        self.assertEqual(self.render_it('a=0; b=1; a?={b=2; \'3\'}; a; b;'), '32')
+        self.assertEqual(self.render_it('a="0"; b=1; a?={b=2; \'3\'}; a; b;'), '32')
+        self.assertEqual(self.render_it('b=1; a?={b=2; \'3\'}; a; b;'), '32')
+        self.assertEqual(self.render_it('doc:; a=1; b=1; a?=b=*doc; a; b;'), '11')
+
+    def test_eval(self):
+        ctx = {'price': '100', 'tax': '0.08'}
+        expr = '{"float(price) * (1 + float(tax)) > 105"?Expensive:Cheap}'
+        result = self.render_it(expr, ctx)
+        self.assertEqual(result, "Expensive")
+
+    def test_context_assignment(self):
+        text = "{target=World}Hello {target}!"
+        result, ctx = self.render_it_all(text)
+        self.assertEqual(result, "Hello World!")
+        self.assertEqual(ctx.ctx['target'], 'World')
+
+        self.assertEqual(self.render_it("{a=b=c=3;a;b;c}"), "333")
+        self.assertEqual(self.render_it("{a=b=c=3;d=e=;a;d;b;e;c}"), "333")
+
+    def test_context_override(self):
+        text = "{mode:=write}{mode=read}Current: {mode}"
+        result, ctx = self.render_it_all(text)
+        self.assertEqual(result, "Current: write")
+        self.assertEqual(ctx.ctx.overrides['mode'], 'write')
+
+    def test_doc_recursion(self):
+        def side_effect(name):
+            if name == 'header':
+                return (1, "Title: {title}")
+            return None
+
+        db_instance.get_doc.side_effect = side_effect
+
+        result = self.render_it("{:header}\nBody", {'title': 'My Log'})
+        self.assertEqual(result, "Title: My Log\nBody")
+
+    def test_self_recursion(self):
+        text = r'''
+bomb: ; n ?= "10"; n; n = "n - 1";
+n ? *bomb : Boom!;
+'''.strip()
+        ctx = Engine({}, this_doc=(0, text))
+        result = ctx.render(text)
+        a = [str(x) for x in range(10, 0, -1)]
+        a.append('Boom')
+        self.assertEqual(result, '\n'.join(a))
+
+    def test_circular_dependency(self):
+        def side_effect(name):
+            if name == 'A':
+                return (1, "StartA {:B}")
+            if name == 'B':
+                return (2, "StartB {:A}")
+            return None
+
+        db_instance.get_doc.side_effect = side_effect
+
+        text = "{:A}"
+        ctx = Engine({})
+        result = ctx.render(text)
+        self.assertIn("StartB StartA StartB StartA StartB StartA", result)
+        self.assertIn("stack overflow", str(ctx.errors))
+
+    def test_swap(self):
+        result, ctx = self.render_it_all("{x=1; y=2; x^y; x; y}")
+        self.assertEqual(result, "21")
+        self.assertEqual(ctx.ctx['x'], '2')
+        self.assertEqual(ctx.ctx['y'], '1')
+
+        result = self.render_it("{a=hello; a^b; a}", e='undefined')
+        self.assertEqual(result, '')
+
+        result = self.render_it("{a=hello; a^b; b}")
+        self.assertEqual(result, 'hello')
+
+    def test_quine(self):
+        q = r'''s='s=%r; "s %% s";'; "s % s";'''
+        self.assertEqual(self.render_it(q), q)
+        q = r'''s=`"'s=`' + s + '; ' + s + ';'"; "'s=`' + s + '; ' + s + ';'";'''
+        self.assertEqual(self.render_it(q), q)
+        q = r'''I am also a quine!'''
+        self.assertEqual(self.render_it(q), q)
+        q = r'''"__file__()";'''
+        self.assertEqual(self.render_it(q), q)
+        self.assertEqual(self.render_it(q * 2), q * 4)
+
+    def test_replace(self):
+        self.assertEqual(self.render_it('s=114514; s|4/9; s;'), '119519')
+        self.assertEqual(self.render_it('s=hello world; s|world/; s;'), 'hello')
+        self.assertEqual(self.render_it('s=hello; s|/1; s;'), '1h1e1l1l1o1')
+        self.assertEqual(self.render_it('s=hello; s|h/|l/|o/|e/; s;'), '')
+        self.assertEqual(
+            self.render_it(
+                's=hello; s|h/{a=$s;}|l/{b=$s;}|{({`o})}/{c=$s;}|e/{d=$s}; s;a;b;c;d;'
+            ),
+            'helloelloeoe',
+        )
+
+    def test_empty_values(self):
+        text = '{;a=} {;b:=;} {c=; d=2345;} {d|4/} {"a+b+c+d"}'
+        result = self.render_it(text)
+        self.assertEqual(result, '235')
+
+    def test_nested_blocks(self):
+        text = '{ a=1; { b=2; { c=3; "a + b + c" }; "a + b" }; a }'
+        result = self.render_it(text)
+        self.assertEqual(result, '123121')
+
+    def test_nested_branches(self):
+        result = self.render_it(
+            '{ {x="10"; "x>5" ? y="20"; "y>15" ? High : Medium : Low} ;` rest }'
+        )
+        self.assertEqual(result, 'High rest')
+        result = self.render_it(
+            '{ x="0"; "x>5" ? y="20"; "y>15" ? High : Medium : Low ; `rest }'
+        )
+        self.assertEqual(result, 'Lowrest')
+
+        result = self.render_it(
+            '{ x="100"; "x>5" ? y="20"; "y>15" ? High : Medium : Low ; `rest }'
+        )
+        self.assertEqual(result, 'Highrest')
+
+    def test_nested_blocks_and_branches(self):
+        text = '{ a="1"; "a==1"? { b="2"; "a+b==3"? { c="3"; "a+b+c" } : "Wrong" } : "Wrong" }'
+        result = self.render_it(text)
+        self.assertEqual(result, '6')
+
+    def test_nested_expressions(self):
+        text = '{ a = "30"; b = "12"; c = ( ( "a + b" ) ) ; c }'
+        result = self.render_it(text)
+        self.assertEqual(result, '42')
+        self.assertEqual(self.render_it('{ ( ( ( 42 ) ) ) }'), '42')
+        self.assertEqual(self.render_it('{ ( ( ( ) ) ) }'), '')
+
+    def test_doc_name_definition(self):
+        def f(text):
+            ctx = Engine({})
+            ctx.render(text)
+            return ctx.doc_name
+
+        text = '{ doc_test: } This is doc.'
+        self.assertEqual(f(text), 'doc_test')
+
+        text = '{ doc_test:; } This is doc.'
+        self.assertEqual(f(text), 'doc_test')
+
+        text = '{ doc_test:; qwqw } {:doc_test} '
+        self.assertEqual(f(text), 'doc_test')
+
+        text = 'hello!\ndoc_test:; qwqw;\n{:doc_test}'
+        self.assertEqual(f(text), 'doc_test')
+
+    def test_scope(self):
+        self.assertEqual(self.render_it('{ a=1; @s { a=2; a }; a; s.a; }'), '212')
+        self.assertEqual(
+            self.render_it(
+                '{ a=1; a; @s { a; b=$a; a=2; a; @s { a; a=3; a }; s.a; a; b; }; s.s.a; s.a; s.b; a; @{ a; a=7; a; }; a; .a; }'
+            ),
+            '1122332132111717',
+        )
+
+        # Mutating outer scope using replacement.
+        self.assertEqual(
+            self.render_it('{ a=124524; a; @s { a; a|2/1; a; b=$a; }; a; s.b; "s.b" }'),
+            '124524' * 2 + '114514' * 4,
+        )
+
+        # Mutating outer scope using swapping.
+        self.assertEqual(
+            self.render_it('{ a=810; a; @s { a; b=893; b; a^b; a; b; }; s.b; a; }'),
+            '810' * 2 + '893' * 2 + '810810893',
+        )
+
+        # Paren as scope name.
+        text = '{ a=1; s="\'p\'"; a; s; @("s+\'m\'") { a; x?=$a; x="int(x)+1"; x; a=3; a }; a; pm.a; }'
+        self.assertEqual(self.render_it(text), '1p12313')
+
+        text = '{ a=1; t=m; s="\'p\'+t"; a; s; @($s) { a; x?=$a; x="int(x)+1"; x; a=2; a }; a; pm.a; }'
+        self.assertEqual(self.render_it(text), '1pm33212')
+
+    def test_static(self):
+        text = r't=0; @pm { a?="0"; a="a+1"; a^t; }; t; pm.a=$t;'
+        self.assertEqual(self.render_it(text), '1')
+
+        text = r'c=$pm.a; d="1"; @pm {a="root.c+d"; a;} ;'
+        self.assertEqual(self.render_it(text), '2')
+
+        text = r'pm.a?="0"; c=$pm.a; d="1"; @pm {a="root.c+d";}; pm.a;'
+        self.assertEqual(self.render_it(text), '3')
+
+        text = r'pm.a?="0"; c=$pm.a; d="1"; @pm {a="root.c+d";}; "pm.a";'
+        self.assertEqual(self.render_it(text), '4')
+
+        # PM keys can be overridden, but that makes them local and doesn't affect
+        # persisted ones.
+        text2 = r'@pm {t=$a; a:=11451; a; t; }; a?=810; a;'
+        self.assertEqual(self.render_it(text2), '114514810')
+        self.assertEqual(self.render_it(text2), '114514810')
+        self.assertEqual(self.render_it(text), '5')
+
+        text = r't=@pm {a="a+1";a}; t;'
+        self.assertEqual(self.render_it(text), '6')
+
+        text = r'@pm{}; pm.a="pm.a+1"; pm.a;'
+        self.assertEqual(self.render_it(text), '7')
+
+        text = r'@pm {a="a+1";a};'
+        self.assertEqual(self.render_it(text), '8')
+
+    def test_return_value(self):
+        # The type of the return value must be preserved if only one value is
+        # yielded from a `code_block` or `unary_chain`.
+        self.assertEqual(self.render_it('{ a={b="1"; b}; "a+1" }'), '2')
+        self.assertEqual(self.render_it('{ a={d={{"1"}}; +b-c$d}; "a+1" }'), '2')
+        self.assertEqual(
+            self.render_it(r'''{ a={d={{"1"}}; {d=="1"?q}; +b-c$d}; "a+'1'" }'''),
+            'q11',
+        )
+
+    def test_raw_text(self):
+        text = '{ a =` This is naked`?=i:n$cluded!the!b`ac`kti`c\nks! ; "1"; a; "2" }'
+        result = self.render_it(text)
+        self.assertEqual(result, '1 This is naked`?=i:n$cluded!the!b`ac`kti`c\nks! 2')
+
+    def test_common(self):
+        def side_effect(name):
+            if name == 'qwq':
+                return (1, "Default: {default} {$default}")
+            elif name == 'doc1':
+                return (2, "This is doc1:\na;b;\nc;\n")
+            elif name == 'doc2':
+                return (3, "This is doc2:\nthis;\n")
+            return None
+
+        db_instance.get_doc.side_effect = side_effect
+
+        result, ctx = self.render_it_all(test_text)
+        answer = 'Hello World\n\n\n\n\nDefault: N/A N/A\nUser: Alice\n\n\nAlice\nAlice\nAlice\nN/AAlice\nThis is naked`included!the!b`ac`kti`cks! \n\nb \nthatthisisnaked\nhello\n  the\n    wonderful\n     美丽新   world.\nthat\nis alsonaked\nis alsoddDEF1xThis is naked`included!the!b`ac`kti`cks! \n\nThis is doc1:\nis alsod\nd\n\nThis is doc2:\nthat\n\n\nExpensive'
+        self.assertEqual(result, answer)
+        self.assertEqual(ctx.doc_name, 'doc3')
+
+    def test_plain(self):
+        text = "This is a plain text without any variables."
+        result = self.render_it(text)
+        self.assertEqual(result, text)
+
+    def test_escape(self):
+        text = r"""{ text = 'He said: \'Hello, World!\'New line.'; text }"""
+        result = self.render_it(text)
+        self.assertEqual(result, "He said: 'Hello, World!'New line.")
+
+        text = r"""{ text = "'She replied: \"Hi there!\"Another line.'"; text }"""
+        result = self.render_it(text)
+        self.assertEqual(result, 'She replied: "Hi there!"Another line.')
+
+        text = r"""{ text = `Raw string with 'single;' and "}double{" quotes.; text }"""
+        result = self.render_it(text)
+        self.assertEqual(
+            result, r'''Raw string with 'single;' and "}double{" quotes.'''
+        )
+
+        text = r"""{ text = 'Mixing \'escaped;\' and `raw` quotes.'; text }"""
+        result = self.render_it(text)
+        self.assertEqual(result, "Mixing 'escaped;' and `raw` quotes.")
+
+        text = r"""{ text = `Mixing 'raw;' and \"unescaped\" quotes.; text }"""
+        result = self.render_it(text)
+        self.assertEqual(result, r'''Mixing 'raw;' and \"unescaped\" quotes.''')
+
+        text = r"""{ text = 'Escaped backslash: \\ and quote: \''; text }"""
+        result = self.render_it(text)
+        self.assertEqual(result, "Escaped backslash: \\ and quote: '")
+
+    def test_unclosed(self):
+        text = r"""{ text = `Raw backslash: \ and quote: '`; text }"""
+        result = self.render_it(text, e='Unclosed')
+        self.assertEqual(result, text.replace('\\', ''))
+
+        text = r''' { another = unclosed = block = "123" '''
+        result = self.render_it(text, e='Unclosed')
+        self.assertEqual(result, text.strip())
+
+        text = r'''a=1; a;'''
+        result = self.render_it(text)
+        self.assertEqual(result, '1')
+
+        text = r''' {1 {'2'} {3{4 {"'partly'"}; 'closed' '''
+        result = self.render_it(text, e='Unclosed')
+        self.assertEqual(result, "{1 2 {3{4 partly; 'closed'")
+
+        text = r'''Not block \{ 'is here!' \}'''
+        result = self.render_it(text)
+        self.assertEqual(result, text.replace('\\', ''))
+
+        text = r"'qwqwq'; } '123';"
+        result = self.render_it(text, e='Unexpected token')
+        self.assertEqual(result, '')
+
+        text = r"'1'; { '2'; { '3'; } {{{{{ '4'; };"
+        result = self.render_it(text, e=('Unbalanced', 'Unexpected token'))
+        self.assertEqual(result, '')
+
+    def test_prime(self):
+        text = r'''prime:;
+n ?= m = "2";
+"m * m > n" ? $n;
+"m * m > n or n % m == 0" ? n="n+1"; m="2" : m="m+1";
+:prime;
+'''
+        result = self.render_it(text, e='stack overflow')
+        self.assertTrue(result.startswith('2\n3\n5\n7\n11\n13'), result)
+
+        db = {}
+        db[
+            'iter0'
+        ] = r'''
+iter: ;
+"m * m <= n and n % m == 0" ? n="n+2"; m="2"; :;
+"m * m <= n and n % m" ? m="m > 2 and m+2 or 3";
+"m * m > n" ? $n; n="n+2";  m="2" :;
+'''
+        db['iter1'] = 'iter1:;' + '*iter0;' * 100
+        db['iter2'] = 'iter2:;' + '*iter1;' * 100
+        db['iter3'] = 'iter3:;' + '*iter2;' * 100
+        db['iter4'] = 'iter4:;' + '*iter3;' * 100
+
+        def side_effect(name):
+            if doc := db.get(name):
+                return (1, doc)
+            return None
+
+        db_instance.get_doc.side_effect = side_effect
+
+        text = (
+            r'''
+        prime2: ; n ?= m = "2";
+"m * m > n" ? $n; n="n > 2 and n+2 or 3"; m="2" :;
+'''
+            + '*iter4;' * 100
+            + '*prime2;'
+        )
+        result = self.render_it(text, e='out of gas')
+        ans = '\n'.join(str(v) for v in self.iter_prime(59))
+        self.assertTrue(result.startswith(ans), result)
+
+    @staticmethod
+    def iter_prime(limit: int):
+        yield 2
+        n = 3
+        while n <= limit:
+            for m in range(3, int(n**0.5) + 1):
+                if n % m == 0:
+                    break
+            else:
+                yield n
+            n += 2
+
+    def test_prime_pm(self):
+        # Use PM to persist state across multiple invocations.
+        text = r'''{prime_pm:; a=@pm {
+n ?= m = "2";
+{"m * m > n" ? $n;};
+{"m * m > n or n % m == 0" ? n="n+1"; m="2" : m="m+1";};
+}; a?"a-1+1":*prime_pm;}
+'''
+        for v in self.iter_prime(89):
+            self.assertEqual(self.render_it(text), str(v))
+        self.render_it(text, e='stack overflow')
+
+    def test_prime_pm2(self):
+        text = r'''{p:; a=@pm {
+n ?= m = "2";
+{"m * m > n" ? $n; n="n > 2 and n+2 or 3"; m="2" :;};
+{"m * m <= n and n % m == 0" ? n="n+2"; m="2" :;};
+{"m * m <= n and n % m" ? m="m > 2 and m+2 or 3"};
+}; a?$a;:*p;}
+'''
+        for v in self.iter_prime(283):
+            self.assertEqual(self.render_it(text), str(v))
+
+    def test_prime_pm3(self):
+        text = r'''p:;
+@{ x = @pm {
+    n ?= 0;
+    n ? {
+        { "m*m > n" ? $n; n="n+2"; m="3" :};
+        { "n%m == 0" ? n="n+2"; m="3" : m="m+2" };
+    } : { "2"; n=m="3"; }
+}; x ? 'Result: '; $x : *p;}
+'''
+        for v in self.iter_prime(100):
+            self.assertEqual(self.render_it(text).lstrip('@'), 'Result: ' + str(v))
+
+    def test_prime_pm4(self):
+        text1 = r'''
+@{ doc1:; x = @pm {
+   n ?= 0;
+   n ? "m*m>n" ? $n; n="n+2"; m="3" : !;;;;
+       "n%m"   ? m="m+2" : n="n+2"; m="3" !;;;
+     : "2"; n=m="3" !;
+}; x ? 'Result: '; $x : *doc1; x=0; ! }
+x ? rest;
+'''
+        text2 = r'''
+@{ doc1:; x = @pm {
+   n ?= 0;
+   n ? "m*m>n" ? $n; n="n+2"; m="3" : !;;;;
+       "n%m"   ? m="m+2" : n="n+2"; m="3" !;;;
+     : "2"; n=m="3" !;
+}; x ? 'Result: '; $x : *doc1; x=0; ! }
+x ? rest;
+'''
+
+        text3 = r'''
+@{ doc1:; x = @pm {
+   n ?= { n=m="3"; "print('Result: 2') or exit('\nrest')" };
+   "m*m>n" ? $n; n="n+2"; m="3" : !;
+   "n%m"   ? m="m+2" : n="n+2"; m="3" !;
+}; x ? 'Result: '; $x : *doc1; x=0; ! }
+x ? rest;
+'''
+
+        for text in (text1, text2, text3):
+            persisted.clear()
+            for v in self.iter_prime(100):
+                self.assertEqual(
+                    self.render_it(text).lstrip('@'), 'Result: ' + str(v) + '\nrest'
+                )
+
+
+if __name__ == '__main__':
+    unittest.main()
