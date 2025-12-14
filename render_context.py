@@ -48,6 +48,9 @@ class LRUDict(MutableMapping[str, Value]):
     def clear(self) -> None:
         return self._data.clear()
 
+    def items(self):
+        return self._data.items()
+
 
 # Static context variables are persisted across different `RenderInterpreter` instances.
 persisted = LRUDict()
@@ -78,6 +81,16 @@ class OverriddenDict(UserDict):
         if pm_key := get_pm_key(key):
             return pm_key in persisted
         return key in self.data
+
+    # For `set_or_del_raw` to work.
+    def __delitem__(self, key: str):
+        if pm_key := get_pm_key(key):
+            if key not in self.overrides:
+                del persisted[pm_key]
+            return
+
+        if key not in self.overrides:
+            del self.data[key]
 
     def __setitem__(self, key: str, val: Value):
         # For `=` operator.
@@ -125,6 +138,12 @@ class OverriddenDict(UserDict):
         # since existing overrides can never be removed or modified.
         self.data.update(self.overrides)
         return self.data.items()
+
+    def debug(self):
+        for k, v in self.finalize():
+            trace('  %s = %r', k, v)
+        for k, v in persisted.items():
+            trace('  (pm) %s = %r', k, v)
 
 
 def to_str(v: Value) -> str:

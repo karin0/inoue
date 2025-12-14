@@ -22,33 +22,9 @@ MAX_GAS = 1000
 lex_errors = []
 
 
-# First stage: find all "block lines" - lines that ends with `;`, which are treated
+# Find all "code blocks" and "block lines" - lines that ends with `;`, which are treated
 # like a `block_inner`.
-# For the other lines, we lex them again to find the real blocks `{ ... }` inside.
-def lex(text: str) -> Iterable[tuple[bool, str | None]]:
-    lines = []
-    for line in text.splitlines(keepends=True):
-        if (stem := line.rstrip()).endswith(';'):
-            if lines:
-                yield from _lex(''.join(lines))
-                lines.clear()
-            # Only `_lex` handles comments.
-            yield from _lex(stem, block=True)
-
-            if len(line) != len(stem):
-                # We are actually consuming the line break here, but yielding a `\n`
-                # each time would result in too many empty lines for consecutive block lines.
-                # `None` hints the implicit line break after the naked block here.
-                yield False, None
-        else:
-            lines.append(line)
-
-    if lines:
-        yield from _lex(''.join(lines))
-
-
-# Thanks to the first stage, we no longer care about line endings.
-def _lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str]]:
+def lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str | None]]:
     block_starts = []
     if block:
         # Pretend a `{` before the start.
@@ -61,6 +37,25 @@ def _lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str]]:
     escape = False
     escaping_indices = []
     cursor = 0  # number of chars processed
+
+    line_start = 0
+    line_buf = []
+
+    yield_kind = None
+    yield_buf = []
+
+    def yield_text(start: int, end: int):
+        if start >= end:
+            return
+
+        # Remove escaping `\` before `{`.
+        for i in escaping_indices:
+            assert start < i < end
+            yield_buf.append(text[start:i])
+            start = i + 1
+        escaping_indices.clear()
+
+        yield_buf.append(text[start:end])
 
     for p, c in enumerate(text):
         if escape:
@@ -96,24 +91,20 @@ def _lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str]]:
                 continue
             raw = False
             chunk = text[cursor + 1 : p]
-            trace('Raw literal:\n%s', chunk)
+            trace('Raw literal: %s', chunk)
             buf.append('\'')
             buf.append(chunk.replace("'", r"\'"))
             buf.append('\'')
             cursor = p
 
+        yield_kind = None
+        yield_buf.clear()
+
         match c:
             case '{':
                 if not block_starts:
-                    c = cursor
-                    # Remove escaping `\` before `{`.
-                    for i in escaping_indices:
-                        assert c < i < p
-                        yield False, text[c:i]
-                        c = i + 1
-                    escaping_indices.clear()
-                    if c < p:
-                        yield False, text[c:p]
+                    yield_kind = False
+                    yield_text(cursor, p)
                     cursor = p
 
                 block_starts.append(p)
@@ -137,7 +128,9 @@ def _lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str]]:
                     chunk = ''.join(buf)[1:].strip()
                     buf.clear()
                     if chunk:
-                        yield True, chunk
+                        trace('Lexed block: %r', chunk)
+                        yield_kind = True
+                        yield_buf.append(chunk)
                     cursor = p + 1
 
             case _:
@@ -157,6 +150,11 @@ def _lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str]]:
                             if chunk := text[cursor:p]:
                                 buf.append(chunk)
                             cursor = p
+                        case '\n':
+                            line_start = None
+                            if line_buf:
+                                yield from line_buf
+                                line_buf.clear()
 
                 # We only handles escaping '\' chars inside quotes (which is inside blocks)
                 # or outside any blocks (which escapes '{' and '}').
@@ -164,6 +162,63 @@ def _lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str]]:
                 elif c == '\\':
                     escape = True
                     escaping_indices.append(p)
+                elif c == '\n':
+                    if line_start is not None:
+                        line = text[line_start:p]
+                        trace('Line: %r', line)
+
+                        if (stem := line.rstrip()).endswith(';'):
+                            # Naked block line inside inline text.
+                            trace(
+                                'Naked block line: %r\n  Dropped: %s',
+                                line,
+                                line_buf,
+                            )
+                            line_buf.clear()
+                            escaping_indices.clear()
+
+                            yield False, text[cursor:line_start]
+                            cursor = p + 1
+                            yield from lex(stem, block=True)
+
+                            # We are actually consuming the line break here, but yielding a `\n`
+                            # each time would result in too many empty lines for consecutive block lines.
+                            # `None` hints the implicit line break after the naked block here.
+                            yield False, None
+
+                            line_start = p + 1
+                            continue
+
+                    if line_buf:
+                        yield from line_buf
+                        line_buf.clear()
+
+                    yield_kind = False
+                    yield_text(cursor, p + 1)
+                    cursor = line_start = p + 1
+
+        if yield_kind is not None:
+            if any('\n' in part for part in yield_buf):
+                for fragment in yield_buf:
+                    yield yield_kind, fragment
+            else:
+                for fragment in yield_buf:
+                    trace('Preserving inline fragment: %s %r', yield_kind, fragment)
+                    line_buf.append((yield_kind, fragment))
+
+    # Flush final line buffer, pretending a EOF.
+    if not block and line_start is not None:
+        line = text[line_start:]
+        trace('Final Line: %r', line)
+
+        if (stem := line.rstrip()).endswith(';'):
+            trace('Final naked block line: %r\n  Dropped: %s', line, line_buf)
+            yield False, text[cursor:line_start]
+            yield from lex(stem, block=True)
+            return
+
+    if line_buf:
+        yield from line_buf
 
     # Pretend a final `}` if `block` is set.
     if block:
@@ -196,7 +251,7 @@ def _lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str]]:
 
         rest = text[p + 1 :]
         trace('Recovering rest: %s', rest)
-        yield from _lex(rest)
+        yield from lex(rest)
         return
 
     # `buf` must be empty, since `block_starts` is empty.
@@ -339,7 +394,11 @@ class RenderInterpreter(Interpreter):
         if not self.this_doc:
             self.this_doc = (None, text)
         # Internal document expansion does not trim spaces.
-        return self._render(text, strip=True)
+        r = self._render(text, strip=True)
+        if is_tracing:
+            trace('Final rendered result: %r', r)
+            self.ctx.debug()
+        return r
 
     def get_flag(self, key: str, default: bool = False) -> bool:
         val = self.ctx.get(key, default)
@@ -566,7 +625,7 @@ class RenderInterpreter(Interpreter):
             case 'code_block':
                 if self._depth >= MAX_DEPTH:
                     self._error('block stack overflow')
-                    return ''
+                    raise Abort()
 
                 with self._push():
                     self._code_block(ch)
@@ -659,7 +718,7 @@ class RenderInterpreter(Interpreter):
         # Recursion is allowed up to a limit.
         if self._depth >= MAX_DEPTH:
             self._error('stack overflow')
-            return ''
+            raise Abort()
 
         with self._push():
             trace('Rendering doc: %s %s', key, doc_id)
