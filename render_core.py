@@ -282,6 +282,10 @@ class Abort(Exception):
     pass
 
 
+class Exit(Exception):
+    pass
+
+
 class RenderInterpreter(Interpreter):
     def __init__(
         self,
@@ -298,16 +302,29 @@ class RenderInterpreter(Interpreter):
         self.first_doc_id: int | None = None
 
         self._output: list[Value] = []
+        self._root_output: list[str] = []
         self._depth: int = 0
         self._branch_depth: int = 0
         self._dirty: bool = False
 
         self._scope = ScopedContext(
-            self.ctx, self._error, {'__file__': self._get_doc_func}
+            self.ctx,
+            self._error,
+            {
+                '__file__': self._get_doc_func,
+                'print': self._print_func,
+                'exit': self._exit_func,
+            },
         )
         self._tree: Tree | None = None
         self._aborted: bool = False
-        self._gas: int = MAX_GAS
+        self._gas: int = 0
+
+    def _consume_gas(self):
+        if self._gas >= MAX_GAS:
+            self._error('out of gas')
+            raise Abort()
+        self._gas += 1
 
     def _put(self, text: str):
         if text:
@@ -362,9 +379,16 @@ class RenderInterpreter(Interpreter):
 
                 try:
                     self.visit(tree)
+                except Exit as e:
+                    trace('Rendering exited at fragment: %s', shorten(fragment))
+                    for val in e.args:
+                        self._put(to_str(val))
+                    continue
                 except Abort:
                     with notify.suppress():
-                        log.error('Parsing aborted at fragment: %s', shorten(fragment))
+                        log.warning(
+                            'Rendering aborted at fragment: %s', shorten(fragment)
+                        )
                     self._aborted = True
                     continue
             else:
@@ -405,11 +429,6 @@ class RenderInterpreter(Interpreter):
         return bool(val) and val != '0'
 
     def visit(self, tree: Tree):
-        if self._gas <= 0:
-            self._error('out of gas')
-            raise Abort()
-        self._gas -= 1
-
         assert isinstance(tree, Tree)
         self._tree = tree
 
@@ -417,11 +436,13 @@ class RenderInterpreter(Interpreter):
             trace(
                 '[%d %d] %s: %d %s',
                 self._depth,
-                MAX_GAS - self._gas,
+                self._gas,
                 tree.data,
                 len(tree.children),
                 tree.children,
             )
+
+        self._consume_gas()
         return super().visit(tree)
 
     # Override lark visitor to raise on unhandled nodes.
@@ -462,9 +483,21 @@ class RenderInterpreter(Interpreter):
         finally:
             self._depth -= 1
             trace('Pop: %d %s %s', self._depth, self._output, old_output)
+            assert self._depth >= 0
+            if self._depth == 0 and self._root_output:
+                old_output.extend(self._root_output)
+                self._root_output.clear()
             self._output = old_output
             self._branch_depth = old_branch_depth
             self._dirty = old_dirty
+
+    def _print_func(self, *args):
+        out = self._root_output if self._depth > 0 else self._output
+        for val in args:
+            out.append(to_str(val))
+
+    def _exit_func(self, *args):
+        raise Exit(*args)
 
     def _block_inner(self, tree: Tree):
         stmts = tree.children.pop()
@@ -508,12 +541,16 @@ class RenderInterpreter(Interpreter):
     # Conditional branch: {<cond> ? true-directive : false-directive} (false part optional)
     def branch(self, tree: Tree):
         cond = narrow(tree.children[0], Tree)
-        val = self._expr(cond, permissive=True)
+
+        # Allow undefined vars as falsy in conditions.
+        # Note that `$var ? 1 : 0` still emits errors when `var` is undefined.
+        val = self._expr(cond, permissive=True, allow_undef=True)
         test = val and val != '0'
 
-        # The associativity of `branch` is too greedy and consumes all chained
-        # statements in a recursive stmt_list.
-        # We keep only the first stmt and execute the rest unconditionally.
+        # The associativity of `branch` is too greedy and consumes all statements
+        # in a recursive `stmt_list`, like in `a ? b ; c; d` being parsed as
+        # `a ? {b ; c ; d}`.
+        # We keep only the first stmt here and execute the rest unconditionally.
         left = tree.children[1]
         right = tree.children[2]
         if tree.children[3] is None:
@@ -530,21 +567,25 @@ class RenderInterpreter(Interpreter):
         else:
             if (to := left if test else right) is not None:
                 to = narrow(to, Tree)
-                self._branch_depth += 1
                 assert to.data == 'stmt_list'
-                self._stmt_list(to)
-                self._branch_depth -= 1
+                self._branch_depth += 1
+                try:
+                    self._stmt_list(to)
+                finally:
+                    self._branch_depth -= 1
             return
 
         if (to := left if test else right) is not None:
             to = narrow(to, Tree)
             self._branch_depth += 1
-            if visit:
-                self.visit(to)
-            else:
-                assert to.data == 'stmt_list'
-                self._stmt_list(to)
-            self._branch_depth -= 1
+            try:
+                if visit:
+                    self.visit(to)
+                else:
+                    assert to.data == 'stmt_list'
+                    self._stmt_list(to)
+            finally:
+                self._branch_depth -= 1
 
         if rest is not None:
             rest = narrow(rest, Tree)
@@ -568,8 +609,10 @@ class RenderInterpreter(Interpreter):
                 name = _iden(name)
 
             self._scope.push(name)
-            self._block_inner(inner)
-            self._scope.pop()
+            try:
+                self._block_inner(inner)
+            finally:
+                self._scope.pop()
         else:
             self._block_inner(inner)
 
@@ -599,7 +642,12 @@ class RenderInterpreter(Interpreter):
         return s
 
     def _expr(
-        self, tree: Tree, *, as_str: bool = False, permissive: bool = False
+        self,
+        tree: Tree,
+        *,
+        as_str: bool = False,
+        permissive: bool = False,
+        allow_undef: bool = False,
     ) -> Value:
         '''
         Naked literals are treated as context vars when `permissive` is True.
@@ -608,16 +656,12 @@ class RenderInterpreter(Interpreter):
         if is_tracing:
             trace(
                 '[%d] _expr: %s permissive=%s as_str=%s',
-                MAX_GAS - self._gas,
+                self._gas,
                 tree,
                 permissive,
                 as_str,
             )
-
-        if self._gas <= 0:
-            self._error('out of gas')
-            raise Abort()
-        self._gas -= 1
+        self._consume_gas()
 
         while True:
             assert len(tree.children) == 1
@@ -683,6 +727,9 @@ class RenderInterpreter(Interpreter):
                 )
                 try:
                     val = self._scope.eval(expr)
+                except Exit as e:
+                    trace(f'evaluate: %r', e)
+                    raise
                 except Exception as e:
                     self._error(f'evaluate: {expr!r}: {type(e).__name__}: {e}')
                     return ''
@@ -704,6 +751,9 @@ class RenderInterpreter(Interpreter):
             case 'naked_lit':
                 key = _iden(ch.children[0])
                 if permissive and not any(c.isspace() for c in key):
+                    if allow_undef:
+                        _, val = self._scope.resolve_raw(key, as_str=as_str)
+                        return '' if val is None else val
                     return self._scope.get(key, as_str=as_str)
                 return key
 
