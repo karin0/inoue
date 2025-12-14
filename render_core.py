@@ -169,11 +169,7 @@ def lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str | None]]:
 
                         if (stem := line.rstrip()).endswith(';'):
                             # Naked block line inside inline text.
-                            trace(
-                                'Naked block line: %r\n  Dropped: %s',
-                                line,
-                                line_buf,
-                            )
+                            trace('Naked block line: %r\n  Dropped: %s', line, line_buf)
                             line_buf.clear()
                             escaping_indices.clear()
 
@@ -319,6 +315,8 @@ class RenderInterpreter(Interpreter):
 
     # Keep the original type to preserve types in code_block as expression when possible.
     def _put_val(self, val: Value):
+        if is_tracing and val != '':
+            trace('Putting value: %r', val)
         if isinstance(val, str):
             self._put(val)
         else:
@@ -674,12 +672,12 @@ class RenderInterpreter(Interpreter):
         assert tree.children, tree
         for ch in tree.children:
             val = self._unary(narrow(ch, Tree))
-            trace('Unary chain part: %r', val)
             put(val)
 
     def _unary(self, tree: Tree, *, as_str: bool = False) -> Value:
         op = narrow(tree.children[0], Token).value
         key = _iden(tree.children[1])
+        trace('Unary: %s %s', op, key)
 
         match op:
             case '+':
@@ -702,6 +700,12 @@ class RenderInterpreter(Interpreter):
                 raise ValueError(f'Bad deref op: {op}')
 
     def _doc_ref(self, key: str) -> str:
+        # Special magic to get the current document content.
+        if key == '__file__':
+            if self.this_doc:
+                return self.this_doc[1]
+            return ''
+
         # Allow self-reference in `handle_render` and `handle_render_doc`,
         # where the doc is not saved yet.
         # Note that `doc_id` can be None in `handle_render`, where the
