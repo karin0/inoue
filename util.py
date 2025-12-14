@@ -1,10 +1,12 @@
 import os
+import time
 import asyncio
 import logging
 import traceback
 
 from html import escape as html_escape
 from typing import Sequence
+from collections import deque
 from contextlib import contextmanager
 from contextvars import ContextVar
 
@@ -128,6 +130,27 @@ def use_is_guest(is_guest: bool):
             ctx_is_guest.reset(token_guest)
 
 
+NOTIFY_LIMIT_INTERVAL_SEC = 20
+NOTIFY_LIMIT_BURST = 5
+
+notify_moments = deque(maxlen=NOTIFY_LIMIT_BURST)
+notify_buf = []
+
+
+async def _flush_notify_buf():
+    if n := len(notify_buf):
+        text = '\n'.join(notify_buf)
+        text = truncate_text(text)
+        notify_buf.clear()
+        log.info('flushing %s buffered notifications (%s chars)', n, len(text))
+        await do_notify(text)
+
+
+def flush_notify_buf():
+    if notify_buf:
+        asyncio.create_task(_flush_notify_buf())
+
+
 async def do_notify(
     text: str,
     parse_mode: str | None = None,
@@ -137,6 +160,20 @@ async def do_notify(
     quiet: bool = False,
     **kwargs,
 ):
+    loop = asyncio.get_event_loop()
+    now = loop.time()
+    while notify_moments and now - notify_moments[0] >= NOTIFY_LIMIT_INTERVAL_SEC:
+        notify_moments.popleft()
+
+    if len(notify_moments) >= NOTIFY_LIMIT_BURST:
+        notify_buf.append(text)
+        dt = NOTIFY_LIMIT_INTERVAL_SEC - (now - notify_moments[0]) + 1
+        with notify.suppress():
+            log.warning('do_notify: rate limited, flushing in %.3f secs', dt)
+        loop.call_later(dt, flush_notify_buf)
+        return
+    notify_moments.append(now)
+
     if m := message or msg.get(None):
         try:
             if revocable:
@@ -157,7 +194,8 @@ async def do_notify(
             else:
                 await bot.send_message(USER_ID, text, parse_mode, **kwargs)
         except Exception:
-            traceback.print_exc()
+            with notify.suppress():
+                log.exception('do_notify: send_message failed')
 
 
 type MessageSource = Message | Update | None
