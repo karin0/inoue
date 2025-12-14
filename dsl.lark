@@ -14,7 +14,7 @@ SCOPE_OP: "@"
 !doc_def: iden ":"
 !doc_ref: ":" iden
 
-stmt_list: stmt? [";" stmt_list]
+stmt_list: [stmt] [";" stmt_list]
 
 ?stmt: swap
      | repl
@@ -24,8 +24,8 @@ stmt_list: stmt? [";" stmt_list]
 // Other statements
 
 // Expressions cannot be empty in conditions.
-// We have to distinguish between assignments and equality conditions in the interpreter
-// to avoid ambiguity of `=` in LALR.
+// Despite the grammar, the semantics only associate the first statement in the
+// last branch. The rest are executed unconditionally.
 branch: expr "?" stmt_list [":" stmt_list]
 
 swap: iden "^" iden
@@ -45,6 +45,8 @@ repl_pair: [expr] "/" [expr]
 ?paren: "(" [expr] ")"
 
 // "Assignments" are technically expressions, but have different semantics as statements.
+// We have to distinguish between assignments and equality conditions in the interpreter
+// to avoid ambiguity of `=` in LALR.
 ASSIGN_OP: "=" | ":=" | "?="
 assign: iden ASSIGN_OP [expr]
 

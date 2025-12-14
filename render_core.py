@@ -496,12 +496,9 @@ class RenderInterpreter(Interpreter):
         # Flatten right-recursion.
         while True:
             if (stmt := tree.children[0]) is not None:
-                if (stmt := narrow(stmt, Tree)).data == 'stmt_list':
-                    tree = stmt
-                    continue
                 self.visit(stmt)
 
-            if len(tree.children) > 1 and (rest := tree.children[1]) is not None:
+            if (rest := tree.children[1]) is not None:
                 rest = narrow(rest, Tree)
                 assert rest.data == 'stmt_list'
                 tree = rest
@@ -514,16 +511,42 @@ class RenderInterpreter(Interpreter):
         assert cond.data == 'expr'
 
         val = self._expr(cond, permissive=True)
-        if val and val != '0':
-            branch = tree.children[1]
-        elif not (branch := tree.children[2]):
-            return
+        test = val and val != '0'
 
-        to = narrow(branch, Tree)
-        assert to.data == 'stmt_list'
-        self._branch_depth += 1
-        self._stmt_list(to)
-        self._branch_depth -= 1
+        # The associativity of `branch` is too greedy and consumes all chained
+        # statements in a recursive stmt_list.
+        # We keep only the first stmt and execute the rest unconditionally.
+        left = tree.children[1]
+        if (right := tree.children[2]) is not None:
+            right = narrow(right, Tree)
+            assert right.data == 'stmt_list'
+            rest = right.children[1]
+            right = right.children[0]
+            visit = not test
+        else:
+            left = narrow(left, Tree)
+            assert left.data == 'stmt_list'
+            rest = left.children[1]
+            left = left.children[0]
+            visit = test
+
+        if (to := left if test else right) is not None:
+            to = narrow(to, Tree)
+
+            self._branch_depth += 1
+
+            if visit:
+                self.visit(to)
+            else:
+                assert to.data == 'stmt_list'
+                self._stmt_list(to)
+
+            self._branch_depth -= 1
+
+        if rest is not None:
+            rest = narrow(rest, Tree)
+            assert rest.data == 'stmt_list'
+            self._stmt_list(rest)
 
     # Nested block: {{ ... }}
     # With scope: {@name {...}} (name optional, defaults to '_')
