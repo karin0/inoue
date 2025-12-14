@@ -145,8 +145,8 @@ class OverriddenDict(UserDict):
     # This only affects the `overrides` dict, which has higher priority than
     # the underlying dict by their *values*, but are placed after those touched
     # by `=` and `?=` in the natural order of *keys*.
-    # However, the existing `overrides` keys are frozen and can never be modified
-    # or removed.
+    # However, the existing `overrides` keys are frozen and can NEVER be modified
+    # or removed, even by `:=` itself.
     def setdefault_override(self, key: str, value: Value) -> Value:
         return self.overrides.setdefault(key, value)
 

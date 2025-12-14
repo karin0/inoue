@@ -1,12 +1,12 @@
 start: block_inner
 
-// Block
-
-code_block: [SCOPE_OP ([iden] | paren)] "{" block_inner "}"
+// Block, with an optional scope.
+code_block: [SCOPE_OP [dyn_iden]] "{" block_inner "}"
 SCOPE_OP: "@"
 
-// LIMIT: `doc` must be before any statements in the block.
-// Use `*doc` for document expansion inside statements.
+// LIMIT: `doc` must be before any statements in the block, to avoid ambiguity
+// with 'branch'.
+// Use `*doc` for document expansion inside expressions/statements.
 !block_inner: [(doc_def | doc_ref) (";" doc_ref)*] stmt_list
 
 // Statements... or document definitions/references.
@@ -21,6 +21,10 @@ stmt_list: [stmt] [";" stmt_list]
      | expr
      | branch
 
+// Variable names can be dynamically evaluated, except in 'expr' (permissive)
+// and 'repl'.
+?dyn_iden: iden | paren
+
 // Other statements
 
 // Expressions cannot be empty in conditions.
@@ -32,13 +36,12 @@ stmt_list: [stmt] [";" stmt_list]
 branch: expr "?" stmt_list [":" stmt_list] [BRANCH_END]
 BRANCH_END: "!"
 
-swap: iden "^" iden
+swap: dyn_iden "^" dyn_iden
 
 repl: iden ("|" repl_pair)+
 repl_pair: [expr] "/" [expr]
 
-// Expressions
-
+// Expressions.
 !expr: literal
      | unary_chain
      | code_block
@@ -46,16 +49,19 @@ repl_pair: [expr] "/" [expr]
      | assign_or_equal
      | paren
 
-?paren: "(" [expr] ")"
+// Parentheses cannot be empty. Use '' for a empty value.
+?paren: "(" expr ")"
 
 // "Assignments" are technically expressions, but have different semantics as statements.
 // We have to distinguish between assignments and equality conditions manually in
 // the interpreter to avoid ambiguity of `=` in LALR.
-assign_or_equal: iden ASSIGN_OP [expr]
+assign_or_equal: dyn_iden ASSIGN_OP [expr]
 ASSIGN_OP: "=" | ":=" | "?="
 
+// Not arithmetic operators!
 UNARY_OP: "+" | "-" | "*" | "$"
-unary: UNARY_OP iden
+
+!unary: UNARY_OP dyn_iden
 !unary_chain: unary+
 
 // Even more equality! Expressions cannot be empty here either.
@@ -64,13 +70,15 @@ compare: expr _EQUAL expr
 // Higher than ASSIGN_OP.
 _EQUAL.10: "=="
 
+// A 'naked_lit' is actually either a identifier or literal, but distinguishing
+// them here breaks lexing, since we want to allow whitespaces inside naked literals.
 ?literal: ESCAPED_STRING  -> dq_lit
         | SQ_STRING       -> sq_lit
-        | iden            -> naked_lit  // Actually either var or literal, but that breaks LALR's parsing.
+        | iden            -> naked_lit
 
 ?iden: LITERAL
 
-// Terminals
+// Terminals.
 
 // Exclude all punctuations except '_', '<', '>', '.' from naked literals.
 LITERAL.-100: /[^\"#$%&'()*+\-,\/:;=?!@[\\\]^`{|}~]+/

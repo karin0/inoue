@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import warnings
 import unittest
 from unittest.mock import MagicMock
 
@@ -125,8 +126,9 @@ class TestRender(unittest.TestCase):
         self.assertFalse(ctx_off.get_flag('is_visible'))
         self.assertTrue(ctx_on.get_flag('is_visible'))
 
-    def test_flag_chain(self):
+    def test_unary(self):
         self.assertEqual(self.render_it('+a-b+c$a; b; c;'), '101')
+        self.assertEqual(self.render_it('k=a; +a-b+c$(k); b; c;'), '101')
 
         def side_effect(name):
             if name == 'doc':
@@ -153,12 +155,7 @@ class TestRender(unittest.TestCase):
         self.assertEqual(self.render_it("{status={ b=200; b } ? OK : ERR}", ctx), "OK")
         self.assertEqual(self.render_it("{status=={ b=200; b } ? OK : ERR}", ctx), "OK")
 
-        # No longer allowed; `==` must have both sides now.
-        # self.assertEqual(self.render_it('{a==?OK:ERR}', ctx, e='undefined'), "OK")
-        # self.assertEqual(self.render_it('{==a?OK:ERR}', ctx), "ERR")
-        # self.assertEqual(self.render_it('{==?OK:ERR}', ctx), "OK")
-
-    def test_assign(self):
+    def test_assign_or_equal(self):
         ctx = {'status': '200'}
         self.assertEqual(self.render_it("{s=OK}\ns;", ctx), "OK")
         self.assertEqual(
@@ -195,11 +192,15 @@ class TestRender(unittest.TestCase):
 
         # Lazy evaluation is only for `?=`.
         self.assertEqual(self.render_it('a=1; b=1; a={b=2; \'3\'}; a; b;'), '32')
-        self.assertEqual(self.render_it('a=1; b=1; a?={b=2; \'3\'}; a; b;'), '11')
-        self.assertEqual(self.render_it('a=0; b=1; a?={b=2; \'3\'}; a; b;'), '32')
+        self.assertEqual(self.render_it('a=1; b=1; a?={b=2; \'3\'}; $a; b;'), '11')
+        self.assertEqual(self.render_it('a=0; b=1; a?={b=2; \'3\'}; a; $b;'), '32')
         self.assertEqual(self.render_it('a="0"; b=1; a?={b=2; \'3\'}; a; b;'), '32')
         self.assertEqual(self.render_it('b=1; a?={b=2; \'3\'}; a; b;'), '32')
         self.assertEqual(self.render_it('doc:; a=1; b=1; a?=b=*doc; a; b;'), '11')
+
+        # Dynamic variable names.
+        self.assertEqual(self.render_it('a=b; (a)=a=1; $a; $b; '), '11')
+        self.assertEqual(self.render_it('a=b; (a)=a=1; c=1; d=b; (d)=a=$c?A:B;'), 'A')
 
     def test_eval(self):
         ctx = {'price': '100', 'tax': '0.08'}
@@ -213,11 +214,25 @@ class TestRender(unittest.TestCase):
         self.render_it('"100 ** 100 ** 100 ** 100";', e='Sorry')
         self.render_it('"\'qwq\' * int(1e9)";', e='Sorry')
         self.render_it('a="1 << 100000"; a;', e='Sorry')
+        self.render_it('a=2; b="(a:=\'1\')"; a;', e='Sorry')
+
+        # Assignments are not allowed.
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            self.assertEqual(
+                self.render_it(
+                    'a=2; b="a=\'1\'"; a;',
+                ),
+                "2",
+            )
+
         self.render_it('s=qwq; a="(x for x in s)";', e='Sorry')
         self.render_it('s=qwq; a="[x for x in s]";', e='Sorry')
         self.render_it('s=qwq; a="{x:x for x in s}";', e='Sorry')
+
         for s in ('lambda x: x', '[]', '()', '(1,)', '{}'):
             self.render_it(f'"{s}";', e='Sorry')
+
         for s in (
             'list',
             'tuple',
@@ -319,7 +334,7 @@ n ? *bomb : Boom!;
         result = self.render_it("{a=hello; a^b; a}", e='undefined')
         self.assertEqual(result, '')
 
-        result = self.render_it("{a=hello; a^b; b}")
+        result = self.render_it("{a=hello; a^b; $b}")
         self.assertEqual(result, 'hello')
 
     def test_quine(self):
@@ -386,7 +401,6 @@ Write the following sentence twice, the second time within quotes.
         result = self.render_it(text)
         self.assertEqual(result, '42')
         self.assertEqual(self.render_it('{ ( ( ( 42 ) ) ) }'), '42')
-        self.assertEqual(self.render_it('{ ( ( ( ) ) ) }'), '')
 
     def test_doc_name_definition(self):
         def f(text):
@@ -433,6 +447,10 @@ Write the following sentence twice, the second time within quotes.
 
         text = '{ a=1; t=m; s="\'p\'+t"; a; s; @($s) { a; x?=$a; x="int(x)+1"; x; a=2; a }; a; pm.a; }'
         self.assertEqual(self.render_it(text), '1pm33212')
+
+        # Scope with empty name is not global.
+        text = '{ a=1; a; @ {a; b=2; a; b; a=3; a; b; a^b; a; b; b="root.a"; b; @{c=$b} }; a; .a; .b; ..c; pm.a; }'
+        self.assertEqual(self.render_it(text), '11123223112112')
 
     def test_static(self):
         text = r't=0; @pm { a?="0"; a="a+1"; a^t; }; t; pm.a=$t;'

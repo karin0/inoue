@@ -33,11 +33,6 @@ def narrow(x: Tree | Token, target_type: Type[T]) -> T:
     return cast(T, x)
 
 
-# LALR cannot distinguish VAR from LITERAL, so we have to strip manually.
-def _iden(tree: Tree | Token) -> str:
-    return narrow(tree, Token).value.strip()
-
-
 class Abort(Exception):
     pass
 
@@ -268,7 +263,7 @@ class Engine(Interpreter):
                 # Db doc name set: {name:}
                 case 'doc_def':
                     if self._depth == 0:
-                        key = _iden(ch.children[0])
+                        key = self._iden(ch.children[0])
                         if self.doc_name:
                             self._error(f'doc name redefined: {self.doc_name} -> {key}')
                         else:
@@ -276,7 +271,7 @@ class Engine(Interpreter):
                             self.doc_name = key
                 # Db doc expand: {:doc} (same as {*doc} in unary expressions)
                 case 'doc_ref':
-                    iden = _iden(ch.children[-1])
+                    iden = self._iden(ch.children[-1])
                     self._put(self._doc_ref(iden))
                 case _:
                     raise ValueError(f'Bad block_inner child: {ch}')
@@ -362,11 +357,8 @@ class Engine(Interpreter):
             assert narrow(op, Token).type == 'SCOPE_OP'
             if (name := tree.children[1]) is None:
                 name = ''
-            elif isinstance(name, Tree):
-                name = self._expr(name, as_str=True)
-                assert isinstance(name, str), name
             else:
-                name = _iden(name)
+                name = self._dyn_iden(name)
 
             self._scope.push(name)
             try:
@@ -423,18 +415,14 @@ class Engine(Interpreter):
             )
         self._consume_gas()
 
-        while True:
-            assert len(tree.children) == 1
-            if (ch := tree.children[0]) is None:
-                # Empty parens: {( )}
-                return ''
-            tree = narrow(ch, Tree)
-            if tree.data != 'expr':
-                break
+        assert len(tree.children) == 1
+        ch = narrow(tree.children[0], Tree)
+        while ch.data == 'expr':
             # Flatten nested expressions: {( ( ... ) )}
             permissive = False
+            assert len(ch.children) == 1
+            ch = narrow(ch.children[0], Tree)
 
-        ch = tree
         match ch.data:
             case 'unary_chain':
                 out = []
@@ -509,8 +497,8 @@ class Engine(Interpreter):
             # Ambiguous naked literal / var: {some_name}
             # Treated as var only if `permissive` is True and contains no whitespace.
             case 'naked_lit':
-                key = _iden(ch.children[0])
-                if permissive and not any(c.isspace() for c in key):
+                key = narrow(ch.children[0], Token).value.strip()
+                if permissive and self._check_iden(key):
                     if allow_undef:
                         _, val = self._scope.resolve_raw(key, as_str=as_str)
                         return '' if val is None else val
@@ -520,16 +508,47 @@ class Engine(Interpreter):
             case _:
                 raise ValueError(f'Bad expr: {tree.pretty()}')
 
+    def _check_iden(self, key: str) -> bool:
+        if not key:
+            self._error('empty identifier')
+            return False
+
+        if any(c.isspace() for c in key):
+            self._error('bad identifier: ' + repr(key))
+            return False
+
+        return True
+
+    # Lark didn't distinguish VAR from LITERAL, so we have to strip manually.
+    def _iden(self, tree: Tree | Token) -> str:
+        key = narrow(tree, Token).value.strip()
+        self._check_iden(key)
+        return key
+
+    def _dyn_iden(self, tree: Tree | Token) -> str:
+        if isinstance(tree, Tree):
+            # Paren expression as dynamic identifier:
+            # {k=a; $(k)} means {$a}.
+            assert tree.data == 'expr'
+            key = self._expr(tree, permissive=True, as_str=True)
+            assert isinstance(key, str), key
+            key = key.strip()
+        else:
+            key = tree.value.strip()
+
+        self._check_iden(key)
+        return key
+
     def _unary_chain(self, tree: Tree, *, put: Callable[[Value], None]):
         assert tree.children, tree
         for ch in tree.children:
-            val = self._unary(narrow(ch, Tree))
-            put(val)
+            put(self._unary(narrow(ch, Tree)))
 
     def _unary(self, tree: Tree, *, as_str: bool = False) -> Value:
         op = narrow(tree.children[0], Token).value
-        key = _iden(tree.children[1])
-        trace('Unary: %s %s', op, key)
+        name = tree.children[1]
+        trace('Unary: %s %s', op, name)
+        key = self._dyn_iden(name)
 
         match op:
             case '+':
@@ -600,7 +619,7 @@ class Engine(Interpreter):
     # - Otherwise, they check whether all the assigned vars equal the final value, and return '1' or '0'.
     # But in both cases, the ASSIGN_OP besides the first one must be '='.
     def _resolve_aoe_chain(self, tree: Tree) -> tuple[Sequence[str], str, Tree | None]:
-        keys = [_iden(tree.children[0])]
+        keys = [self._dyn_iden(tree.children[0])]
         op = narrow(tree.children[1], Token).value
         val = None
 
@@ -611,7 +630,7 @@ class Engine(Interpreter):
             if not (isinstance(tree, Tree) and tree.data == 'assign_or_equal'):
                 val = rest
                 break
-            keys.append(_iden(tree.children[0]))
+            keys.append(self._dyn_iden(tree.children[0]))
             if narrow(tree.children[1], Token).value != '=':
                 self._error('bad assign op in chain: ' + op)
 
@@ -681,8 +700,8 @@ class Engine(Interpreter):
     # Context swap: {key1^key2}
     # To be "atomic", This allows modifying vars in outer scopes.
     def swap(self, tree: Tree):
-        key1 = _iden(tree.children[0])
-        key2 = _iden(tree.children[1])
+        key1 = self._dyn_iden(tree.children[0])
+        key2 = self._dyn_iden(tree.children[1])
         key1, val1 = self._scope.resolve_raw(key1)
         key2, val2 = self._scope.resolve_raw(key2)
         self._scope.set_or_del_raw(key1, val2)
@@ -690,7 +709,7 @@ class Engine(Interpreter):
 
     # Context inplace replacement: {key|pat1/rep1|pat2/rep2|...}
     def repl(self, tree: Tree):
-        key = _iden(tree.children[0])
+        key = self._iden(tree.children[0])
         key, val = self._scope.resolve_raw(key, '', as_str=True)
         assert isinstance(val, str), val
         for pair in tree.children[1:]:
