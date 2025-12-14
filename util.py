@@ -325,12 +325,12 @@ async def reply_text(
     return resp
 
 
-def shorten(s: str | None) -> str:
+def shorten(s: str | None, limit: int = 30) -> str:
     if s is None:
         return 'None'
     s = s.strip().replace('\n', ' ').replace('\r', ' ')
-    if len(s) > 30:
-        return s[:30] + '...'
+    if len(s) > limit:
+        return s[:limit] + '...'
     return s
 
 

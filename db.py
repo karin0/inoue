@@ -55,9 +55,9 @@ class DataStore:
     def get_doc(self, name: str) -> tuple[int, str] | None:
         if is_guest():
             if name.startswith('doc'):
-                log.debug('get_doc: allowed guest access to doc: %s', name)
+                log.info('get_doc: allowed guest access to doc: %s', name)
             else:
-                log.debug('get_doc: disallowed guest access to doc: %s', name)
+                log.info('get_doc: disallowed guest access to doc: %s', name)
                 return None
 
         cursor = self.conn.execute('SELECT id, text FROM Doc WHERE name = ?', (name,))

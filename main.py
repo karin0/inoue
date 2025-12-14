@@ -4,7 +4,7 @@ import logging
 import functools
 from typing import Callable, Coroutine, Iterable
 
-from telegram import User, Update, Bot, MessageOriginChannel
+from telegram import Message, User, Update, Bot, MessageOriginChannel
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
@@ -62,15 +62,18 @@ def auth(
         effective_msg = update.effective_message
         src = None
         sender_id = None
+        sender_name = None
         valid = False
 
         if sender := update.effective_sender:
             sender_id = sender.id
             if isinstance(sender, User):
-                src = f'{sender.full_name} ({sender.name} {sender_id})'
+                sender_name = sender.full_name
+                src = f'{sender_name} ({sender.name} {sender_id})'
                 valid = sender_id == USER_ID
             else:  # Chat
-                src = f'{sender.title} [{sender.type} {sender_id}]'
+                sender_name = sender.title
+                src = f'{sender_name} [{sender.type} {sender_id}]'
 
         if chat := update.effective_chat:
             if chat.id != sender_id:
@@ -91,12 +94,9 @@ def auth(
                     and origin.chat.id == CHAN_ID
                 )
 
-        if not valid and sender_id in GUEST_USER_IDS:
-            log.warning('Allowing guest access: %s: %s', sender_id, update)
-            is_guest = True
-            valid = True
-        else:
-            is_guest = False
+        if is_guest := not valid and sender_id in GUEST_USER_IDS:
+            src = f'{src} (guest)'
+            valid = permissive
 
         log.debug('Entering %s from %s: %s', func.__name__, src, update)
 
@@ -110,7 +110,8 @@ def auth(
         elif item := update.edited_channel_post:
             log.info('%s: edited post %s', src, shorten(item.text))
         elif callback := update.callback_query:
-            msg = callback.message
+            if isinstance(callback.message, Message):
+                msg = callback.message
             log.info('%s: callback %s', src, shorten(callback.data))
         elif query := update.inline_query:
             log.info('%s: inline %s', src, shorten(query.query))
@@ -129,7 +130,25 @@ def auth(
                 sender,
                 chat,
             )
+            if is_guest and msg:
+                await reply_text(
+                    msg,
+                    f'Hello, `{escape(sender_name)}`\\! Send `/render <your template>` to begin\\.',
+                    parse_mode='MarkdownV2',
+                )
             return
+
+        if is_guest:
+            if msg and func == handle_msg:
+                log.warning(
+                    '%s said: %s\n  %s',
+                    src,
+                    shorten(msg.text or msg.caption or '', limit=3000),
+                    update,
+                )
+                return
+
+            log.warning('Allowing guest access: %s: %s', sender_id, update)
 
         with use_msg(msg), use_is_guest(is_guest):
             try:
@@ -151,8 +170,8 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # `render` handles Doc messages that are forwarded from CHAN_ID to its discussion group.
     if (
-        msg.is_automatic_forward
-        and isinstance(origin := msg.forward_origin, MessageOriginChannel)
+        isinstance(origin := msg.forward_origin, MessageOriginChannel)
+        and msg.is_automatic_forward
         and msg.chat_id == GROUP_ID
         and origin.chat.id == CHAN_ID
     ):
@@ -302,9 +321,9 @@ def main():
 
     for name, func in commands:
         if name == 'rg':
-            f = rg = auth(handle_rg)
+            f = rg = auth(func)
         elif name == 'render':
-            f = auth(handle_render, permissive=True)
+            f = auth(func, permissive=True)
         else:
             f = auth(func)
         app.add_handler(CommandHandler(name, f))
@@ -313,7 +332,7 @@ def main():
         app.add_handler(CommandHandler(f'rg{off}', rg))
 
     app.add_handler(CallbackQueryHandler(auth(handle_callback, permissive=True)))
-    app.add_handler(InlineQueryHandler(auth(handle_inline_query)))
+    app.add_handler(InlineQueryHandler(auth(handle_inline_query, permissive=True)))
     app.add_handler(MessageHandler(None, auth(handle_msg, permissive=True)))
 
     log.info('Starting %s...', ME)

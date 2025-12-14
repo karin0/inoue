@@ -1,4 +1,3 @@
-import html
 import asyncio
 
 from telegram import (

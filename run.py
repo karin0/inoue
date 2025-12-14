@@ -20,7 +20,7 @@ async def handle_run(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if cmd:
         await handle_cmd(msg, cmd)
     else:
-        await reply_text(msg, 'Provide a command to run.', do_quote=True)
+        await reply_text(msg, 'Provide a command to run.')
 
 
 async def handle_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
