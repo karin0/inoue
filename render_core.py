@@ -508,8 +508,6 @@ class RenderInterpreter(Interpreter):
     # Conditional branch: {<cond> ? true-directive : false-directive} (false part optional)
     def branch(self, tree: Tree):
         cond = narrow(tree.children[0], Tree)
-        assert cond.data == 'expr'
-
         val = self._expr(cond, permissive=True)
         test = val and val != '0'
 
@@ -563,6 +561,9 @@ class RenderInterpreter(Interpreter):
             assert narrow(op, Token).type == 'SCOPE_OP'
             if (name := tree.children[1]) is None:
                 name = ''
+            elif isinstance(name, Tree):
+                name = self._expr(name, as_str=True)
+                assert isinstance(name, str), name
             else:
                 name = _iden(name)
 
@@ -618,12 +619,18 @@ class RenderInterpreter(Interpreter):
             raise Abort()
         self._gas -= 1
 
-        assert len(tree.children) == 1
-        if (ch := tree.children[0]) is None:
-            # Empty parens: {( )}
-            return ''
-        ch = narrow(ch, Tree)
+        while True:
+            assert len(tree.children) == 1
+            if (ch := tree.children[0]) is None:
+                # Empty parens: {( )}
+                return ''
+            tree = narrow(ch, Tree)
+            if tree.data != 'expr':
+                break
+            # Flatten nested expressions: {( ( ... ) )}
+            permissive = False
 
+        ch = tree
         match ch.data:
             case 'unary_chain':
                 out = []
@@ -644,10 +651,6 @@ class RenderInterpreter(Interpreter):
                 left = self._evaluate(ch.children[0], permissive=True)
                 right = self._evaluate(ch.children[1])
                 return '1' if left == right else '0'
-
-            # Nested expression: {( ... )}
-            case 'expr':
-                return self._expr(ch, as_str=as_str)
 
             # Nested block: {{ ... }}
             case 'code_block':

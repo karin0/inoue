@@ -2,7 +2,7 @@ start: block_inner
 
 // Block
 
-code_block: [SCOPE_OP [iden]] "{" block_inner "}"
+code_block: [SCOPE_OP ([iden] | paren)] "{" block_inner "}"
 SCOPE_OP: "@"
 
 // LIMIT: `doc` must be before any statements in the block.
