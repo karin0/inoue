@@ -696,7 +696,7 @@ x ? rest;
 
         text3 = r'''
 @{ doc1:; x = @pm {
-   n ?= { n=m="3"; "print('Result: 2') or exit('\nrest')" };
+   n ?= { n=m="3"; "print('Result: 2\nrest') or exit()" };
    "m*m>n" ? $n; n="n+2"; m="3" : !;
    "n%m"   ? m="m+2" : n="n+2"; m="3" !;
 }; x ? 'Result: '; $x : *doc1; x=0; ! }

@@ -143,10 +143,10 @@ class Engine(Interpreter, ContextCallbacks):
                     # "exit()" called: stop rendering, but only for *this fragment*.
                     # Fragments afterwards and outer docs will continue rendering.
                     trace('Rendering exited at fragment: %s', shorten(fragment))
-                    for val in e.args:
-                        self._put(try_to_str(val))
                     continue
                 except Abort:
+                    # More serious "exit": stop the entire rendering, skipping all fragments,
+                    # this and all outer docs.
                     with notify.suppress():
                         log.warning(
                             'Rendering aborted at fragment: %s', shorten(fragment)
@@ -259,8 +259,8 @@ class Engine(Interpreter, ContextCallbacks):
         for val in args:
             out.append(try_to_str(val))
 
-    def _exit_func(self, *args):
-        raise Exit(*args)
+    def _exit_func(self):
+        raise Exit()
 
     def _block_inner(self, tree: Tree):
         stmts = tree.children.pop()
