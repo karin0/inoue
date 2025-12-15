@@ -2,11 +2,12 @@ import os
 import time
 import logging
 from datetime import datetime
+from abc import ABC, abstractmethod
 from typing import Any, Callable, TypeGuard
 from collections import UserDict, OrderedDict
 from collections.abc import ItemsView, MutableMapping
 
-from simpleeval import simple_eval, DEFAULT_FUNCTIONS
+from simpleeval import SimpleEval, DEFAULT_FUNCTIONS
 
 from util import log
 
@@ -200,28 +201,55 @@ EVAL_FUNCS = {
 
 
 class ScopeProxy:
-    def __init__(self, ctx: OverriddenDict, prefix: str):
-        self._data = ctx
+    def __init__(self, ctx: 'ScopedContext', prefix: str):
+        self._ctx = ctx
         self._prefix = prefix
 
     def __getattr__(self, name: str) -> Value:
-        r = self._data[self._prefix + name]
-        trace('Scope proxy got: %s + %s = %r', self._prefix, name, r)
-        return r
+        trace('eval: scope: %s %s', self._prefix, name)
+        self._ctx._cb._consume_gas()
+        return self._ctx._data[self._prefix + name]
+
+
+class EvalFunctions(UserDict):
+    def __init__(self, funcs: dict[str, Callable], stat_func: Callable[[], Any]):
+        super().__init__(DEFAULT_FUNCTIONS, **EVAL_FUNCS, **funcs)
+        self.stat = stat_func
+
+    def __getitem__(self, name: str) -> Callable:
+        trace('eval: funcs: %s', name)
+        self.stat()
+        return self.data[name]
+
+    # Called by `simpleeval` internally, without `stat` invocation.
+    def values(self):
+        return self.data.values()
+
+
+class ContextCallbacks(ABC):
+    @abstractmethod
+    def _error(self, msg: str):
+        pass
+
+    @abstractmethod
+    def _consume_gas(self):
+        pass
 
 
 class ScopedContext:
     def __init__(
         self,
         ctx: OverriddenDict,
-        error_func: Callable[[str], None],
+        callbacks: ContextCallbacks,
         funcs: dict[str, Callable],
     ):
         self._scopes: list[str] = ['']
         self._prefixes = {'root': ''}
         self._data = ctx
-        self._error = error_func
-        self._funcs = dict(DEFAULT_FUNCTIONS, **EVAL_FUNCS, **funcs)
+        self._cb = callbacks
+        funcs: EvalFunctions = EvalFunctions(funcs, callbacks._consume_gas)
+        self._eval = SimpleEval(functions=funcs, names=self)
+        self._funcs = funcs.data
 
     def push(self, name: str):
         new = self._scopes[-1] + name + '.'
@@ -244,7 +272,7 @@ class ScopedContext:
         else:
             key = self._scopes[-1] + name
             if default is not None:
-                self._error('undefined: ' + key)
+                self._cb._error('undefined: ' + key)
             # `as_str` is ignored when `default` is used.
             return key, default
 
@@ -277,12 +305,13 @@ class ScopedContext:
     # For `simpleeval` usage.
     def __getitem__(self, name: str) -> Value | ScopeProxy | None:
         key, val = self.resolve_raw(name)
-        trace('Getting item: %s -> %r', key, val)
+        trace('eval: item: %s -> %r', key, val)
+        self._cb._consume_gas()
         if val is not None:
             return val
 
         if (prefix := self._prefixes.get(name)) is not None:
-            return ScopeProxy(self._data, prefix)
+            return ScopeProxy(self, prefix)
 
         if (func := self._funcs.get(name)) is not None:
             # Call the function without arguments implicitly.
@@ -296,8 +325,8 @@ class ScopedContext:
         raise KeyError(key)
 
     def eval(self, expr: str) -> Value:
-        val = simple_eval(expr, functions=self._funcs, names=self)
-        trace('Evaluated: %s -> %s', expr, val)
+        val = self._eval.eval(expr)
+        trace('eval: %s -> %s', expr, val)
 
         # Ensure a `Value`.
         if val is None:

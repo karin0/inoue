@@ -1,6 +1,6 @@
 import os
 from contextlib import contextmanager
-from typing import Callable, Sequence, Type, TypeVar, cast
+from typing import Callable, Sequence, Type, TypeVar, cast, override
 
 from lark import Lark, Token, Tree
 from lark.visitors import Interpreter
@@ -18,11 +18,12 @@ from .context import (
     try_to_str,
     OverriddenDict,
     ScopedContext,
+    ContextCallbacks,
 )
 from .lex import lex, lex_errors
 
 MAX_DEPTH = 20
-MAX_GAS = 1000
+MAX_GAS = 2000
 
 parser = Lark.open(os.path.join(os.path.dirname(__file__), 'dsl.lark'), parser='lalr')
 
@@ -42,7 +43,7 @@ class Exit(Exception):
     pass
 
 
-class Engine(Interpreter):
+class Engine(Interpreter, ContextCallbacks):
     def __init__(
         self,
         overrides: dict[str, Value],
@@ -64,19 +65,21 @@ class Engine(Interpreter):
         self._branch_depth: int = 0
         self._dirty: bool = False
 
+        self._tree: Tree | None = None
+        self._aborted: bool = False
+        self._gas: int = 0
+
         self._scope = ScopedContext(
             self.ctx,
-            self._error,
+            self,
             {
                 '__file__': self._get_doc_func,
                 'print': self._print_func,
                 'exit': self._exit_func,
             },
         )
-        self._tree: Tree | None = None
-        self._aborted: bool = False
-        self._gas: int = 0
 
+    @override
     def _consume_gas(self):
         if self._gas >= MAX_GAS:
             self._error('out of gas')
@@ -186,6 +189,7 @@ class Engine(Interpreter):
         val = self.ctx.get(key, default)
         return bool(val) and val != '0'
 
+    @override
     def visit(self, tree: Tree):
         assert isinstance(tree, Tree)
         self._tree = tree
@@ -217,6 +221,7 @@ class Engine(Interpreter):
             return 'unknown'
         return str(self._tree.pretty(indent_str='').replace('\n', ' '))
 
+    @override
     def _error(self, msg: str):
         ctx = self._tree_ctx()
         log.debug('Error: %s: %s', msg, ctx)
