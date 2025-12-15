@@ -108,10 +108,10 @@ class TestRender(unittest.TestCase):
         return r, ctx
 
     def test_variable_substitution(self):
-        ctx = {'name': 'Sendai', 'role': 'Robot'}
+        ctx = {'name': 'Alice', 'role': 'Robot'}
         text = "I am {name}, a {role}."
         result = self.render_it(text, ctx)
-        self.assertEqual(result, "I am Sendai, a Robot.")
+        self.assertEqual(result, f'I am Alice, a Robot.')
 
     def test_flags(self):
         result, ctx_on = self.render_it_all(
@@ -213,6 +213,12 @@ class TestRender(unittest.TestCase):
         ctx = {'price': '100', 'tax': '0.08'}
         expr = '{"float(price) * (1 + float(tax)) > 105"?Expensive:Cheap}'
         self.assertEqual(self.render_it(expr, ctx), "Expensive")
+
+        self.assertEqual(self.render_it('"True";'), '1')
+        self.assertEqual(self.render_it('"False";'), '0')
+        self.assertEqual(self.render_it('"None";'), '')
+        self.assertEqual(self.render_it('"\'s\'.encode()";'), 's')
+        self.assertEqual(self.render_it('"\'s\'.encode";'), '')
 
         self.assertAlmostEqual(
             float(self.render_it('"__time__";')), time.time(), delta=2
@@ -613,6 +619,7 @@ n ?= m = "2";
         result = self.render_it(text, e='stack overflow')
         self.assertTrue(result.startswith('2\n3\n5\n7\n11\n13'), result)
 
+    def test_prime_vectorized(self):
         db = {}
         db[
             'iter0'
@@ -659,7 +666,7 @@ iter: ;
             n += 2
 
     def test_prime_pm(self):
-        # Use PM to persist state across multiple invocations.
+        # Use PM to persist state across multiple invocations, like a "generator".
         text = r'''{prime_pm:; a=@pm {
 n ?= m = "2";
 {"m * m > n" ? $n;};
@@ -730,13 +737,47 @@ x ? rest;
                     self.render_it(text).lstrip('@'), 'Result: ' + str(v) + '\nrest'
                 )
 
+    def test_fib_wrong(self):
+        # Use scopes as "stack frames" to achieve non-tail recursion!
+        # By wrapping the whole block in a scope, we can protect any "local" variables
+        # effectively from being clobbered by our "callees" (as long as they also
+        # use scopes and avoid swaps/repls), making it *look like* a real "function".
+        # However, that might be the only guarantee we can get, and there are
+        # still the following caveats:
+        # 1. `ScopedContext` also searches names from outer scopes;
+        # 2. `ScopedContext` does NOT clear the scope when pushing/popping our "stack frames".
+        # As such, when we are the "callee", we have to be careful to "untrust"
+        # the state of the current scope ("uninitialized local variables!"),
+        # since the "stack frame" could be dirty if the stack have "grown" again
+        # to reuse an existing scope.
+        # Due to these reasons, when we read a variable in the inner scope, there
+        # is no way to be sure if it is a "local" variable, or from outer scopes.
+        # This makes a direct '?=' misbehave without rebinding the outer "arguments"
+        # to new local variables first.
+        # Welcome back to the C world, but with LEGB rules this time!
+        text = r'''{@; fib:;
+# We meant to read the outer `n`, but we cannot get it reliably.
+# n ?= $n;     # Wrong! "$n" may (and may not) refer to the current (dirty) scope!
+# n='' ? n=$n; # Still wrong!
+n ?= "7";      # Default argument. But, the legacy value in the *current* scope
+               # could block anything, either the default value or the outer `n`.
+"n<=1" ? $n :  # Flawed: a legacy value from previous call lurks here!
+  n = "n-1" ;
+  a = *fib  ;
+  n = "n-1" ;  # Fortunately, at least scope shadowing allows us to reuse n safely.
+  b = *fib  ;  # Trouble is for the "callee" here, which uses the same scope as
+               # previous call, making the "stack frame" dirty inside.
+  "a + b"   !
+}'''
+        # A wrong implementation that doesn't rebind `n` yields wrong results.
+        self.assertEqual(self.render_it(text), '7')
+
     def test_fib(self):
-        # Use scope as a "stack frame" to enable non-tail recursion!
         text = r'''{fib:;
-n ?= "7"; @{
-  n=::n;  # Rebind n to current scope! The original frame could be dirty.
-  "n<=1" ? "n"; :
-    t = "n";
+n ?= "7";
+.n = $n;        # Before entering our scope, set the argument there explicitly!
+@{
+  "n<=1" ? $n :
     n = "n-1" ;
     a = *fib  ;
     n = "n-1" ;
@@ -747,21 +788,30 @@ n ?= "7"; @{
         self.render_it(text.replace('7', '10'), e='out of gas')
 
     def test_fib_single_scope(self):
-        # By wrapping the whole block in a scope, we can protect any variables
-        # from being clobbered by our callees (as long as they also use scopes
-        # and avoid swaps/repls).
-        # However, when we are the callee, we have to be careful to clear everything
-        # in the current scope, since the "stack frame" could be dirty if it have
-        # "regrowed".
-        # Welcome back to the C world...
         text = r'''{@; fib:;
-n = ::n; n ?= "9";
-"n<=1" ? "n" :
-  n = "n-1" ;
-  a = *fib  ;
-  n = "n-1" ;
-  b = *fib  ;
-  "a + b"   !
+n ?= "7";
+"n<=1" ? $n  :
+  .n = "n-1" ; # Write to the callee's scope explicitly to work around the issue,
+               # like we are passing a "keyword argument" by value explicitly.
+  a = *fib   ;
+  .n = "n-2" ; # Not "n-1" this time!
+  b = *fib   ;
+  "a + b"    !
+}'''.strip()
+        self.assertEqual(self.render_it(text), '13')
+        self.render_it(text.replace('7', '10'), e='out of gas')
+
+    def test_fib_rebind(self):
+        # Magic: '::' operator to refer to the outer scope explicitly.
+        text = r'''{@; fib:
+  n = ::n;    # Rebind the outer "argument" to initialize a "local" variable!
+  n ?= "9";
+  "n<=1" ? $n :
+    n = "n-1" ;
+    a = *fib  ;
+    n = "n-1" ;
+    b = *fib  ;
+    "a + b"   !
 }'''
         self.assertEqual(self.render_it(text), '34')
         self.render_it(text.replace('9', '10'), e='out of gas')

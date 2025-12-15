@@ -193,20 +193,29 @@ class Engine(Interpreter, ContextCallbacks):
         val = self.ctx.get(key, default)
         return bool(val) and val != '0'
 
+    def debug_node(self, node: Tree | Token | None, depth: int = 0) -> str:
+        if node is None:
+            return '/'
+        if isinstance(node, Token):
+            return f'{node.type}({node.value})'
+        assert isinstance(node, Tree)
+        nr = len(node.children)
+        if nr > 1:
+            if depth > 2:
+                return f'{node.data}[{nr}]'
+            nr = f'[{nr}]'
+        else:
+            nr = ''
+        chs = ', '.join(self.debug_node(ch, depth + 1) for ch in node.children)
+        return f'{node.data}{nr}({chs})'
+
     @override
     def visit(self, tree: Tree):
         assert isinstance(tree, Tree)
         self._tree = tree
 
         if is_tracing:
-            trace(
-                '[%d %d] %s: %d %s',
-                self._depth,
-                self._gas,
-                tree.data,
-                len(tree.children),
-                tree.children,
-            )
+            trace('[%d %d] %s', self._depth, self._gas, self.debug_node(tree))
 
         self._consume_gas()
         return super().visit(tree)
@@ -350,9 +359,14 @@ class Engine(Interpreter, ContextCallbacks):
         test = val and val != '0'
 
         # The associativity of `branch` is too greedy and consumes all statements
-        # in a recursive `stmt_list`, like in `a ? b ; c; d` being parsed as
-        # `a ? {b ; c ; d}`.
-        # We keep only the first stmt here and execute the rest unconditionally.
+        # in a recursive `stmt_list`, like `a ? b ; c; d` being parsed as
+        # `a ? {b ; c ; d}` by Lark.
+        # We keep only the first stmt here and execute the rest unconditionally
+        # to work around and make it more intuitive, behave like a "real" ternary
+        # operator that accepts single expressions, i.e. `a ? b : c; d;` means
+        # `(a ? b : c); d;`.
+        # You can still explicitly specify the captured parts with braces or a
+        # final marker, like in `a ? b : {c ; d}` or `a ? b : c ; d !`.
         left = tree.children[1]
         right = tree.children[2]
         if tree.children[3] is None:
@@ -458,12 +472,20 @@ class Engine(Interpreter, ContextCallbacks):
         so we write {some_var}, {show_var ? 1 : 0} and {show_var ? $some_var : literal}.
         '''
         if is_tracing:
+            feats = (
+                permissive and 'permissive',
+                as_str and 'as_str',
+                allow_undef and 'allow_undef',
+            )
+            if feats:
+                feats = ' [' + ', '.join(f for f in feats if f) + ']'
+            else:
+                feats = ''
             trace(
-                '[%d] _expr: %s permissive=%s as_str=%s',
+                '[%d] _expr: %s%s',
                 self._gas,
-                tree,
-                permissive,
-                as_str,
+                self.debug_node(tree.children[0]),
+                feats,
             )
         self._consume_gas()
 
@@ -585,7 +607,9 @@ class Engine(Interpreter, ContextCallbacks):
     ):
         assert tree.children, tree
         for ch in tree.children:
-            put(self._unary(narrow(ch, Tree), allow_undef=allow_undef))
+            val = self._unary(narrow(ch, Tree), allow_undef=allow_undef)
+            trace('Unary value: %r', val)
+            put(val)
 
     def _get_by_raw_key(
         self, key: str, *, as_str: bool = False, allow_undef: bool = False

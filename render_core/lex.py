@@ -90,6 +90,7 @@ def lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str | None]]:
                     cursor = p
 
                 block_starts.append(p)
+                trace('Block starts: %s', block_starts)
 
             case '}':
                 if not block_starts or (block and len(block_starts) == 1):
@@ -99,6 +100,7 @@ def lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str | None]]:
                     # our output.
                     # We leave it to cause a Lark parse error later.
                     continue
+                trace('Block ends: %s', block_starts)
                 block_starts.pop()
                 if not block_starts:
                     chunk = text[cursor:p]
