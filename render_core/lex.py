@@ -45,7 +45,7 @@ def lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str | None]]:
             continue
 
         if comment:
-            if c != '\n' and c != ';' and c != '{' and c != '}':
+            if c != '\n':
                 continue
             # Skip the comment.
             cursor = p
