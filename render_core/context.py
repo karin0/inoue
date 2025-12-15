@@ -20,16 +20,16 @@ type Value = str | int | float | bool | complex | bytes
 
 
 def is_value_type(v: Any) -> TypeGuard[Value]:
-    return isinstance(v, (str, int, float, bool, complex, bytes))
+    return isinstance(v, (str, int, float, complex, bytes))  # bool is subclass of int
 
 
 def _to_str(v) -> str | None:
     if isinstance(v, str):
         return v
+    if isinstance(v, bool):  # Must before `int` check!
+        return '1' if v else '0'
     if isinstance(v, (int, float, complex)):
         return str(v)
-    if isinstance(v, bool):
-        return '1' if v else '0'
     if isinstance(v, bytes):
         return v.decode('utf-8', errors='replace')
 
