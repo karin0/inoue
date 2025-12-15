@@ -145,23 +145,6 @@ class OverriddenDict(UserDict):
         # documents and won't change after markup buttons are activated.
         self.data[key] = val
 
-    # For `?=` operator.
-    # This acts like `setdefault(key, '')` before the actual `__setitem__` call.
-    def touch(self, key: str) -> Value:
-        if pm_key := get_pm_key(key):
-            if (r := self.overrides.get(key)) is not None:
-                return r
-            return persisted.get(pm_key, '')
-
-        # For same purpose as in `__setitem__`, we always ensure the key exists
-        # in the underlying dict.
-        # The static (persisted) keys are bypassed anyway.
-        r0 = self.data.setdefault(key, '')
-        if (r := self.overrides.get(key)) is not None:
-            return r
-
-        return r0
-
     # For `:=` operator.
     # This only affects the `overrides` dict, which has higher priority than
     # the underlying dict by their *values*, but are placed after those touched
@@ -244,9 +227,10 @@ class ScopedContext:
         funcs: dict[str, Callable],
     ):
         self._scopes: list[str] = ['']
-        self._prefixes = {'root': ''}
+        self._prefixes = {}
         self._data = ctx
         self._cb = callbacks
+        funcs.setdefault('prefix', self._prefix_func)
         funcs: EvalFunctions = EvalFunctions(funcs, callbacks._consume_gas)
         self._eval = SimpleEval(functions=funcs, names=self)
         self._funcs = funcs.data
@@ -260,6 +244,9 @@ class ScopedContext:
     def pop(self):
         last = self._scopes.pop()
         trace('Leaving scope: %s', last)
+
+    def _prefix_func(self) -> str:
+        return self._scopes[-1]
 
     def resolve_raw(
         self, name: str, default: Value | None = None, as_str: bool = False
@@ -288,6 +275,9 @@ class ScopedContext:
         _, val = self.resolve_raw(name, '', as_str=as_str)
         assert val is not None
         return val
+
+    def current(self) -> str:
+        return self._scopes[-1]
 
     def current_key(self, name: str) -> str:
         return self._scopes[-1] + name

@@ -61,7 +61,7 @@ assign_or_equal: dyn_iden ASSIGN_OP [expr]
 ASSIGN_OP: "=" | ":=" | "?="
 
 // Not arithmetic operators!
-UNARY_OP: "+" | "-" | "*" | "$"
+UNARY_OP: "+" | "-" | "*" | "$" | "::"
 
 !unary: UNARY_OP dyn_iden
 !unary_chain: unary+

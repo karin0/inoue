@@ -16,7 +16,7 @@ sys.modules['util'].shorten = lambda x: x
 log_instance = MagicMock()
 sys.modules['util'].log = log_instance
 
-if os.environ.get('TRACE_TEST') == '1':
+if os.environ.get('TEST_TRACE') == '1':
     out = open('test.log', 'w', encoding='utf-8')
     log_effect = lambda m, *a: print(m % a if a else m, file=out)
     log_instance.debug.side_effect = log_effect
@@ -145,6 +145,13 @@ class TestRender(unittest.TestCase):
             self.render_it('d=10; +a+b+c;\n:doc; :doc; :doc; *doc;'), '11110' * 4
         )
 
+        self.assertEqual(
+            self.render_it(
+                'a=1; a; @{a; a=7; $a; ::a; @q {a; a=8; a; $a; ::a; }; a; }; a;'
+            ),
+            '1171788171',
+        )
+
     def test_compare(self):
         ctx = {'status': '200'}
 
@@ -200,7 +207,7 @@ class TestRender(unittest.TestCase):
 
         # Dynamic variable names.
         self.assertEqual(self.render_it('a=b; (a)=a=1; $a; $b; '), '11')
-        self.assertEqual(self.render_it('a=b; (a)=a=1; c=1; d=b; (d)=a=$c?A:B;'), 'A')
+        self.assertEqual(self.render_it('a=b; (a)=a=1; c=1; d=b; ((d)=a=$c)?A:B;'), 'A')
 
     def test_eval(self):
         ctx = {'price': '100', 'tax': '0.08'}
@@ -433,14 +440,16 @@ Write the following sentence twice, the second time within quotes.
         self.assertEqual(self.render_it('{ a=1; @s { a=2; a }; a; s.a; }'), '212')
         self.assertEqual(
             self.render_it(
-                '{ a=1; a; @s { a; b=$a; a=2; a; @s { a; a=3; a }; s.a; a; b; }; s.s.a; s.a; s.b; a; @{ a; a=7; a; }; a; .a; }'
+                '{ a=1; a; @s { a; b=::a; a=2; a; @s { a; a=3; a }; s.a; a; b; }; s.s.a; s.a; s.b; a; @{ a; a=7; a; }; a; .a; }'
             ),
             '1122332132111717',
         )
 
         # Mutating outer scope using replacement.
         self.assertEqual(
-            self.render_it('{ a=124524; a; @s { a; a|2/1; a; b=$a; }; a; s.b; "s.b" }'),
+            self.render_it(
+                '{ a=124524; a; @s { a; a|2/1; a; b=::a; }; a; s.b; "s.b" }'
+            ),
             '124524' * 2 + '114514' * 4,
         )
 
@@ -451,14 +460,14 @@ Write the following sentence twice, the second time within quotes.
         )
 
         # Paren as scope name.
-        text = '{ a=1; s="\'p\'"; a; s; @("s+\'m\'") { a; x?=$a; x="int(x)+1"; x; a=3; a }; a; pm.a; }'
+        text = '{ a=1; s="\'p\'"; a; s; @("s+\'m\'") { a; x?=::a; x="int(x)+1"; x; a=3; a }; a; pm.a; }'
         self.assertEqual(self.render_it(text), '1p12313')
 
         text = '{ a=1; t=m; s="\'p\'+t"; a; s; @($s) { a; x?=$a; x="int(x)+1"; x; a=2; a }; a; pm.a; }'
         self.assertEqual(self.render_it(text), '1pm33212')
 
         # Scope with empty name is not global.
-        text = '{ a=1; a; @ {a; b=2; a; b; a=3; a; b; a^b; a; b; b="root.a"; b; @{c=$b} }; a; .a; .b; ..c; pm.a; }'
+        text = '{ a=1; a; @ {a; b=2; a; b; a=3; a; b; a^b; a; b; b=::a; b; @{c={b}} }; a; .a; .b; ..c; pm.a; }'
         self.assertEqual(self.render_it(text), '11123223112112')
 
         # Scope declaration inside block.
@@ -476,13 +485,13 @@ Write the following sentence twice, the second time within quotes.
         text = r't=0; @pm { a?="0"; a="a+1"; a^t; }; t; pm.a=$t;'
         self.assertEqual(self.render_it(text), '1')
 
-        text = r'c=$pm.a; d="1"; @pm {a="root.c+d"; a;} ;'
+        text = r'c=$pm.a; d="1"; @pm {c=::c; a="c+d"; a;} ;'
         self.assertEqual(self.render_it(text), '2')
 
-        text = r'pm.a?="0"; c=$pm.a; d="1"; @pm {a="root.c+d";}; pm.a;'
+        text = r'pm.a?="0"; c=$pm.a; d="1"; @pm {c=::c; a="c+d";}; pm.a;'
         self.assertEqual(self.render_it(text), '3')
 
-        text = r'pm.a?="0"; c=$pm.a; d="1"; @pm {a="root.c+d";}; "pm.a";'
+        text = r'pm.a?="0"; c=$pm.a; d="1"; @pm {c=::c; a="c+d";}; "pm.a";'
         self.assertEqual(self.render_it(text), '4')
 
         # PM keys can be overridden, but that makes them local and doesn't affect
@@ -724,8 +733,10 @@ x ? rest;
     def test_fib(self):
         # Use scope as a "stack frame" to enable non-tail recursion!
         text = r'''{fib:;
-n ?= "10"; @{
-  "n<=1" ? $n :
+n ?= "7"; @{
+  n=::n;  # Rebind n to current scope! The original frame could be dirty.
+  "n<=1" ? "n"; :
+    t = "n";
     n = "n-1" ;
     a = *fib  ;
     n = "n-1" ;
@@ -733,20 +744,27 @@ n ?= "10"; @{
     "a + b"   !
 }}'''
         self.assertEqual(self.render_it(text), '13')
-        self.render_it(text.replace('10', '20'), e='out of gas')
+        self.render_it(text.replace('7', '10'), e='out of gas')
 
     def test_fib_single_scope(self):
+        # By wrapping the whole block in a scope, we can protect any variables
+        # from being clobbered by our callees (as long as they also use scopes
+        # and avoid swaps/repls).
+        # However, when we are the callee, we have to be careful to clear everything
+        # in the current scope, since the "stack frame" could be dirty if it have
+        # "regrowed".
+        # Welcome back to the C world...
         text = r'''{@; fib:;
-n=? n="10"  ;
-"n<=1" ? $n :
+n = ::n; n ?= "9";
+"n<=1" ? "n" :
   n = "n-1" ;
   a = *fib  ;
   n = "n-1" ;
   b = *fib  ;
   "a + b"   !
 }'''
-        self.assertEqual(self.render_it(text), '13')
-        self.render_it(text.replace('10', '20'), e='out of gas')
+        self.assertEqual(self.render_it(text), '34')
+        self.render_it(text.replace('9', '10'), e='out of gas')
 
 
 if __name__ == '__main__':

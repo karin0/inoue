@@ -39,7 +39,7 @@ class Abort(Exception):
     pass
 
 
-class Exit(Exception):
+class Exit(Abort):
     pass
 
 
@@ -64,9 +64,9 @@ class Engine(Interpreter, ContextCallbacks):
         self._depth: int = 0
         self._branch_depth: int = 0
         self._dirty: bool = False
+        self._doc_scope: str = ''
 
         self._tree: Tree | None = None
-        self._aborted: bool = False
         self._gas: int = 0
 
         self._scope = ScopedContext(
@@ -139,10 +139,6 @@ class Engine(Interpreter, ContextCallbacks):
 
             if is_block:
                 assert fragment is not None
-                if self._aborted:
-                    trace('Skipping aborted block: %r', fragment)
-                    continue
-
                 trace('Rendering block: %r', fragment)
                 try:
                     tree = parser.parse(fragment)
@@ -167,8 +163,7 @@ class Engine(Interpreter, ContextCallbacks):
                         log.warning(
                             'Rendering aborted at fragment: %s', shorten(fragment)
                         )
-                    self._aborted = True
-                    continue
+                    raise
             else:
                 trace('Appending text fragment: %r', fragment)
                 if fragment is None:
@@ -184,7 +179,10 @@ class Engine(Interpreter, ContextCallbacks):
     def render(self, text: str) -> str:
         self._doc_text = text
         # Internal document expansion does not trim spaces.
-        self._render(text)
+        try:
+            self._render(text)
+        except Abort:
+            trace('Rendering aborted.')
         r = self._gather_output(self._output, as_str=True)
         if is_tracing:
             trace('Final rendered result: %r', r)
@@ -243,12 +241,18 @@ class Engine(Interpreter, ContextCallbacks):
         old_output = self._output
         old_branch_depth = self._branch_depth
         old_dirty = self._dirty
+        old_doc_scope = self._doc_scope
         self._depth += 1
         self._output = []
         self._branch_depth = 0
         self._dirty = False
+        self._doc_scope = self._scope.current()
+        err = False
         try:
             yield
+        except Exception:
+            err = True
+            raise
         finally:
             self._depth -= 1
             trace('Pop: %d %s %s', self._depth, self._output, old_output)
@@ -256,9 +260,12 @@ class Engine(Interpreter, ContextCallbacks):
             if self._depth == 0 and self._root_output:
                 old_output.extend(self._root_output)
                 self._root_output.clear()
+            if err:
+                old_output.extend(self._output)
             self._output = old_output
             self._branch_depth = old_branch_depth
             self._dirty = old_dirty
+            self._doc_scope = old_doc_scope
 
     def _print_func(self, *args):
         out = self._root_output if self._depth > 0 else self._output
@@ -511,7 +518,8 @@ class Engine(Interpreter, ContextCallbacks):
                 )
                 try:
                     val = self._scope.eval(expr)
-                except Exit as e:
+                except Abort as e:
+                    # This includes `Exit`.
                     trace(f'evaluate: %r', e)
                     raise
                 except Exception as e:
@@ -579,6 +587,16 @@ class Engine(Interpreter, ContextCallbacks):
         for ch in tree.children:
             put(self._unary(narrow(ch, Tree), allow_undef=allow_undef))
 
+    def _get_by_raw_key(
+        self, key: str, *, as_str: bool = False, allow_undef: bool = False
+    ) -> Value:
+        val = self.ctx.get(key)
+        if val is None:
+            if not allow_undef:
+                self._error('undefined: ' + key)
+            return ''
+        return to_str(val) if as_str else val
+
     def _unary(
         self, tree: Tree, *, as_str: bool = False, allow_undef: bool = False
     ) -> Value:
@@ -590,6 +608,8 @@ class Engine(Interpreter, ContextCallbacks):
         key = self._dyn_iden(name)
 
         match op:
+            # Flag set: {+name} or {-name}
+            # This means {name:=1} or {name:=0}.
             case '+':
                 self.ctx.setdefault_override(key, '1')
                 return ''
@@ -598,13 +618,24 @@ class Engine(Interpreter, ContextCallbacks):
                 self.ctx.setdefault_override(key, '0')
                 return ''
 
-            # Variable read: {$key}
+            # Variable read: {$name}
+            # Resolve from the current or the nearest outer scopes with the name defined.
             case '$':
                 return self._scope.get(key, as_str=as_str, allow_undef=allow_undef)
 
             # Db doc expand: {*doc} (same as {:doc})
             case '*':
                 return self._doc_ref(key)
+
+            # Variable get in "root" scope: {::name}
+            # Always resolve in the scope where the current doc (not necessarily
+            # the first doc in the `_render` chain) begins.
+            # Also, this returns '' if undefined.
+            # This is useful for "recursive calls" to retrieve "arguments" passed
+            # from outer docs.
+            case '::':
+                key = self._doc_scope + key
+                return self._get_by_raw_key(key, as_str=as_str, allow_undef=True)
 
             case _:
                 raise ValueError(f'Bad deref op: {op}')
@@ -695,21 +726,45 @@ class Engine(Interpreter, ContextCallbacks):
                 f = self.ctx.setdefault_override
 
             case '?=':
-                # Context set if undefined or empty: {key?=value}
-                # {key1?=key2=...=value} assigns the value to the undefined/empty
-                # keys only. Only '' (empty string) is considered empty.
-                # Note that the evaluation is short-circuit (conditional) in this case,
+                # Context set if undefined or empty: {name?=value}
+                # {name1?=name2=...=value} assigns the value to the undefined/empty
+                # names only. Only '' (empty string) is considered empty.
+                #
+                # Mote that the evaluation is short-circuit (conditional) here,
                 # like a `OnceCell` initialization.
+                #
+                # Also, be careful that the original value can be resolved from outer
+                # scopes, in which case a key is still created in the current scope
+                # to hold the outer value, even if the provided expression is not
+                # evaluated!
+                #
+                # This is to ensure consistent behavior with other assignment ops
+                # to ensure the var exists in the current scope after the assignment.
                 val = '' if expr is None else None
                 for key in keys:
+                    raw_key, old = self._scope.resolve_raw(key)
                     key = self._scope.current_key(key)
-                    old = self.ctx.touch(key)
-                    if old == '':
+                    if old is None or old == '':
                         if val is None:
                             val = self._expr(expr)  # type: ignore[assignment]
-                        self.ctx[key] = val
+                        new = val
                     else:
-                        trace('"?=": Skip for non-empty key: %s = %r', key, old)
+                        new = old
+
+                    trace(
+                        'Assigning: "?=": key: %s = %r (%s was %r)',
+                        key,
+                        new,
+                        raw_key,
+                        old,
+                    )
+
+                    # Write back even if unchanged. This has two effects:
+                    # 1. Ensures the var in the inner scope with the outer value.
+                    # 2. Notifies the underlying `OverriddenDict` to touch the key.
+                    #    See `OverriddenDict._setitem__`.
+                    self.ctx[key] = new
+
                 if val is None:
                     trace('"?=": Skipped evaluation for %s', keys)
                 return
