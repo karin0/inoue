@@ -27,6 +27,8 @@ from util import (
     CHAN_ID,
     GROUP_ID,
     GUEST_USER_IDS,
+    DB_FILE,
+    ME,
     init_util,
     use_msg,
     use_is_guest,
@@ -210,7 +212,7 @@ async def handle_inline_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await handle_render_inline_query(query, data)
 
 
-def stats(header='Sendai') -> tuple[str]:
+def stats(header=ME) -> tuple[str]:
     info = f'{header}: {db.summary()}'
     log.info('%s', info)
     text = f'{escape(greeting())}\n```\n{escape(info)}\n```'
@@ -264,10 +266,10 @@ commands = tuple(
 async def post_init(app: Application) -> None:
     bot: Bot = app.bot
     init_util(bot)
-    db.connect('sendai.db')
+    db.connect(DB_FILE)
     await bot.set_my_commands(tuple((s, s) for s, _ in commands))
     if not log.isEnabledFor(logging.DEBUG):
-        await do_notify(*stats('Sendai initiated'))
+        await do_notify(*stats(f'{ME} initiated'))
 
 
 async def post_stop(_: Application) -> None:
@@ -314,9 +316,9 @@ def main():
     app.add_handler(InlineQueryHandler(auth(handle_inline_query)))
     app.add_handler(MessageHandler(None, auth(handle_msg, permissive=True)))
 
-    log.info('Starting Sendai...')
+    log.info('Starting %s...', ME)
     app.run_polling()
-    log.info('Sendai stopped.')
+    log.info('%s stopped.', ME)
 
 
 if __name__ == '__main__':

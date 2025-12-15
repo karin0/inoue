@@ -2,9 +2,9 @@ import atexit
 import logging
 from sqlite3 import connect, Connection
 
-from context import is_guest
+from context import is_guest, ME_LOWER
 
-log = logging.getLogger('sendai.db')
+log = logging.getLogger(ME_LOWER + '.db')
 
 
 class DataStore:

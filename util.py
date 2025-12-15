@@ -13,7 +13,7 @@ from telegram.constants import MessageLimit
 from telegram.helpers import escape_markdown
 
 from db import db
-from context import ctx_is_guest
+from context import *
 
 USER_ID = int(os.environ['USER_ID'])
 CHAN_ID = int(os.environ['CHAN_ID'])
@@ -22,6 +22,8 @@ BOT_NAME = os.environ['BOT_NAME']
 GUEST_USER_IDS = frozenset(
     int(x.strip()) for x in os.environ['GUEST_USER_IDS'].split(',')
 )
+
+DB_FILE = os.environ.get('DB_FILE', ME_LOWER + '.db')
 
 MAX_TEXT_LENGTH = MessageLimit.MAX_TEXT_LENGTH
 
@@ -91,7 +93,7 @@ def _get_logger(name):
     return logger
 
 
-log = _get_logger('sendai')
+log = _get_logger(ME_LOWER)
 
 
 def init_util(b: Bot):
