@@ -15,6 +15,7 @@ from .context import (
     trace,
     Value,
     to_str,
+    try_to_str,
     OverriddenDict,
     ScopedContext,
 )
@@ -136,9 +137,11 @@ class Engine(Interpreter):
                 try:
                     self.visit(tree)
                 except Exit as e:
+                    # "exit()" called: stop rendering, but only for *this fragment*.
+                    # Fragments afterwards and outer docs will continue rendering.
                     trace('Rendering exited at fragment: %s', shorten(fragment))
                     for val in e.args:
-                        self._put(to_str(val))
+                        self._put(try_to_str(val))
                     continue
                 except Abort:
                     with notify.suppress():
@@ -249,7 +252,7 @@ class Engine(Interpreter):
     def _print_func(self, *args):
         out = self._root_output if self._depth > 0 else self._output
         for val in args:
-            out.append(to_str(val))
+            out.append(try_to_str(val))
 
     def _exit_func(self, *args):
         raise Exit(*args)
@@ -452,15 +455,6 @@ class Engine(Interpreter):
 
                 with self._push():
                     self._code_block(ch)
-                    return self._gather_output(self._output, as_str=as_str)
-
-            case 'branch':
-                if self._depth >= MAX_DEPTH:
-                    self._error('block stack overflow')
-                    raise Abort()
-
-                with self._push():
-                    self.branch(ch)
                     return self._gather_output(self._output, as_str=as_str)
 
             # Python expression: {"1 + 1"}

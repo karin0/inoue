@@ -22,7 +22,7 @@ def is_value_type(v: Any) -> TypeGuard[Value]:
     return isinstance(v, (str, int, float, bool, complex, bytes))
 
 
-def to_str(v: Value) -> str:
+def _to_str(v) -> str | None:
     if isinstance(v, str):
         return v
     if isinstance(v, (int, float, complex)):
@@ -31,8 +31,28 @@ def to_str(v: Value) -> str:
         return '1' if v else '0'
     if isinstance(v, bytes):
         return v.decode('utf-8', errors='replace')
-    log.error('to_str: unexpected type: %r %r', type(v), v)
+
+
+def to_str(v: Value) -> str:
+    if (s := _to_str(v)) is None:
+        raise TypeError(f'bad value type: {type(v)}: {v}')
+    return s
+
+
+def fix_to_str(val) -> str:
+    if isinstance(val, (list, tuple)) and all(is_value_type(v) for v in val):
+        log.warning('Sequence result: %r (%r)', val, type(val))
+        return str(val)
+    log.error('Unsafe result: %r (%r)', val, type(val))
     return ''
+
+
+def try_to_str(val) -> str:
+    if val is None:
+        return ''
+    if (s := _to_str(val)) is not None:
+        return s
+    return fix_to_str(val)
 
 
 LRU_CAPACITY = 128
@@ -283,8 +303,7 @@ class ScopedContext:
         if val is None:
             return ''
 
-        if not is_value_type(val):
-            log.warning('Unsafe eval result: %s -> %r (%r)', expr, val, type(val))
-            return ''
+        if is_value_type(val):
+            return val
 
-        return val
+        return fix_to_str(val)

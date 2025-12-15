@@ -230,6 +230,14 @@ class TestRender(unittest.TestCase):
         self.render_it('s=qwq; a="[x for x in s]";', e='Sorry')
         self.render_it('s=qwq; a="{x:x for x in s}";', e='Sorry')
 
+        # Lists are internally allowed.
+        self.assertEqual(
+            self.render_it('s=qwqwqwq; a="s.split(\'w\')"; a;'), "['q', 'q', 'q', 'q']"
+        )
+        self.assertEqual(
+            self.render_it('s=qwqwqwq; a="\'z\'.join(s.split(\'w\'))"; a;'), 'qzqzqzq'
+        )
+
         for s in ('lambda x: x', '[]', '()', '(1,)', '{}'):
             self.render_it(f'"{s}";', e='Sorry')
 
@@ -238,6 +246,7 @@ class TestRender(unittest.TestCase):
             'tuple',
             'dict',
             'set',
+            'type',
             'range',
             'help',
             'frozenset',

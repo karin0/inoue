@@ -5,7 +5,7 @@ code_block: [SCOPE_OP [dyn_iden]] "{" block_inner "}"
 SCOPE_OP: "@"
 
 // LIMIT: `doc` must be before any statements in the block, to avoid ambiguity
-// with 'branch'.
+// with 'branch', like in `a ? b : ;`.
 // Use `*doc` for document expansion inside expressions/statements.
 !block_inner: [(doc_def | doc_ref) (";" doc_ref)*] stmt_list
 
