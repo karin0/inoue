@@ -276,7 +276,25 @@ class Engine(Interpreter, ContextCallbacks):
 
     def _block_inner(self, tree: Tree):
         stmts = tree.children.pop()
-        for ch in tree.children:
+
+        if (op := tree.children[0]) is not None:
+            name = tree.children[1]
+            assert narrow(op, Token).type == 'SCOPE_OP'
+            if name is None:
+                name = ''
+            else:
+                name = self._dyn_iden(name)
+
+            self._scope.push(name)
+            try:
+                self.__block_inner(tree.children[2:], stmts)
+            finally:
+                self._scope.pop()
+        else:
+            self.__block_inner(tree.children[1:], stmts)
+
+    def __block_inner(self, children: list[Tree], stmts: Tree | Token):
+        for ch in children:
             if not isinstance(ch, Tree):
                 continue
             match ch.data:
@@ -318,8 +336,10 @@ class Engine(Interpreter, ContextCallbacks):
         cond = narrow(tree.children[0], Tree)
 
         # Allow undefined vars as falsy in conditions.
-        # Note that `$var ? 1 : 0` still emits errors when `var` is undefined.
+        # This only applies to the direct 'unary_chain', AOE and 'naked_lit' as
+        # the condition expression.
         val = self._expr(cond, permissive=True, allow_undef=True)
+
         test = val and val != '0'
 
         # The associativity of `branch` is too greedy and consumes all statements
@@ -375,6 +395,11 @@ class Engine(Interpreter, ContextCallbacks):
 
         if (op := tree.children[0]) is not None:
             assert narrow(op, Token).type == 'SCOPE_OP'
+
+            if inner.children[0] is not None:
+                self._error('double scope')
+                inner.children[0] = inner.children[1] = None
+
             if (name := tree.children[1]) is None:
                 name = ''
             else:
@@ -451,11 +476,11 @@ class Engine(Interpreter, ContextCallbacks):
                     if val != '':
                         out.append(val)
 
-                self._unary_chain(ch, put=put)
+                self._unary_chain(ch, put=put, allow_undef=allow_undef)
                 return self._gather_output(out, as_str=as_str)
 
             case 'assign_or_equal':
-                return self._equal(ch)
+                return self._equal(ch, allow_undef=allow_undef)
 
             # Equality check: {key == val} (by string representation!)
             # `a==b` means `$a == 'b'`, and `a==$b` means `$a == $b`.
@@ -510,10 +535,7 @@ class Engine(Interpreter, ContextCallbacks):
             case 'naked_lit':
                 key = narrow(ch.children[0], Token).value.strip()
                 if permissive and self._check_iden(key):
-                    if allow_undef:
-                        _, val = self._scope.resolve_raw(key, as_str=as_str)
-                        return '' if val is None else val
-                    return self._scope.get(key, as_str=as_str)
+                    return self._scope.get(key, as_str=as_str, allow_undef=allow_undef)
                 return key
 
             case _:
@@ -550,15 +572,21 @@ class Engine(Interpreter, ContextCallbacks):
         self._check_iden(key)
         return key
 
-    def _unary_chain(self, tree: Tree, *, put: Callable[[Value], None]):
+    def _unary_chain(
+        self, tree: Tree, *, put: Callable[[Value], None], allow_undef: bool = False
+    ):
         assert tree.children, tree
         for ch in tree.children:
-            put(self._unary(narrow(ch, Tree)))
+            put(self._unary(narrow(ch, Tree), allow_undef=allow_undef))
 
-    def _unary(self, tree: Tree, *, as_str: bool = False) -> Value:
+    def _unary(
+        self, tree: Tree, *, as_str: bool = False, allow_undef: bool = False
+    ) -> Value:
         op = narrow(tree.children[0], Token).value
         name = tree.children[1]
         trace('Unary: %s %s', op, name)
+
+        # `allow_undef` does affect nested expressions in dynamic identifiers.
         key = self._dyn_iden(name)
 
         match op:
@@ -572,7 +600,7 @@ class Engine(Interpreter, ContextCallbacks):
 
             # Variable read: {$key}
             case '$':
-                return self._scope.get(key, as_str=as_str)
+                return self._scope.get(key, as_str=as_str, allow_undef=allow_undef)
 
             # Db doc expand: {*doc} (same as {:doc})
             case '*':
@@ -696,7 +724,7 @@ class Engine(Interpreter, ContextCallbacks):
             self._scope.set(key, val, f)
 
     # Equality test: {key1=key2=...=<expr>}, but not as expression statements.
-    def _equal(self, tree: Tree) -> str:
+    def _equal(self, tree: Tree, allow_undef: bool = False) -> str:
         keys, op, expr = self._resolve_aoe_chain(tree)
         trace('Equal: keys=%s op=%r expr=%s', keys, op, expr)
         if op != '=':
@@ -704,7 +732,7 @@ class Engine(Interpreter, ContextCallbacks):
 
         final_val = self._expr(expr, as_str=True) if expr else ''
         for key in keys:
-            val = self._scope.get(key, as_str=True)
+            val = self._scope.get(key, as_str=True, allow_undef=allow_undef)
             if val != final_val:
                 return '0'
 

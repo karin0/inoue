@@ -461,6 +461,17 @@ Write the following sentence twice, the second time within quotes.
         text = '{ a=1; a; @ {a; b=2; a; b; a=3; a; b; a^b; a; b; b="root.a"; b; @{c=$b} }; a; .a; .b; ..c; pm.a; }'
         self.assertEqual(self.render_it(text), '11123223112112')
 
+        # Scope declaration inside block.
+        text = '{ @s; a=1; a; {@r; b=1; b; }; b?=3; b; r.b; }'
+        self.assertEqual(self.render_it(text), '1131')
+
+        # Scope declaration inside block.
+        text = '{ @s; a=1; a; x=r; {@(x); b=1; b; }; b?=3; b; r.b; }'
+        self.assertEqual(self.render_it(text), '1131')
+
+        text = '{ x=1; @s {@(x); b=1; b; }; }'
+        self.render_it(text, e='double scope')
+
     def test_static(self):
         text = r't=0; @pm { a?="0"; a="a+1"; a^t; }; t; pm.a=$t;'
         self.assertEqual(self.render_it(text), '1')
@@ -714,13 +725,26 @@ x ? rest;
         # Use scope as a "stack frame" to enable non-tail recursion!
         text = r'''{fib:;
 n ?= "10"; @{
-  "n<=1" ? $n  :
-    n = "n-1";
-    a = *fib ;
-    n = "n-1";
-    b = *fib ;
-    "a + b"  !
+  "n<=1" ? $n :
+    n = "n-1" ;
+    a = *fib  ;
+    n = "n-1" ;
+    b = *fib  ;
+    "a + b"   !
 }}'''
+        self.assertEqual(self.render_it(text), '13')
+        self.render_it(text.replace('10', '20'), e='out of gas')
+
+    def test_fib_single_scope(self):
+        text = r'''{@; fib:;
+n=? n="10"  ;
+"n<=1" ? $n :
+  n = "n-1" ;
+  a = *fib  ;
+  n = "n-1" ;
+  b = *fib  ;
+  "a + b"   !
+}'''
         self.assertEqual(self.render_it(text), '13')
         self.render_it(text.replace('10', '20'), e='out of gas')
 

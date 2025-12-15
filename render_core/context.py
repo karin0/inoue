@@ -279,7 +279,12 @@ class ScopedContext:
         trace('Got var: %s = %r', key, val)
         return key, to_str(val) if as_str else val
 
-    def get(self, name: str, *, as_str: bool = False) -> Value:
+    def get(
+        self, name: str, *, as_str: bool = False, allow_undef: bool = False
+    ) -> Value:
+        if allow_undef:
+            _, val = self.resolve_raw(name, None, as_str=as_str)
+            return '' if val is None else val
         _, val = self.resolve_raw(name, '', as_str=as_str)
         assert val is not None
         return val

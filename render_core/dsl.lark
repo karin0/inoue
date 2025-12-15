@@ -7,7 +7,9 @@ SCOPE_OP: "@"
 // LIMIT: `doc` must be before any statements in the block, to avoid ambiguity
 // with 'branch', like in `a ? b : ;`.
 // Use `*doc` for document expansion inside expressions/statements.
-!block_inner: [(doc_def | doc_ref) (";" doc_ref)*] stmt_list
+// Scopes can also be declared at the start of a block, before any document def/refs
+// and statements.
+!block_inner: [SCOPE_OP [dyn_iden] ";"] [(doc_def | doc_ref) (";" doc_ref)*] stmt_list
 
 // Statements... or document definitions/references.
 
