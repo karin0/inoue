@@ -66,6 +66,7 @@ class Engine(Interpreter, ContextCallbacks):
         self._dirty: bool = False
         self._doc_scope: str = ''
 
+        self._sub_docs: dict[str, Tree] = {}
         self._tree: Tree | None = None
         self._gas: int = 0
 
@@ -131,6 +132,20 @@ class Engine(Interpreter, ContextCallbacks):
             return s + '\n'
         return s
 
+    def _render_tree(self, tree: Tree, fragment: str = ''):
+        try:
+            self.visit(tree)
+        except Exit:
+            # "exit()" called: stop rendering, but only for *this fragment*.
+            # Fragments afterwards and outer docs will continue rendering.
+            trace('Rendering exited at fragment: %s', shorten(fragment))
+        except Abort:
+            # More serious "exit": stop the entire rendering, skipping all fragments,
+            # this and all outer docs.
+            with notify.suppress():
+                log.warning('Rendering aborted at fragment: %s', shorten(fragment))
+            raise
+
     def _render(self, text: str):
         for is_block, fragment in lex(text):
             if lex_errors:
@@ -149,21 +164,7 @@ class Engine(Interpreter, ContextCallbacks):
                 if is_tracing:
                     trace('Parsed tree: %s', tree.pretty())
 
-                try:
-                    self.visit(tree)
-                except Exit as e:
-                    # "exit()" called: stop rendering, but only for *this fragment*.
-                    # Fragments afterwards and outer docs will continue rendering.
-                    trace('Rendering exited at fragment: %s', shorten(fragment))
-                    continue
-                except Abort:
-                    # More serious "exit": stop the entire rendering, skipping all fragments,
-                    # this and all outer docs.
-                    with notify.suppress():
-                        log.warning(
-                            'Rendering aborted at fragment: %s', shorten(fragment)
-                        )
-                    raise
+                self._render_tree(tree, fragment)
             else:
                 trace('Appending text fragment: %r', fragment)
                 if fragment is None:
@@ -227,12 +228,12 @@ class Engine(Interpreter, ContextCallbacks):
     def start(self, tree: Tree):
         ch = narrow(tree.children[0], Tree)
         assert ch.data == 'block_inner'
-        return self._block_inner(ch)
+        return self.block_inner(ch)
 
     def _tree_ctx(self) -> str:
         if self._tree is None:
             return 'unknown'
-        return str(self._tree.pretty(indent_str='').replace('\n', ' '))
+        return self.debug_node(self._tree)
 
     @override
     def _error(self, msg: str):
@@ -246,11 +247,11 @@ class Engine(Interpreter, ContextCallbacks):
 
     @contextmanager
     def _push(self):
-        trace('Push: %d %s', self._depth, self._output)
         old_output = self._output
         old_branch_depth = self._branch_depth
         old_dirty = self._dirty
         old_doc_scope = self._doc_scope
+        trace('Push: %d %s %s', self._depth, old_output, old_doc_scope)
         self._depth += 1
         self._output = []
         self._branch_depth = 0
@@ -290,47 +291,71 @@ class Engine(Interpreter, ContextCallbacks):
     def _exit_func(self):
         raise Exit()
 
-    def _block_inner(self, tree: Tree):
-        stmts = tree.children.pop()
+    def block_inner(self, tree: Tree):
+        # Find any doc_def before entering statements to allow sub-docs.
+        for i, ch in enumerate(tree.children):
+            if not isinstance(ch, Tree):
+                continue
+
+            # Db doc name set: {name:}
+            if ch.data == 'doc_def':
+                op = narrow(ch.children[1], Token).value
+
+                # Mark as processed, so this block won't be skipped again when
+                # rendering this sub-doc later.
+                tree.children[i] = None
+
+                if op != ':':
+                    # Current 'block_inner' as a sub-document.
+                    # Scope from 'code_block' is already embedded.
+                    key = self._iden(ch.children[0])
+                    trace('doc_def: sub_doc: %s %s', key, op)
+                    self._sub_docs[key] = tree
+
+                    # Skip evaluating the entire block!
+                    return
+
+                # Common doc definition.
+                if self._depth == 0:
+                    key = self._iden(ch.children[0])
+                    trace('doc_def: %s', key)
+                    if self.doc_name is not None:
+                        self._error(f'doc name redefined: {self.doc_name} -> {key}')
+                    else:
+                        self.doc_name = key
+                break
 
         if (op := tree.children[0]) is not None:
-            name = tree.children[1]
             assert narrow(op, Token).type == 'SCOPE_OP'
-            if name is None:
+            if (scope := tree.children[1]) is None:
                 name = ''
             else:
-                name = self._dyn_iden(name)
+                name = self._dyn_iden(scope)
 
             self._scope.push(name)
             try:
-                self.__block_inner(tree.children[2:], stmts)
+                self._block_inner(tree.children, 2)
             finally:
                 self._scope.pop()
         else:
-            self.__block_inner(tree.children[1:], stmts)
+            self._block_inner(tree.children, 1)
 
-    def __block_inner(self, children: list[Tree], stmts: Tree | Token):
-        for ch in children:
+    def _block_inner(self, children: list[Tree], start: int):
+        for ch in children[start:-1]:
             if not isinstance(ch, Tree):
                 continue
             match ch.data:
-                # Db doc name set: {name:}
-                case 'doc_def':
-                    if self._depth == 0:
-                        key = self._iden(ch.children[0])
-                        if self.doc_name:
-                            self._error(f'doc name redefined: {self.doc_name} -> {key}')
-                        else:
-                            trace('Set doc name: %s', key)
-                            self.doc_name = key
                 # Db doc expand: {:doc} (same as {*doc} in unary expressions)
                 case 'doc_ref':
                     iden = self._iden(ch.children[-1])
                     self._put_val(self._doc_ref(iden))
+                # Db doc get: handled before in `block_inner()`.
+                case 'doc_def':
+                    self._error('multiple doc definitions')
                 case _:
                     raise ValueError(f'Bad block_inner child: {ch}')
 
-        stmts = narrow(stmts, Tree)
+        stmts = narrow(children[-1], Tree)
         assert stmts.data == 'stmt_list', stmts
         self._stmt_list(stmts)
 
@@ -416,23 +441,17 @@ class Engine(Interpreter, ContextCallbacks):
 
         if (op := tree.children[0]) is not None:
             assert narrow(op, Token).type == 'SCOPE_OP'
+            if is_tracing:
+                trace('_code_block: scope: %s', self.debug_node(tree.children[1]))
 
             if inner.children[0] is not None:
                 self._error('double scope')
-                inner.children[0] = inner.children[1] = None
 
-            if (name := tree.children[1]) is None:
-                name = ''
-            else:
-                name = self._dyn_iden(name)
+            # Embed our own scope into the 'block_inner'.
+            inner.children[0] = op
+            inner.children[1] = tree.children[1]
 
-            self._scope.push(name)
-            try:
-                self._block_inner(inner)
-            finally:
-                self._scope.pop()
-        else:
-            self._block_inner(inner)
+        self.block_inner(inner)
 
     def expr(self, tree: Tree):
         # Expression statement: {<expr>}
@@ -615,6 +634,7 @@ class Engine(Interpreter, ContextCallbacks):
         self, key: str, *, as_str: bool = False, allow_undef: bool = False
     ) -> Value:
         val = self.ctx.get(key)
+        trace('_get_by_raw_key: %s (%s) = %r', key, len(key), val)
         if val is None:
             if not allow_undef:
                 self._error('undefined: ' + key)
@@ -694,10 +714,17 @@ class Engine(Interpreter, ContextCallbacks):
         return self._doc_text
 
     def _doc_ref(self, key: str) -> Value:
-        doc_id, doc = self._get_doc(key)
-
-        if self.first_doc_id is None:
-            self.first_doc_id = doc_id
+        if (sub_doc := self._sub_docs.get(key)) is not None:
+            trace('Rendering sub-doc: %s', key)
+            doc = sub_doc
+            f = self._render_tree
+        else:
+            doc_id, doc = self._get_doc(key)
+            trace('Rendering doc: %s %s', key, doc_id)
+            if self.first_doc_id is None:
+                trace('first_doc_id: %s', doc_id)
+                self.first_doc_id = doc_id
+            f = self._render
 
         # Recursion is allowed up to a limit.
         if self._depth >= MAX_DEPTH:
@@ -705,8 +732,7 @@ class Engine(Interpreter, ContextCallbacks):
             raise Abort()
 
         with self._push():
-            trace('Rendering doc: %s %s', key, doc_id)
-            self._render(doc)
+            f(doc)
             return self._gather_output(self._output, trim=True)
 
     # Due to LALR limitations, AOE chains have very different semantics:
@@ -734,7 +760,8 @@ class Engine(Interpreter, ContextCallbacks):
     # Do real assignments here.
     def _assign(self, tree: Tree):
         keys, op, expr = self._resolve_aoe_chain(tree)
-        trace('Assign: keys=%s op=%r expr=%s', keys, op, expr)
+        if is_tracing:
+            trace('Assign: keys=%s op=%r expr=%s', keys, op, self.debug_node(expr))
 
         match op:
             case '=':
@@ -805,7 +832,8 @@ class Engine(Interpreter, ContextCallbacks):
     # Equality test: {key1=key2=...=<expr>}, but not as expression statements.
     def _equal(self, tree: Tree, allow_undef: bool = False) -> str:
         keys, op, expr = self._resolve_aoe_chain(tree)
-        trace('Equal: keys=%s op=%r expr=%s', keys, op, expr)
+        if is_tracing:
+            trace('Equal: keys=%s op=%r expr=%s', keys, op, self.debug_node(expr))
         if op != '=':
             self._error('bad assign op in equality test: ' + op)
 

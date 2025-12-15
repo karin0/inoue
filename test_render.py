@@ -803,16 +803,66 @@ n ?= "7";
 
     def test_fib_rebind(self):
         # Magic: '::' operator to refer to the outer scope explicitly.
+        # Another "calling convention", looks cleaner but less explicit.
         text = r'''{@; fib:
-  n = ::n;    # Rebind the outer "argument" to initialize a "local" variable!
-  n ?= "9";
+n = ::n;    # Rebind the outer "argument" to initialize a "local" variable!
+n ?= "9";
+"n<=1" ? $n :
+  n = "n-1" ;
+  a = *fib  ;
+  n = "n-1" ;
+  b = *fib  ;
+  "a + b"   !
+}'''
+        self.assertEqual(self.render_it(text), '34')
+        self.render_it(text.replace('9', '10'), e='out of gas')
+
+    def test_sub_doc(self):
+        # This simpler "calling convention" doesn't need to read from outer scopes.
+        text = r'''{@; fib ↦
+n = $a0;
+"n<=1" ? $n :
+  .a0 = "n-1" ;
+  a = *fib  ;
+  .a0 = "n-2" ;
+  b = *fib  ;
+  "a + b"   !
+}
+.a0="9"; *fib;
+'''
+        self.assertEqual(self.render_it(text), '34')
+        self.render_it(text.replace('9', '10'), e='out of gas')
+
+    def test_sub_doc_2(self):
+        text = r'''{
+@{fib ↦
+  n = ::n;
   "n<=1" ? $n :
     n = "n-1" ;
     a = *fib  ;
     n = "n-1" ;
     b = *fib  ;
     "a + b"   !
-}'''
+};
+n="9"; *fib;
+}
+'''
+        self.assertEqual(self.render_it(text), '34')
+        self.render_it(text.replace('9', '10'), e='out of gas')
+
+    def test_sub_doc_3(self):
+        text = r'''{@; fib ↦
+n = ::n;
+"n<=1" ? $n :
+  n = "n-1" ;
+  a = *fib  ;
+  n = "n-1" ;
+  b = *fib  ;
+  "a + b"   !
+}
+n="9"; *fib;
+'''
+        self.assertEqual(self.render_it(text.replace('9', '7')), '13')
         self.assertEqual(self.render_it(text), '34')
         self.render_it(text.replace('9', '10'), e='out of gas')
 
