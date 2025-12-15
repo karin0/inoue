@@ -93,7 +93,7 @@ class TestRender(unittest.TestCase):
         else:
             self.assertFalse(
                 ctx.errors,
-                f'Render: {text}\nerrors: {ctx.errors}\nctx: {ctx.ctx.items()}',
+                f'Render: {text}\nResult:{r}\nerrors: {ctx.errors}\nctx: {ctx.ctx.items()}',
             )
         return r
 
@@ -193,8 +193,8 @@ class TestRender(unittest.TestCase):
         # Lazy evaluation is only for `?=`.
         self.assertEqual(self.render_it('a=1; b=1; a={b=2; \'3\'}; a; b;'), '32')
         self.assertEqual(self.render_it('a=1; b=1; a?={b=2; \'3\'}; $a; b;'), '11')
-        self.assertEqual(self.render_it('a=0; b=1; a?={b=2; \'3\'}; a; $b;'), '32')
-        self.assertEqual(self.render_it('a="0"; b=1; a?={b=2; \'3\'}; a; b;'), '32')
+        self.assertEqual(self.render_it('b=1; a?={b=2; \'3\'}; a; $b;'), '32')
+        self.assertEqual(self.render_it('a=; b=1; a?={b=2; \'3\'}; a; b;'), '32')
         self.assertEqual(self.render_it('b=1; a?={b=2; \'3\'}; a; b;'), '32')
         self.assertEqual(self.render_it('doc:; a=1; b=1; a?=b=*doc; a; b;'), '11')
 
@@ -709,6 +709,20 @@ x ? rest;
                 self.assertEqual(
                     self.render_it(text).lstrip('@'), 'Result: ' + str(v) + '\nrest'
                 )
+
+    def test_fib(self):
+        # Use scope as a "stack frame" to enable non-tail recursion!
+        text = r'''{fib:;
+n ?= "10"; @{
+  "n<=1" ? $n  :
+    n = "n-1";
+    a = *fib ;
+    n = "n-1";
+    b = *fib ;
+    "a + b"  !
+}}'''
+        self.assertEqual(self.render_it(text), '13')
+        self.render_it(text.replace('10', '20'), e='out of gas')
 
 
 if __name__ == '__main__':

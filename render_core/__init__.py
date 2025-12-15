@@ -104,18 +104,34 @@ class Engine(Interpreter, ContextCallbacks):
 
     # The output implementation is responsible for filtering out any empty strings,
     # like in `_put` or `_unary_chain`.
-    def _gather_output(self, out: list[Value], *, as_str: bool = False) -> Value:
+    def _gather_output(
+        self, out: list[Value], *, as_str: bool = False, trim: bool = False
+    ) -> Value:
         match len(out):
             case 0:
                 return ''
             case 1:
                 # Keep the original type for single output as possible.
                 val = out[0]
-                return to_str(val) if as_str else val
+                if as_str:
+                    val = to_str(val)
+                    return self._trim_output(val) if trim else val
+                elif trim and isinstance(val, str):
+                    return self._trim_output(val)
+                else:
+                    return val
             case _:
-                return ''.join(to_str(x) for x in out)
+                val = ''.join(to_str(x) for x in out)
+                return self._trim_output(val) if trim else val
 
-    def _render(self, text: str, strip: bool = False) -> str:
+    def _trim_output(self, s: str) -> str:
+        r = s.lstrip()
+        s = r.rstrip()
+        if len(s) != len(r) and s and r.find('\n', len(s)) >= 0:
+            return s + '\n'
+        return s
+
+    def _render(self, text: str):
         for is_block, fragment in lex(text):
             if lex_errors:
                 self.errors.extend(lex_errors)
@@ -163,27 +179,17 @@ class Engine(Interpreter, ContextCallbacks):
                 else:
                     self._put(fragment)
 
-        r = self._gather_output(self._output, as_str=True)
-        assert isinstance(r, str)
-        trace('Rendered result: %r, Errors: %r', r, self.errors)
-
-        if strip:
-            return r.strip()
-
-        r = r.lstrip()
-        if len(s := r.rstrip()) != len(r) and s and r.find('\n', len(s)) >= 0:
-            return s + '\n'
-
-        return s
+        trace('Rendered result: %r', self._output)
 
     def render(self, text: str) -> str:
         self._doc_text = text
         # Internal document expansion does not trim spaces.
-        r = self._render(text, strip=True)
+        self._render(text)
+        r = self._gather_output(self._output, as_str=True)
         if is_tracing:
             trace('Final rendered result: %r', r)
             self.ctx.debug()
-        return r
+        return r.strip()  # type: ignore
 
     def get_flag(self, key: str, default: bool = False) -> bool:
         val = self.ctx.get(key, default)
@@ -256,8 +262,14 @@ class Engine(Interpreter, ContextCallbacks):
 
     def _print_func(self, *args):
         out = self._root_output if self._depth > 0 else self._output
+        first = True
         for val in args:
+            if first:
+                first = False
+            else:
+                out.append(' ')
             out.append(try_to_str(val))
+        out.append('\n')
 
     def _exit_func(self):
         raise Exit()
@@ -280,7 +292,7 @@ class Engine(Interpreter, ContextCallbacks):
                 # Db doc expand: {:doc} (same as {*doc} in unary expressions)
                 case 'doc_ref':
                     iden = self._iden(ch.children[-1])
-                    self._put(self._doc_ref(iden))
+                    self._put_val(self._doc_ref(iden))
                 case _:
                     raise ValueError(f'Bad block_inner child: {ch}')
 
@@ -598,7 +610,7 @@ class Engine(Interpreter, ContextCallbacks):
         # Self-mapping when no argument is given.
         return self._doc_text
 
-    def _doc_ref(self, key: str) -> str:
+    def _doc_ref(self, key: str) -> Value:
         doc_id, doc = self._get_doc(key)
 
         if self.first_doc_id is None:
@@ -611,7 +623,8 @@ class Engine(Interpreter, ContextCallbacks):
 
         with self._push():
             trace('Rendering doc: %s %s', key, doc_id)
-            return self._render(doc)
+            self._render(doc)
+            return self._gather_output(self._output, trim=True)
 
     # Due to LALR limitations, AOE chains have very different semantics:
     # - In expression statements, they set context vars and return ''.
@@ -654,15 +667,16 @@ class Engine(Interpreter, ContextCallbacks):
                 f = self.ctx.setdefault_override
 
             case '?=':
-                # Context set if empty (undefined or falsy): {key?=value}
-                # {key1?=key2=...=value} assigns the value to the empty keys only
-                # Note that the evaluation is deferred (conditional) in this case,
+                # Context set if undefined or empty: {key?=value}
+                # {key1?=key2=...=value} assigns the value to the undefined/empty
+                # keys only. Only '' (empty string) is considered empty.
+                # Note that the evaluation is short-circuit (conditional) in this case,
                 # like a `OnceCell` initialization.
                 val = '' if expr is None else None
                 for key in keys:
                     key = self._scope.current_key(key)
                     old = self.ctx.touch(key)
-                    if not old or old == '0':
+                    if old == '':
                         if val is None:
                             val = self._expr(expr)  # type: ignore[assignment]
                         self.ctx[key] = val

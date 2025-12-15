@@ -147,11 +147,11 @@ class OverriddenDict(UserDict):
 
     # For `?=` operator.
     # This acts like `setdefault(key, '')` before the actual `__setitem__` call.
-    def touch(self, key: str) -> Value | None:
+    def touch(self, key: str) -> Value:
         if pm_key := get_pm_key(key):
             if (r := self.overrides.get(key)) is not None:
                 return r
-            return persisted.get(pm_key)
+            return persisted.get(pm_key, '')
 
         # For same purpose as in `__setitem__`, we always ensure the key exists
         # in the underlying dict.
