@@ -177,7 +177,7 @@ class Engine(Interpreter, ContextCallbacks):
         trace('Rendered result: %r', self._output)
 
     def render(self, text: str) -> str:
-        self._doc_text = text
+        self._doc_text = text = text.strip()
         # Internal document expansion does not trim spaces.
         try:
             self._render(text)
