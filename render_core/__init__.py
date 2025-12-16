@@ -292,42 +292,45 @@ class Engine(Interpreter, ContextCallbacks):
         raise Exit()
 
     def block_inner(self, tree: Tree):
-        # Find any doc_def before entering statements to allow sub-docs.
+        # Find any doc_def before entering statements to enable sub-docs.
         for i, ch in enumerate(tree.children):
-            if not isinstance(ch, Tree):
+            # Skip the modifier at 0 and the already processed doc_defs.
+            if not (
+                i and ch is not None and (ch := narrow(ch, Tree)).data == 'doc_def'
+            ):
                 continue
 
             # Db doc name set: {name:}
-            if ch.data == 'doc_def':
-                op = narrow(ch.children[1], Token).value
+            op = narrow(ch.children[1], Token).value
 
-                # Mark as processed, so this block won't be skipped again when
-                # rendering this sub-doc later.
-                tree.children[i] = None
+            # Mark as processed, so this block won't be skipped again when
+            # rendering this sub-doc later.
+            tree.children[i] = None
 
-                if op != ':':
-                    # Current 'block_inner' as a sub-document.
-                    # Scope from 'code_block' is already embedded.
-                    key = self._iden(ch.children[0])
-                    trace('doc_def: sub_doc: %s %s', key, op)
-                    self._sub_docs[key] = tree
+            if op != ':':
+                # Current 'block_inner' as a sub-document.
+                # Scope from 'code_block' is already embedded.
+                key = self._iden(ch.children[0])
+                trace('doc_def: sub_doc: %s %s', key, op)
+                self._sub_docs[key] = tree
 
-                    # Skip evaluating the entire block!
-                    return
+                # Skip evaluating the entire block!
+                return
 
-                # Common doc definition.
-                if self._depth == 0:
-                    key = self._iden(ch.children[0])
-                    trace('doc_def: %s', key)
-                    if self.doc_name is not None:
-                        self._error(f'doc name redefined: {self.doc_name} -> {key}')
-                    else:
-                        self.doc_name = key
-                break
+            # Common doc definition.
+            if self._depth == 0:
+                key = self._iden(ch.children[0])
+                trace('doc_def: %s', key)
+                if self.doc_name is not None:
+                    self._error(f'doc name redefined: {self.doc_name} -> {key}')
+                else:
+                    self.doc_name = key
+            break
 
-        if (op := tree.children[0]) is not None:
-            assert narrow(op, Token).type == 'SCOPE_OP'
-            if (scope := tree.children[1]) is None:
+        if (scope := tree.children[0]) is not None:
+            scope = narrow(scope, Tree)
+            assert scope.data == 'scope'
+            if (scope := scope.children[0]) is None:
                 name = ''
             else:
                 name = self._dyn_iden(scope)
@@ -342,8 +345,9 @@ class Engine(Interpreter, ContextCallbacks):
 
     def _block_inner(self, children: list[Tree], start: int):
         for ch in children[start:-1]:
-            if not isinstance(ch, Tree):
+            if ch is None:
                 continue
+            ch = narrow(ch, Tree)
             match ch.data:
                 # Db doc expand: {:doc} (same as {*doc} in unary expressions)
                 case 'doc_ref':
@@ -434,22 +438,23 @@ class Engine(Interpreter, ContextCallbacks):
             self._stmt_list(rest)
 
     # Nested block: {{ ... }}
-    # With scope: {@name {...}} (name optional, defaults to '_')
+    # With scope: {@name {...}} (name optional, defaults to '')
     def _code_block(self, tree: Tree):
-        inner = narrow(tree.children[2], Tree)
+        inner = narrow(tree.children[1], Tree)
         assert inner.data == 'block_inner'
 
-        if (op := tree.children[0]) is not None:
-            assert narrow(op, Token).type == 'SCOPE_OP'
+        if (scope := tree.children[0]) is not None:
+            scope = narrow(scope, Tree)
+            assert scope.data == 'scope'
             if is_tracing:
-                trace('_code_block: scope: %s', self.debug_node(tree.children[1]))
+                trace('_code_block: scope: %s', self.debug_node(scope))
 
             if inner.children[0] is not None:
+                assert inner.children[0].data == 'scope'
                 self._error('double scope')
 
             # Embed our own scope into the 'block_inner'.
-            inner.children[0] = op
-            inner.children[1] = tree.children[1]
+            inner.children[0] = scope
 
         self.block_inner(inner)
 

@@ -1,20 +1,20 @@
 start: block_inner
 
 // Block, with an optional scope.
-code_block: [SCOPE_OP [dyn_iden]] "{" block_inner "}"
-SCOPE_OP: "@"
+code_block: [scope] "{" block_inner "}"
 
 // LIMIT: `doc` must be before any statements in the block, to avoid ambiguity
 // with 'branch', like in `a ? b : ;`.
 // Use `*doc` for document expansion inside expressions/statements.
 // Scopes can also be declared at the start of a block, before any document def/refs
-// and statements.
-!block_inner: [SCOPE_OP [dyn_iden] ";"] [(doc_def | doc_ref) (";" doc_ref)*] stmt_list
+// and statements, since you cannot write scopes before top-level "blocks" inside
+// documents.
+block_inner: [scope ";"] ((doc_def | doc_ref) (";" doc_ref)*)? stmt_list
 
-// Statements... or document definitions/references.
-
-!doc_def: iden ":"
-!doc_ref: ":" iden
+// Statements, or statement-like modifiers.
+scope: "@" [dyn_iden]
+!doc_def: iden (":" | "↦")
+doc_ref: ":" iden
 
 stmt_list: [stmt] [";" stmt_list]
 
