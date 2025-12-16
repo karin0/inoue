@@ -894,6 +894,50 @@ n="9"; *fib;
         self.assertEqual(self.render_it(text), '34')
         self.render_it(text.replace('9', '10'), e='out of gas')
 
+    def test_lambda(self):
+        text = r'''{foo = {@; ↦
+n = ::n;
+"n<=1" ? $n :
+  n = "n-1" ;
+  a = *foo  ;
+  n = "n-1" ;
+  b = *foo  ;
+  "a + b"   !
+}}
+n="9"; *foo;
+'''
+        self.assertEqual(self.render_it(text), '34')
+
+    def test_lambda_2(self):
+        text = r'''
+fib = {@; x ↦ "x > 1 and (fib(x-1) + fib(x-2)) or x" };
+"fib(9)";
+.x="7"; *fib;
+'''
+        self.assertEqual(self.render_it(text), '34\n13')
+
+    def test_lambda_3(self):
+        text = r'''
+n="2"; m="1"; a=0;
+a ? f={ ↦ $n } : f={ ↦ "m" };
+*f;
+a="42";
+a ? f={ ↦ "n" ;} : f={ ↦ $m; };
+*f;
+f = {@; a, b ↦ "print(a, n, m) or a * b * t" };
+"f(n+m, 7, t=2)";
+f = @ { x ↦ "x * (x+1)" };
+x = "6"; *f;
+a;
+g = {↦};
+"g() is None";
+{@; h ↦ "n > 1 and g(n=n-1) * n or 1" };
+g^h; b="g(n=5)"; b;
+f = @ { ↦ a=$0; b=$1; "a + b" };
+"f(a, b)";
+'''
+        self.assertEqual(self.render_it(text), '1\n2\n3 2 1\n42\n42\n42\n1\n\n120\n162')
+
 
 if __name__ == '__main__':
     unittest.main()

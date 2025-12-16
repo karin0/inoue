@@ -15,13 +15,25 @@ is_tracing = os.environ.get('TRACE') == '1' and log.isEnabledFor(logging.DEBUG)
 is_not_quiet = os.environ.get('TRACE_QUIET') != '1'
 trace = log.debug if is_tracing else lambda *_: None
 
+
+class Box[T]:
+    def __init__(self, data: T):
+        self.data: T = data
+
+    def __str__(self):
+        return ''
+
+    __repr__ = __str__
+
+
 # Allowed types for context values, as allowed by `simpleeval` by default (except None).
 # Other types should have been disallowed in `simpleeval`.
-type Value = str | int | float | bool | complex | bytes
+type Value = str | int | float | bool | complex | bytes | Box
 
 
 def is_value_type(v: Any) -> TypeGuard[Value]:
-    return isinstance(v, (str, int, float, complex, bytes))  # bool is subclass of int
+    # bool is subclass of int
+    return isinstance(v, (str, int, float, complex, bytes, Box))
 
 
 def _to_str(v) -> str | None:
@@ -29,7 +41,7 @@ def _to_str(v) -> str | None:
         return v
     if isinstance(v, bool):  # Must before `int` check!
         return '1' if v else '0'
-    if isinstance(v, (int, float, complex)):
+    if isinstance(v, (int, float, complex, Box)):
         return str(v)
     if isinstance(v, bytes):
         return v.decode('utf-8', errors='replace')
@@ -49,11 +61,19 @@ def fix_to_str(val) -> str:
     return ''
 
 
-def try_to_str(val) -> str:
+def try_to_str(val: Any) -> str:
     if val is None:
         return ''
     if (s := _to_str(val)) is not None:
         return s
+    return fix_to_str(val)
+
+
+def try_to_value(val: Any) -> Value:
+    if val is None:
+        return ''
+    if is_value_type(val):
+        return val
     return fix_to_str(val)
 
 
@@ -196,13 +216,23 @@ class ScopeProxy:
 
 
 class EvalFunctions(UserDict):
-    def __init__(self, funcs: dict[str, Callable], stat_func: Callable[[], Any]):
+    def __init__(self, funcs: dict[str, Callable], scope: 'ScopedContext'):
         super().__init__(DEFAULT_FUNCTIONS, **EVAL_FUNCS, **funcs)
-        self.stat = stat_func
+        self._scope = scope
 
     def __getitem__(self, name: str) -> Callable:
         trace('eval: funcs: %s', name)
-        self.stat()
+        self._scope._cb._consume_gas()
+
+        val = self._scope.get(name, allow_undef=True)
+        if isinstance(val, Box):
+            data = val.data
+
+            def wrapper(*args, **kwargs):
+                return self._scope._cb._call_boxed(data, *args, **kwargs)
+
+            return wrapper
+
         return self.data[name]
 
     # Called by `simpleeval` internally, without `stat` invocation.
@@ -219,6 +249,10 @@ class ContextCallbacks(ABC):
     def _consume_gas(self):
         pass
 
+    @abstractmethod
+    def _call_boxed(self, data, *args, **kwargs) -> Value | None:
+        pass
+
 
 class ScopedContext:
     def __init__(
@@ -232,7 +266,7 @@ class ScopedContext:
         self._data = ctx
         self._cb = callbacks
         funcs.setdefault('prefix', self._prefix_func)
-        funcs: EvalFunctions = EvalFunctions(funcs, callbacks._consume_gas)
+        funcs: EvalFunctions = EvalFunctions(funcs, self)
         self._eval = SimpleEval(functions=funcs, names=self)
         self._funcs = funcs.data
 
@@ -292,7 +326,7 @@ class ScopedContext:
         trace('Assigning: %s = %r -> %r (%s)', key, val, r, setter.__name__)
 
     def set_or_del_raw(self, key: str, val: Value | None):
-        trace('Set or del: %s = %r', key, val)
+        trace('set_or_del_raw: %s = %r', key, val)
         if val is None:
             self._data.pop(key, None)
         else:
@@ -323,12 +357,4 @@ class ScopedContext:
     def eval(self, expr: str) -> Value:
         val = self._eval.eval(expr)
         trace('eval: %s -> %s', expr, val)
-
-        # Ensure a `Value`.
-        if val is None:
-            return ''
-
-        if is_value_type(val):
-            return val
-
-        return fix_to_str(val)
+        return try_to_value(val)

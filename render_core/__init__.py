@@ -1,7 +1,7 @@
 import os
 import functools
 from contextlib import contextmanager
-from typing import Callable, Sequence, Type, TypeVar, cast, override
+from typing import Any, Callable, Sequence, Type, TypeVar, cast, override
 
 from lark import Lark, Token, Tree
 from lark.visitors import Interpreter
@@ -16,8 +16,10 @@ from .context import (
     is_not_quiet,
     trace,
     Value,
+    Box,
     to_str,
     try_to_str,
+    try_to_value,
     OverriddenDict,
     ScopedContext,
     ContextCallbacks,
@@ -78,7 +80,6 @@ class Engine(Interpreter, ContextCallbacks):
         self._dirty: bool = False
         self._doc_scope: str = ''
 
-        self._sub_docs: dict[str, Tree] = {}
         self._tree: Tree | None = None
         self._gas: int = 0
 
@@ -118,11 +119,16 @@ class Engine(Interpreter, ContextCallbacks):
     # The output implementation is responsible for filtering out any empty strings,
     # like in `_put` or `_unary_chain`.
     def _gather_output(
-        self, out: list[Value], *, as_str: bool = False, trim: bool = False
-    ) -> Value:
+        self,
+        out: list[Value],
+        default: Value | None = '',
+        *,
+        as_str: bool = False,
+        trim: bool = False,
+    ) -> Value | None:
         match len(out):
             case 0:
-                return ''
+                return default
             case 1:
                 # Keep the original type for single output as possible.
                 val = out[0]
@@ -266,8 +272,15 @@ class Engine(Interpreter, ContextCallbacks):
             self.errors.append('too many errors, aborting')
             raise Abort()
 
+    # Note that this is only used for output capturing before entering a block.
+    # Scopes are completely separated from this mechanism.
     @contextmanager
     def _push(self):
+        # Recursion is allowed up to a limit.
+        if self._depth >= MAX_DEPTH:
+            self._error('stack overflow')
+            raise Abort()
+
         old_output = self._output
         old_branch_depth = self._branch_depth
         old_dirty = self._dirty
@@ -312,9 +325,11 @@ class Engine(Interpreter, ContextCallbacks):
     def _exit_func(self):
         raise Exit()
 
-    def _block_inner(self, tree: Tree, *, is_sub_doc: bool = False):
+    def _block_inner_scan(
+        self, tree: Tree, *, captured: bool = False
+    ) -> tuple[Tree, tuple[str, ...] | None] | None:
+        assert tree.data == 'block_inner', tree
         # Find any doc_def before entering statements to enable sub-docs.
-        op = None
         for i, ch in enumerate(tree.children):
             # Skip the modifier at 0 and the already processed doc_defs.
             if not (
@@ -323,30 +338,54 @@ class Engine(Interpreter, ContextCallbacks):
                 continue
 
             # Db doc name set: {name:}
-            if op is None:
-                op = narrow(ch.children[1], Token).value
-            else:
-                raise ValueError('multiple doc defs in one block')
+            op = narrow(ch.children[1], Token).value
 
-            if op != ':' and not is_sub_doc:
+            # Sub-document definition:
+            # { name ↦ ... } (uncaptured, as statement)
+            # { arg1, arg2, ... ↦ ... } (captured as expression)
+            if op != ':':
                 # Current 'block_inner' as a sub-document.
                 # Scope from 'code_block' is already embedded.
-                key = self._iden(ch.children[0])
+                key = ch.children[0]
                 trace('doc_def: sub_doc: %s %s', key, op)
-                self._sub_docs[key] = tree
+
+                arg_list = None
+                if key is not None:
+                    key = ch.children[0]
+                    if captured:
+                        key = narrow(key, Token).value.strip()
+                        arg_list = tuple(s.strip() for s in key.split(','))
+                        arg_list = tuple(s for s in arg_list if s)
+                    else:
+                        key = self._iden(key)
+                        self._scope.set(key, Box((tree, None)), self.ctx.__setitem__)
+                elif not captured:
+                    self._error('unnamed sub-doc must be captured')
 
                 # Skip evaluating the entire block!
-                return
+                return tree, arg_list
 
             # Common doc definition.
             if self._depth == 0:
-                key = self._iden(ch.children[0])
+                key = ch.children[0]
+                if key is None:
+                    self._error('empty doc definition')
+                    return None
+
+                key = self._iden(key)
                 trace('doc_def: %s', key)
                 if self.doc_name is not None:
                     self._error(f'doc name redefined: {self.doc_name} -> {key}')
                 else:
                     self.doc_name = key
 
+            return None
+
+    def _block_inner(self, tree: Tree):
+        if self._block_inner_scan(tree) is None:
+            self._block_inner_body(tree)
+
+    def _block_inner_body(self, tree: Tree, *, ctx: dict[str, Any] | None = None):
         if (scope := tree.children[0]) is not None:
             scope = narrow(scope, Tree)
             assert scope.data == 'scope'
@@ -357,13 +396,16 @@ class Engine(Interpreter, ContextCallbacks):
 
             self._scope.push(name)
             try:
-                self.__block_inner(tree)
+                self._block_inner_exec(tree, ctx=ctx)
             finally:
                 self._scope.pop()
         else:
-            self.__block_inner(tree)
+            self._block_inner_exec(tree, ctx=ctx)
 
-    def __block_inner(self, tree: Tree):
+    def _block_inner_exec(self, tree: Tree, *, ctx: dict[str, Any] | None):
+        if ctx:
+            for key, val in ctx.items():
+                self._scope.set(key, try_to_value(val), self.ctx.__setitem__)
         for ch in tree.children[1:]:
             if ch is None:
                 continue
@@ -454,7 +496,7 @@ class Engine(Interpreter, ContextCallbacks):
 
     # Nested block: {{ ... }}
     # With scope: {@name {...}} (name optional, defaults to '')
-    def _code_block(self, tree: Tree):
+    def _code_block(self, tree: Tree, *, captured: bool = False):
         inner = narrow(tree.children[1], Tree)
         assert inner.data == 'block_inner'
 
@@ -473,7 +515,11 @@ class Engine(Interpreter, ContextCallbacks):
             inner.children[0] = scope
             tree.children[0] = None
 
-        self._block_inner(inner)
+        sub_doc = self._block_inner_scan(inner, captured=captured)
+        if sub_doc is not None:
+            return self._put_val(Box(sub_doc))
+
+        self._block_inner_body(inner)
 
     def expr(self, tree: Tree):
         # Expression statement: {<expr>}
@@ -561,12 +607,8 @@ class Engine(Interpreter, ContextCallbacks):
 
             # Nested block: {{ ... }}
             case 'code_block':
-                if self._depth >= MAX_DEPTH:
-                    self._error('block stack overflow')
-                    raise Abort()
-
                 with self._push():
-                    self._code_block(ch)
+                    self._code_block(ch, captured=True)
                     return self._gather_output(self._output, as_str=as_str)
 
             # Python expression: {"1 + 1"}
@@ -736,26 +778,52 @@ class Engine(Interpreter, ContextCallbacks):
         return self._doc_text
 
     def _doc_ref(self, key: str) -> Value:
-        if (sub_doc := self._sub_docs.get(key)) is not None:
-            trace('_get_doc: Rendering sub-doc: %s', key)
+        val = self._scope.get(key, allow_undef=True)
+        trace('_doc_ref: key=%s val=%r', key, val)
+        if isinstance(val, Box):
+            sub_doc, _ = val.data
+            if is_tracing:
+                trace(
+                    '_doc_ref: Rendering sub-doc: %s %s',
+                    key,
+                    self.debug_node(sub_doc),
+                )
         else:
+            sub_doc = None
             doc_id, doc = self._get_doc(key)
-            trace('_get_doc: Rendering doc: %s %s', key, doc_id)
+            trace('_doc_ref: Rendering doc: %s %s', key, doc_id)
             if self.first_doc_id is None:
                 trace('first_doc_id: %s', doc_id)
                 self.first_doc_id = doc_id
-
-        # Recursion is allowed up to a limit.
-        if self._depth >= MAX_DEPTH:
-            self._error('stack overflow')
-            raise Abort()
 
         with self._push():
             if sub_doc is None:
                 self._render(doc)
             else:
-                self._block_inner(sub_doc, is_sub_doc=True)
+                self._block_inner_body(sub_doc)
             return self._gather_output(self._output, trim=True)
+
+    @override
+    def _call_boxed(
+        self, sub_doc: tuple[Tree, tuple[str, ...] | None], *args, **kwargs
+    ) -> Value | None:
+        tree, arg_list = sub_doc
+        assert tree.data == 'block_inner', tree
+        trace('_call_boxed: %s args=%s kwargs=%s', self.debug_node(tree), args, kwargs)
+
+        # Recursive boxed calls are still limited by `MAX_DEPTH`.
+        with self._push():
+            if arg_list:
+                if len(args) == len(arg_list):
+                    for arg_name, arg in zip(arg_list, args):
+                        kwargs.setdefault(arg_name, arg)
+                else:
+                    self._error(f'box takes {len(arg_list)} args, got {len(args)}')
+            else:
+                for i, arg in enumerate(args):
+                    kwargs.setdefault(str(i), arg)
+            self._block_inner_body(tree, ctx=kwargs)
+            return self._gather_output(self._output, default=None)
 
     # Due to LALR limitations, AOE chains have very different semantics:
     # - In expression statements, they set context vars and return ''.

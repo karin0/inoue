@@ -11,7 +11,7 @@ block_inner: [scope ";"] ((doc_def | doc_ref) (";" doc_ref)*)? stmt_list
 
 // Statements, or statement-like modifiers.
 scope: "@" [dyn_iden]
-!doc_def: iden (":" | "↦")
+!doc_def: [iden] (":" | "↦")
 doc_ref: ":" iden
 
 ?stmt_list: stmt? (";" stmt_list)?
@@ -80,9 +80,9 @@ _EQUAL.10: "=="
 
 // Terminals.
 
-// Exclude all punctuations except '_', '<', '>', '.' from naked literals.
+// Exclude all punctuations except '_', '<', '>', '.', ',' from naked literals.
 // U+21A6 (↦) is also excluded for a slick sub-doc definition.
-LITERAL.-100: /[^\"#$%&'()*+\-,\/:;=?!@[\\\]^`{|}~↦]+/
+LITERAL.-100: /[^\"#$%&'()*+\-\/:;=?!@[\\\]^`{|}~↦]+/
 
 SQ_STRING: /'([^'\\]|\\.)*'/
 
