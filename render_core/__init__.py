@@ -1,4 +1,5 @@
 import os
+import functools
 from contextlib import contextmanager
 from typing import Callable, Sequence, Type, TypeVar, cast, override
 
@@ -12,6 +13,7 @@ from util import log, notify, shorten
 
 from .context import (
     is_tracing,
+    is_not_quiet,
     trace,
     Value,
     to_str,
@@ -26,6 +28,12 @@ MAX_DEPTH = 20
 MAX_GAS = 2000
 
 parser = Lark.open(os.path.join(os.path.dirname(__file__), 'dsl.lark'), parser='lalr')
+
+
+@functools.lru_cache
+def parse_fragment(text: str) -> Tree:
+    return parser.parse(text)
+
 
 T = TypeVar('T', bound=Tree | Token)
 
@@ -132,9 +140,15 @@ class Engine(Interpreter, ContextCallbacks):
             return s + '\n'
         return s
 
-    def _render_tree(self, tree: Tree, fragment: str = ''):
+    def _render_tree(self, tree: Tree, fragment: str):
+        if tree.data == 'start':
+            tree = narrow(tree.children[0], Tree)
+            assert tree.data == 'block_inner'
+        else:
+            raise ValueError(f'Bad root: {tree.pretty()}')
+
         try:
-            self.visit(tree)
+            self._block_inner(tree)
         except Exit:
             # "exit()" called: stop rendering, but only for *this fragment*.
             # Fragments afterwards and outer docs will continue rendering.
@@ -142,8 +156,9 @@ class Engine(Interpreter, ContextCallbacks):
         except Abort:
             # More serious "exit": stop the entire rendering, skipping all fragments,
             # this and all outer docs.
-            with notify.suppress():
-                log.warning('Rendering aborted at fragment: %s', shorten(fragment))
+            if is_not_quiet:
+                with notify.suppress():
+                    log.warning('Rendering aborted at fragment: %s', shorten(fragment))
             raise
 
     def _render(self, text: str):
@@ -154,19 +169,29 @@ class Engine(Interpreter, ContextCallbacks):
 
             if is_block:
                 assert fragment is not None
-                trace('Rendering block: %r', fragment)
+                if is_not_quiet:
+                    trace('Rendering block: %r', fragment)
+
+                misses = parse_fragment.cache_info().misses
                 try:
-                    tree = parser.parse(fragment)
+                    tree = parse_fragment(fragment)
                 except LarkError as e:
                     self._error(f'parse: {fragment!r}: {type(e).__name__}: {e}')
                     continue
 
+                new_misses = parse_fragment.cache_info().misses
+
                 if is_tracing:
-                    trace('Parsed tree: %s', tree.pretty())
+                    if new_misses > misses:
+                        trace('Parsed tree (%s): %s', len(fragment), tree.pretty())
+                        # trace('Parsed tree (%s)', len(fragment))
+                    else:
+                        trace('Cached tree (%s)', len(fragment))
 
                 self._render_tree(tree, fragment)
             else:
-                trace('Appending text fragment: %r', fragment)
+                if is_not_quiet:
+                    trace('Appending text fragment: %r', fragment)
                 if fragment is None:
                     # Merge consecutive line breaks from naked block lines without outputs.
                     if self._dirty:
@@ -222,13 +247,9 @@ class Engine(Interpreter, ContextCallbacks):
         return super().visit(tree)
 
     # Override lark visitor to raise on unhandled nodes.
+    @override
     def __getattr__(self, name: str):
         raise NotImplementedError(name)
-
-    def start(self, tree: Tree):
-        ch = narrow(tree.children[0], Tree)
-        assert ch.data == 'block_inner'
-        return self.block_inner(ch)
 
     def _tree_ctx(self) -> str:
         if self._tree is None:
@@ -291,8 +312,9 @@ class Engine(Interpreter, ContextCallbacks):
     def _exit_func(self):
         raise Exit()
 
-    def block_inner(self, tree: Tree):
+    def _block_inner(self, tree: Tree, *, is_sub_doc: bool = False):
         # Find any doc_def before entering statements to enable sub-docs.
+        op = None
         for i, ch in enumerate(tree.children):
             # Skip the modifier at 0 and the already processed doc_defs.
             if not (
@@ -301,13 +323,12 @@ class Engine(Interpreter, ContextCallbacks):
                 continue
 
             # Db doc name set: {name:}
-            op = narrow(ch.children[1], Token).value
+            if op is None:
+                op = narrow(ch.children[1], Token).value
+            else:
+                raise ValueError('multiple doc defs in one block')
 
-            # Mark as processed, so this block won't be skipped again when
-            # rendering this sub-doc later.
-            tree.children[i] = None
-
-            if op != ':':
+            if op != ':' and not is_sub_doc:
                 # Current 'block_inner' as a sub-document.
                 # Scope from 'code_block' is already embedded.
                 key = self._iden(ch.children[0])
@@ -325,7 +346,6 @@ class Engine(Interpreter, ContextCallbacks):
                     self._error(f'doc name redefined: {self.doc_name} -> {key}')
                 else:
                     self.doc_name = key
-            break
 
         if (scope := tree.children[0]) is not None:
             scope = narrow(scope, Tree)
@@ -337,14 +357,14 @@ class Engine(Interpreter, ContextCallbacks):
 
             self._scope.push(name)
             try:
-                self._block_inner(tree.children, 2)
+                self.__block_inner(tree)
             finally:
                 self._scope.pop()
         else:
-            self._block_inner(tree.children, 1)
+            self.__block_inner(tree)
 
-    def _block_inner(self, children: list[Tree], start: int):
-        for ch in children[start:-1]:
+    def __block_inner(self, tree: Tree):
+        for ch in tree.children[1:]:
             if ch is None:
                 continue
             ch = narrow(ch, Tree)
@@ -355,24 +375,19 @@ class Engine(Interpreter, ContextCallbacks):
                     self._put_val(self._doc_ref(iden))
                 # Db doc get: handled before in `block_inner()`.
                 case 'doc_def':
-                    self._error('multiple doc definitions')
+                    continue
                 case _:
-                    raise ValueError(f'Bad block_inner child: {ch}')
+                    self.visit(ch)
 
-        stmts = narrow(children[-1], Tree)
-        assert stmts.data == 'stmt_list', stmts
-        self._stmt_list(stmts)
-
-    def _stmt_list(self, tree: Tree):
+    def stmt_list(self, tree: Tree):
         # Flatten right-recursion.
         while True:
-            if (stmt := tree.children[0]) is not None:
+            for stmt in tree.children:
+                stmt = narrow(stmt, Tree)
+                if stmt.data == 'stmt_list':
+                    tree = stmt
+                    break
                 self.visit(stmt)
-
-            if (rest := tree.children[1]) is not None:
-                rest = narrow(rest, Tree)
-                assert rest.data == 'stmt_list'
-                tree = rest
             else:
                 break
 
@@ -384,8 +399,25 @@ class Engine(Interpreter, ContextCallbacks):
         # This only applies to the direct 'unary_chain', AOE and 'naked_lit' as
         # the condition expression.
         val = self._expr(cond, permissive=True, allow_undef=True)
-
         test = val and val != '0'
+
+        chs = tree.children
+        left = chs[1]
+        match len(chs):
+            case 4:
+                right = chs[2]
+                final_marker = chs[3]
+            case 3:
+                right = chs[2]
+                if isinstance(right, Token):
+                    final_marker = right
+                    right = None
+                else:
+                    final_marker = None
+            case 2:
+                right = final_marker = None
+            case _:
+                raise ValueError(f'Bad branch: {tree.pretty()}')
 
         # The associativity of `branch` is too greedy and consumes all statements
         # in a recursive `stmt_list`, like `a ? b ; c; d` being parsed as
@@ -396,46 +428,29 @@ class Engine(Interpreter, ContextCallbacks):
         # `(a ? b : c); d;`.
         # You can still explicitly specify the captured parts with braces or a
         # final marker, like in `a ? b : {c ; d}` or `a ? b : c ; d !`.
-        left = tree.children[1]
-        right = tree.children[2]
-        if tree.children[3] is None:
-            if right is not None:
-                right = narrow(right, Tree)
-                assert right.data == 'stmt_list'
-                right, rest = right.children
-                visit = not test
-            else:
-                left = narrow(left, Tree)
-                assert left.data == 'stmt_list'
-                left, rest = left.children
-                visit = test
-        else:
-            if (to := left if test else right) is not None:
-                to = narrow(to, Tree)
-                assert to.data == 'stmt_list'
-                self._branch_depth += 1
-                try:
-                    self._stmt_list(to)
-                finally:
-                    self._branch_depth -= 1
-            return
+        rest = None
+        if final_marker is None:
+            split_left = right is None
+            to_split = left if split_left else right
+            if to_split is not None:
+                to_split = narrow(to_split, Tree)
+                if to_split.data == 'stmt_list' and (chs := to_split.children):
+                    rest = chs[1] if len(chs) > 1 else None
+                    if split_left:
+                        left = chs[0]
+                    else:
+                        right = chs[0]
 
         if (to := left if test else right) is not None:
             to = narrow(to, Tree)
             self._branch_depth += 1
             try:
-                if visit:
-                    self.visit(to)
-                else:
-                    assert to.data == 'stmt_list'
-                    self._stmt_list(to)
+                self.visit(to)
             finally:
                 self._branch_depth -= 1
 
         if rest is not None:
-            rest = narrow(rest, Tree)
-            assert rest.data == 'stmt_list'
-            self._stmt_list(rest)
+            self.visit(narrow(rest, Tree))
 
     # Nested block: {{ ... }}
     # With scope: {@name {...}} (name optional, defaults to '')
@@ -454,9 +469,11 @@ class Engine(Interpreter, ContextCallbacks):
                 self._error('double scope')
 
             # Embed our own scope into the 'block_inner'.
+            # This need to be idempotent, since the tree is cached and may be reused.
             inner.children[0] = scope
+            tree.children[0] = None
 
-        self.block_inner(inner)
+        self._block_inner(inner)
 
     def expr(self, tree: Tree):
         # Expression statement: {<expr>}
@@ -720,16 +737,13 @@ class Engine(Interpreter, ContextCallbacks):
 
     def _doc_ref(self, key: str) -> Value:
         if (sub_doc := self._sub_docs.get(key)) is not None:
-            trace('Rendering sub-doc: %s', key)
-            doc = sub_doc
-            f = self._render_tree
+            trace('_get_doc: Rendering sub-doc: %s', key)
         else:
             doc_id, doc = self._get_doc(key)
-            trace('Rendering doc: %s %s', key, doc_id)
+            trace('_get_doc: Rendering doc: %s %s', key, doc_id)
             if self.first_doc_id is None:
                 trace('first_doc_id: %s', doc_id)
                 self.first_doc_id = doc_id
-            f = self._render
 
         # Recursion is allowed up to a limit.
         if self._depth >= MAX_DEPTH:
@@ -737,7 +751,10 @@ class Engine(Interpreter, ContextCallbacks):
             raise Abort()
 
         with self._push():
-            f(doc)
+            if sub_doc is None:
+                self._render(doc)
+            else:
+                self._block_inner(sub_doc, is_sub_doc=True)
             return self._gather_output(self._output, trim=True)
 
     # Due to LALR limitations, AOE chains have very different semantics:

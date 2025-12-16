@@ -16,7 +16,7 @@ scope: "@" [dyn_iden]
 !doc_def: iden (":" | "↦")
 doc_ref: ":" iden
 
-stmt_list: [stmt] [";" stmt_list]
+?stmt_list: stmt? (";" stmt_list)?
 
 ?stmt: swap
      | repl
@@ -35,7 +35,7 @@ stmt_list: [stmt] [";" stmt_list]
 // unconditionally.
 // `branch` is not treated as an expression due to ambiguity of `assign_or_equal`,
 // Like in `a = $b ? c : d`.
-branch: expr "?" stmt_list [":" stmt_list] [BRANCH_END]
+branch: expr "?" stmt_list (":" stmt_list)? BRANCH_END?
 BRANCH_END: "!"
 
 swap: dyn_iden "^" dyn_iden

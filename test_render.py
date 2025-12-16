@@ -413,6 +413,12 @@ Write the following sentence twice, the second time within quotes.
         )
         self.assertEqual(result, 'Highrest')
 
+        result = self.render_it('{ x="100" ? }\na')
+        self.assertEqual(result, 'a')
+
+        result = self.render_it('{ x="100" ?: }\na')
+        self.assertEqual(result, 'a')
+
     def test_nested_blocks_and_branches(self):
         text = '{ a="1"; "a==1"? { b="2"; "a+b==3"? { c="3"; "a+b+c" } : "Wrong" } : "Wrong" }'
         result = self.render_it(text)

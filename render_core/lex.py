@@ -1,7 +1,10 @@
 from typing import Iterable
-from .context import trace
+from .context import trace, is_not_quiet
 
 lex_errors = []
+
+if not is_not_quiet:
+    trace = lambda *_: None
 
 
 # Find all "code blocks" and "block lines" - lines that ends with `;`, which are treated
