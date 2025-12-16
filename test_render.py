@@ -625,6 +625,28 @@ n ?= m = "2";
         result = self.render_it(text, e='stack overflow')
         self.assertTrue(result.startswith('2\n3\n5\n7\n11\n13'), result)
 
+    def test_prime_2(self):
+        text = r'''prime:;
+{n ? "m*m>n" ? $n; n="n+2"; m="3"        !;
+      "n%m"   ? m="m+2" : n="n+2"; m="3"; !
+    : 2; n=m="3"; !; }
+*prime;
+'''
+        result = self.render_it(text, e='stack overflow')
+        result = '\n'.join(result.split())
+        self.assertTrue(result.startswith('2\n3\n5\n7\n11\n13'), result)
+
+    def test_prime_3(self):
+        text = r'''prime2:;
+n ?= m = "2";
+"m * m > n" ? $n; n="n > 2 and n+2 or 3"; m="2" :;
+"m * m <= n and n % m == 0" ? n="n+2"; m="2";   :;
+"m * m <= n and n % m" ? m="m > 2 and m+2 or 3" :;
+*prime2;
+'''
+        result = self.render_it(text, e='stack overflow')
+        self.assertTrue(result.startswith('2\n3\n5\n7\n11\n13'), result)
+
     def test_prime_vectorized(self):
         db = {}
         db[

@@ -1,5 +1,3 @@
-start: block_inner
-
 // Block, with an optional scope.
 code_block: [scope] "{" block_inner "}"
 

@@ -27,7 +27,11 @@ from .lex import lex, lex_errors
 MAX_DEPTH = 20
 MAX_GAS = 2000
 
-parser = Lark.open(os.path.join(os.path.dirname(__file__), 'dsl.lark'), parser='lalr')
+parser = Lark.open(
+    os.path.join(os.path.dirname(__file__), 'dsl.lark'),
+    parser='lalr',
+    start='block_inner',
+)
 
 
 @functools.lru_cache
@@ -141,11 +145,7 @@ class Engine(Interpreter, ContextCallbacks):
         return s
 
     def _render_tree(self, tree: Tree, fragment: str):
-        if tree.data == 'start':
-            tree = narrow(tree.children[0], Tree)
-            assert tree.data == 'block_inner'
-        else:
-            raise ValueError(f'Bad root: {tree.pretty()}')
+        assert tree.data == 'block_inner', tree
 
         try:
             self._block_inner(tree)
@@ -286,7 +286,7 @@ class Engine(Interpreter, ContextCallbacks):
             raise
         finally:
             self._depth -= 1
-            trace('Pop: %d %s %s', self._depth, self._output, old_output)
+            trace('Pop: %d %s %s', self._depth, old_output, self._output)
             assert self._depth >= 0
             if self._depth == 0 and self._root_output:
                 old_output.extend(self._root_output)
