@@ -93,7 +93,7 @@ class TestRender(unittest.TestCase):
         else:
             self.assertFalse(
                 ctx.errors,
-                f'Render: {text}\nResult:{r}\nerrors: {ctx.errors}\nctx: {ctx.ctx.items()}',
+                f'Render: {text}\nResult:{r}\nerrors: {ctx.errors}\nctx: {ctx.items()}',
             )
         return r
 
@@ -298,7 +298,7 @@ class TestRender(unittest.TestCase):
         text = "{target=World}Hello {target}!"
         result, ctx = self.render_it_all(text)
         self.assertEqual(result, "Hello World!")
-        self.assertEqual(ctx.ctx['target'], 'World')
+        self.assertEqual(ctx.get('target'), 'World')
 
         self.assertEqual(self.render_it("{a=b=c=3;a;b;c}"), "333")
         self.assertEqual(self.render_it("{a=b=c=3;d=e=;a;d;b;e;c}"), "333")
@@ -307,7 +307,7 @@ class TestRender(unittest.TestCase):
         text = "{mode:=write}{mode=read}Current: {mode}"
         result, ctx = self.render_it_all(text)
         self.assertEqual(result, "Current: write")
-        self.assertEqual(ctx.ctx.overrides['mode'], 'write')
+        self.assertEqual(ctx.get('mode'), 'write')
 
     def test_doc_recursion(self):
         def side_effect(name):
@@ -350,8 +350,8 @@ n ? *bomb : Boom!;
     def test_swap(self):
         result, ctx = self.render_it_all("{x=1; y=2; x^y; x; y}")
         self.assertEqual(result, "21")
-        self.assertEqual(ctx.ctx['x'], '2')
-        self.assertEqual(ctx.ctx['y'], '1')
+        self.assertEqual(ctx.get('x'), '2')
+        self.assertEqual(ctx.get('y'), '1')
 
         result = self.render_it("{a=hello; a^b; a}", e='undefined')
         self.assertEqual(result, '')

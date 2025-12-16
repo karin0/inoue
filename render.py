@@ -62,7 +62,7 @@ def make_markup(
         return None
 
     flags = {}
-    for k, v in ctx.ctx.items():
+    for k, v in ctx.items():
         if v == '0' or v == 0:  # This covers `False` as well.
             v = False
         elif v == '1' or v == 1:
@@ -110,7 +110,9 @@ def make_markup(
             old = k in state
             state[k] = not v
 
-            if (icon := ctx.ctx.get('_icon.' + k)) is None:
+            if icon := ctx.get('_icon.' + k):
+                icon = str(icon)
+            else:
                 icon = SPECIAL_FLAG_ICONS.get(k, k)
             push_button(icon + (':=' if old else '=') + '01'[v])
 
@@ -157,7 +159,7 @@ def rendered_response(
             if len(result) + len(suffix) <= MAX_TEXT_LENGTH:
                 result += suffix
 
-        if footer := ctx.ctx.get('_footer'):
+        if footer := ctx.get('_footer'):
             suffix = do_escape(footer)
             if flags:
                 suffix = ' ' + suffix

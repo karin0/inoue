@@ -29,6 +29,7 @@ class Box[T]:
 # Allowed types for context values, as allowed by `simpleeval` by default (except None).
 # Other types should have been disallowed in `simpleeval`.
 type Value = str | int | float | bool | complex | bytes | Box
+type Items = ItemsView[str, Value]
 
 
 def is_value_type(v: Any) -> TypeGuard[Value]:
@@ -127,6 +128,9 @@ def get_pm_key(key: str) -> str | None:
 class OverriddenDict(UserDict):
     def __init__(self, overrides: dict[str, Value]):
         super().__init__()
+        for val in overrides.values():
+            if not is_value_type(val):
+                raise TypeError(f'bad override value type: {type(val)}: {val}')
         self.overrides = overrides
 
     def __getitem__(self, key: str) -> Value:
@@ -175,7 +179,7 @@ class OverriddenDict(UserDict):
     def setdefault_override(self, key: str, value: Value) -> Value:
         return self.overrides.setdefault(key, value)
 
-    def items(self) -> ItemsView[str, Value]:
+    def items(self) -> Items:
         # Keys from the underlying dict are yielded first, in their natural order.
         # Technically the side effects of this method shouldn't affect our behavior,
         # since existing overrides can never be removed or modified.

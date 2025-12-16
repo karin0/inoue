@@ -17,6 +17,7 @@ from .context import (
     trace,
     Value,
     Box,
+    Items,
     to_str,
     try_to_str,
     try_to_value,
@@ -65,7 +66,7 @@ class Engine(Interpreter, ContextCallbacks):
         doc_id: int | None = None,
     ):
         super().__init__()
-        self.ctx = OverriddenDict(overrides)
+        self._ctx = OverriddenDict(overrides)
         self._doc_id = doc_id
         self._doc_text = ''
 
@@ -84,7 +85,7 @@ class Engine(Interpreter, ContextCallbacks):
         self._gas: int = 0
 
         self._scope = ScopedContext(
-            self.ctx,
+            self._ctx,
             self,
             {
                 '__file__': self._get_doc_func,
@@ -218,12 +219,19 @@ class Engine(Interpreter, ContextCallbacks):
         r = self._gather_output(self._output, as_str=True)
         if is_tracing:
             trace('Final rendered result: %r', r)
-            self.ctx.debug()
+            self._ctx.debug()
         return r.strip()  # type: ignore
 
+    # Flatten view without scopes. For external use only.
     def get_flag(self, key: str, default: bool = False) -> bool:
-        val = self.ctx.get(key, default)
+        val = self._ctx.get(key, default)
         return bool(val) and val != '0'
+
+    def get(self, key: str, default: Value | None = None) -> Value | None:
+        return self._ctx.get(key, default)
+
+    def items(self) -> Items:
+        return self._ctx.items()
 
     def debug_node(self, node: Tree | Token | None, depth: int = 0) -> str:
         if node is None:
@@ -391,7 +399,7 @@ class Engine(Interpreter, ContextCallbacks):
                         arg_list = tuple(s for s in arg_list if s)
                     else:
                         key = self._iden(key)
-                        self._scope.set(key, Box((tree, None)), self.ctx.__setitem__)
+                        self._scope.set(key, Box((tree, None)), self._ctx.__setitem__)
                 elif not captured:
                     self._error('unnamed sub-doc must be captured')
 
@@ -434,7 +442,7 @@ class Engine(Interpreter, ContextCallbacks):
     def _block_inner_exec(self, tree: Tree, *, ctx: dict[str, Any] | None):
         if ctx:
             for key, val in ctx.items():
-                self._scope.set(key, try_to_value(val), self.ctx.__setitem__)
+                self._scope.set(key, try_to_value(val), self._ctx.__setitem__)
         for ch in tree.children[1:]:
             if ch is None:
                 continue
@@ -699,7 +707,7 @@ class Engine(Interpreter, ContextCallbacks):
     def _get_by_raw_key(
         self, key: str, *, as_str: bool = False, allow_undef: bool = False
     ) -> Value:
-        val = self.ctx.get(key)
+        val = self._ctx.get(key)
         trace('_get_by_raw_key: %s (%s) = %r', key, len(key), val)
         if val is None:
             if not allow_undef:
@@ -721,11 +729,11 @@ class Engine(Interpreter, ContextCallbacks):
             # Flag set: {+name} or {-name}
             # This means {name:=1} or {name:=0}.
             case '+':
-                self.ctx.setdefault_override(key, '1')
+                self._ctx.setdefault_override(key, '1')
                 return ''
 
             case '-':
-                self.ctx.setdefault_override(key, '0')
+                self._ctx.setdefault_override(key, '0')
                 return ''
 
             # Variable read: {$name}
@@ -859,14 +867,14 @@ class Engine(Interpreter, ContextCallbacks):
             case '=':
                 # Context set: {key=value}
                 # {key1=key2=...=value} sets all keys to value
-                f = self.ctx.__setitem__
+                f = self._ctx.__setitem__
 
             case ':=':
                 # Context override: {key:=value}
                 # a. Can never be overridden (except by markup buttons)
                 # b. Does not interrupt the natural order of flags detected in markup
                 # {key1:=key2=...=value} affects all keys
-                f = self.ctx.setdefault_override
+                f = self._ctx.setdefault_override
 
             case '?=':
                 # Context set if undefined or empty: {name?=value}
@@ -906,7 +914,7 @@ class Engine(Interpreter, ContextCallbacks):
                     # 1. Ensures the var in the inner scope with the outer value.
                     # 2. Notifies the underlying `OverriddenDict` to touch the key.
                     #    See `OverriddenDict._setitem__`.
-                    self.ctx[key] = new
+                    self._ctx[key] = new
 
                 if val is None:
                     trace('"?=": Skipped evaluation for %s', keys)
@@ -958,4 +966,4 @@ class Engine(Interpreter, ContextCallbacks):
             sub = self._evaluate(sub)
 
             # Write back each time.
-            self.ctx[key] = val = val.replace(pat, sub)
+            self._ctx[key] = val = val.replace(pat, sub)
