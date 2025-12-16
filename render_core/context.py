@@ -23,7 +23,8 @@ class Box[T]:
     def __str__(self):
         return ''
 
-    __repr__ = __str__
+    def __repr__(self):
+        return f'Box({repr(self.data)})'
 
 
 # Allowed types for context values, as allowed by `simpleeval` by default (except None).

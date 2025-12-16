@@ -77,6 +77,7 @@ class TestRender(unittest.TestCase):
         overrides: dict[str, Value] | None = None,
         *,
         e: str | tuple[str, ...] = '',
+        eq: str | None = None,
     ) -> str:
         if overrides is None:
             overrides = {}
@@ -95,6 +96,8 @@ class TestRender(unittest.TestCase):
                 ctx.errors,
                 f'Render: {text}\nResult:{r}\nerrors: {ctx.errors}\nctx: {ctx.items()}',
             )
+        if eq is not None:
+            self.assertEqual(r, eq, f'Render: {text}')
         return r
 
     def render_it_all(
@@ -937,6 +940,65 @@ f = @ { ↦ a=$0; b=$1; "a + b" };
 "f(a, b)";
 '''
         self.assertEqual(self.render_it(text), '1\n2\n3 2 1\n42\n42\n42\n1\n\n120\n162')
+
+    STD = r'''{
+wile = while = {cond, body ↦
+  *cond ? *body*while
+};
+fur = for = {init, cond, step, body ↦
+  *init ;
+  _body = $body;
+  body = { ↦ *_body*step };
+  *while
+};
+}'''
+
+    def test_loop(self):
+        text = r'''
+n = "1"; out=;
+{ body ↦ out = "out + str(n) + ' '"; n = "n+1" };
+{ cond ↦ "n<10" };
+*while; a=$out; out=; n = "1";
+"wile(cond, body)"; b=$out;
+a; b; a = $b ? Ok : Fail;'''
+        self.render_it(self.STD + text, eq='1 2 3 4 5 6 7 8 9 ' * 2 + 'Ok')
+
+    def test_for_loop(self):
+        text = r'''
+{ init ↦ n = "1"; out=; };
+{ cond ↦ "n<=9" };
+{ step ↦ n = "n+1" };
+{ body ↦ out = "out + str(n) + ' '" };
+*for; a = $out; a;'''
+        self.render_it(self.STD + text, eq='1 2 3 4 5 6 7 8 9')
+
+    def test_sort(self):
+        ctx = [5, 3, 8, 6, 2, 7, 4, 1]
+        ctx = {f'a{i}': str(v) for i, v in enumerate(ctx)}
+        text = r'''
+n="8";
+{ init ↦ i = "0" };
+{ cond ↦ "i<n" };
+{ step ↦ i = "i+1" };
+{ body ↦ ({'v'; i}) = $({'a'; i}) };
+*for;
+
+{@; body ↦
+    { init ↦ j = "0" };
+    { cond ↦ "j < n-i-1" };
+    { step ↦ j = "j+1" };
+    { body ↦
+        a = $({'v'; j}); b = $({'v'; "j+1"});
+        "a>b" ? ({'v'; j}) ^ ({'v'; "j+1"});
+    };
+    *for;
+}
+*for;
+
+{ body ↦ x = $({'v'; i}) ; "print(x)" };
+"fur(init, cond, step, body)";
+'''
+        self.render_it(self.STD + text, ctx, eq='\n'.join(str(i) for i in range(1, 9)))
 
 
 if __name__ == '__main__':

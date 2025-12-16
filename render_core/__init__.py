@@ -58,6 +58,16 @@ class Exit(Abort):
     pass
 
 
+class SubDoc:
+    def __init__(self, tree: Tree, args: tuple[str, ...] | None):
+        self.tree = tree
+        self.args = args
+
+    def __repr__(self) -> str:
+        tree = Engine.debug_node(self.tree)
+        return f'{{{self.args} ↦ {tree}}}'
+
+
 class Engine(Interpreter, ContextCallbacks):
     def __init__(
         self,
@@ -233,7 +243,8 @@ class Engine(Interpreter, ContextCallbacks):
     def items(self) -> Items:
         return self._ctx.items()
 
-    def debug_node(self, node: Tree | Token | None, depth: int = 0) -> str:
+    @classmethod
+    def debug_node(cls, node: Tree | Token | None, depth: int = 0) -> str:
         if node is None:
             return '/'
         if isinstance(node, Token):
@@ -246,7 +257,7 @@ class Engine(Interpreter, ContextCallbacks):
             nr = f'[{nr}]'
         else:
             nr = ''
-        chs = ', '.join(self.debug_node(ch, depth + 1) for ch in node.children)
+        chs = ', '.join(cls.debug_node(ch, depth + 1) for ch in node.children)
         return f'{node.data}{nr}({chs})'
 
     @override
@@ -366,9 +377,7 @@ class Engine(Interpreter, ContextCallbacks):
         if self._block_inner_scan(tree) is None:
             self._block_inner_body(tree)
 
-    def _block_inner_scan(
-        self, tree: Tree, *, captured: bool = False
-    ) -> tuple[Tree, tuple[str, ...] | None] | None:
+    def _block_inner_scan(self, tree: Tree, *, captured: bool = False) -> SubDoc | None:
         assert tree.data == 'block_inner', tree
         # Find any doc_def before entering statements to enable sub-docs.
         for i, ch in enumerate(tree.children):
@@ -390,21 +399,25 @@ class Engine(Interpreter, ContextCallbacks):
                 key = ch.children[0]
                 trace('doc_def: sub_doc: %s %s', key, op)
 
-                arg_list = None
                 if key is not None:
                     key = ch.children[0]
                     if captured:
                         key = narrow(key, Token).value.strip()
-                        arg_list = tuple(s.strip() for s in key.split(','))
-                        arg_list = tuple(s for s in arg_list if s)
+                        args = tuple(r for s in key.split(',') if (r := s.strip()))
+                        sub_doc = SubDoc(tree, args)
+                        trace('Captured sub-doc: %s %s', key, sub_doc)
                     else:
                         key = self._iden(key)
-                        self._scope.set(key, Box((tree, None)), self._ctx.__setitem__)
-                elif not captured:
-                    self._error('unnamed sub-doc must be captured')
+                        sub_doc = SubDoc(tree, None)
+                        trace('Uncaptured sub-doc: %s %s', key, sub_doc)
+                        self._scope.set(key, Box(sub_doc), self._ctx.__setitem__)
+                else:
+                    sub_doc = SubDoc(tree, None)
+                    if not captured:
+                        self._error('unnamed sub-doc must be captured')
 
                 # Skip evaluating the entire block!
-                return tree, arg_list
+                return sub_doc
 
             # Common doc definition.
             if self._depth == 0:
@@ -791,7 +804,8 @@ class Engine(Interpreter, ContextCallbacks):
         val = self._scope.get(key, allow_undef=True)
         trace('_doc_ref: key=%s val=%r', key, val)
         if isinstance(val, Box):
-            sub_doc, _ = val.data
+            val: Box[SubDoc]
+            sub_doc = val.data.tree
             if is_tracing:
                 trace(
                     '_doc_ref: Rendering sub-doc: %s %s',
@@ -814,10 +828,9 @@ class Engine(Interpreter, ContextCallbacks):
             return self._gather_output(self._output, trim=True)
 
     @override
-    def _call_boxed(
-        self, sub_doc: tuple[Tree, tuple[str, ...] | None], *args, **kwargs
-    ) -> Value | None:
-        tree, arg_list = sub_doc
+    def _call_boxed(self, sub_doc: SubDoc, *args, **kwargs) -> Value | None:
+        tree = sub_doc.tree
+        arg_list = sub_doc.args
         assert tree.data == 'block_inner', tree
         trace('_call_boxed: %s args=%s kwargs=%s', self.debug_node(tree), args, kwargs)
 
