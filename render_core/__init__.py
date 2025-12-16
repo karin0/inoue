@@ -325,6 +325,39 @@ class Engine(Interpreter, ContextCallbacks):
     def _exit_func(self):
         raise Exit()
 
+    # Nested block: {{ ... }}
+    # With scope: {@name {...}} (name optional, defaults to '')
+    def _code_block(self, tree: Tree, *, captured: bool = False):
+        inner = narrow(tree.children[1], Tree)
+        assert inner.data == 'block_inner'
+
+        if (scope := tree.children[0]) is not None:
+            scope = narrow(scope, Tree)
+            assert scope.data == 'scope'
+            if is_tracing:
+                trace('_code_block: scope: %s', self.debug_node(scope))
+
+            if inner.children[0] is not None:
+                assert inner.children[0].data == 'scope'
+                self._error('double scope')
+
+            # Embed our own scope into the 'block_inner'.
+            # This need to be idempotent, since the tree is cached and may be reused.
+            inner.children[0] = scope
+            tree.children[0] = None
+
+        sub_doc = self._block_inner_scan(inner, captured=captured)
+        if sub_doc is not None:
+            return self._put_val(Box(sub_doc))
+
+        self._block_inner_body(inner)
+
+    # Entry of the syntax: '{ ... }', or '...;' in a single line.
+    # Works like a simpler `_code_block` without scope modifier.
+    def _block_inner(self, tree: Tree):
+        if self._block_inner_scan(tree) is None:
+            self._block_inner_body(tree)
+
     def _block_inner_scan(
         self, tree: Tree, *, captured: bool = False
     ) -> tuple[Tree, tuple[str, ...] | None] | None:
@@ -380,10 +413,6 @@ class Engine(Interpreter, ContextCallbacks):
                     self.doc_name = key
 
             return None
-
-    def _block_inner(self, tree: Tree):
-        if self._block_inner_scan(tree) is None:
-            self._block_inner_body(tree)
 
     def _block_inner_body(self, tree: Tree, *, ctx: dict[str, Any] | None = None):
         if (scope := tree.children[0]) is not None:
@@ -493,33 +522,6 @@ class Engine(Interpreter, ContextCallbacks):
 
         if rest is not None:
             self.visit(narrow(rest, Tree))
-
-    # Nested block: {{ ... }}
-    # With scope: {@name {...}} (name optional, defaults to '')
-    def _code_block(self, tree: Tree, *, captured: bool = False):
-        inner = narrow(tree.children[1], Tree)
-        assert inner.data == 'block_inner'
-
-        if (scope := tree.children[0]) is not None:
-            scope = narrow(scope, Tree)
-            assert scope.data == 'scope'
-            if is_tracing:
-                trace('_code_block: scope: %s', self.debug_node(scope))
-
-            if inner.children[0] is not None:
-                assert inner.children[0].data == 'scope'
-                self._error('double scope')
-
-            # Embed our own scope into the 'block_inner'.
-            # This need to be idempotent, since the tree is cached and may be reused.
-            inner.children[0] = scope
-            tree.children[0] = None
-
-        sub_doc = self._block_inner_scan(inner, captured=captured)
-        if sub_doc is not None:
-            return self._put_val(Box(sub_doc))
-
-        self._block_inner_body(inner)
 
     def expr(self, tree: Tree):
         # Expression statement: {<expr>}
