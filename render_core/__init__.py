@@ -1,5 +1,7 @@
 import os
+import sys
 import functools
+import traceback
 from contextlib import contextmanager
 from typing import Any, Callable, Sequence, Type, TypeVar, cast, override
 
@@ -28,7 +30,22 @@ from .context import (
 from .lex import lex, lex_errors
 
 MAX_DEPTH = 20
+MIN_TCO_DEPTH = 10
 MAX_GAS = 2000
+
+
+# https://stackoverflow.com/a/47956089
+def stack_size2a(size=2):
+    from itertools import count
+
+    """Get stack size for caller's frame."""
+    frame = sys._getframe(size)
+
+    for size in count(size):
+        frame = frame.f_back
+        if not frame:
+            return size
+
 
 parser = Lark.open(
     os.path.join(os.path.dirname(__file__), 'dsl.lark'),
@@ -50,12 +67,23 @@ def narrow(x: Tree | Token, target_type: Type[T]) -> T:
     return cast(T, x)
 
 
+# Abort the entire rendering, until the "root" document.
 class Abort(Exception):
     pass
 
 
+# "exit()", stop rendering the current fragment only.
 class Exit(Abort):
     pass
+
+
+# TCO, but more like a signal to "execve" the caller context.
+class TCO(Exception):
+    def __init__(self, tree: Tree, scope: str, ctx: dict[str, Any] | None = None):
+        super().__init__(tree)
+        self.tree = tree
+        self.scope = scope
+        self.ctx = ctx
 
 
 class SubDoc:
@@ -87,7 +115,6 @@ class Engine(Interpreter, ContextCallbacks):
         self._output: list[Value] = []
         self._root_output: list[str] = []
         self._depth: int = 0
-        self._branch_depth: int = 0
         self._dirty: bool = False
         self._doc_scope: str = ''
 
@@ -161,11 +188,16 @@ class Engine(Interpreter, ContextCallbacks):
             return s + '\n'
         return s
 
-    def _render_tree(self, tree: Tree, fragment: str):
+    def _render_tree(self, tree: Tree, fragment: str, root: bool):
         assert tree.data == 'block_inner', tree
 
+        # Entry of the syntax: '{ ... }', or '...;' in a single line.
+        # Works like a simpler `_code_block` without scope modifier.
+        if self._block_inner_scan(tree, root=root) is not None:
+            return
+
         try:
-            self._block_inner(tree)
+            self._block_inner_body(tree)
         except Exit:
             # "exit()" called: stop rendering, but only for *this fragment*.
             # Fragments afterwards and outer docs will continue rendering.
@@ -178,7 +210,7 @@ class Engine(Interpreter, ContextCallbacks):
                     log.warning('Rendering aborted at fragment: %s', shorten(fragment))
             raise
 
-    def _render(self, text: str):
+    def _render(self, text: str, *, root: bool = False):
         for is_block, fragment in lex(text):
             if lex_errors:
                 self.errors.extend(lex_errors)
@@ -205,7 +237,7 @@ class Engine(Interpreter, ContextCallbacks):
                     else:
                         trace('Cached tree (%s)', len(fragment))
 
-                self._render_tree(tree, fragment)
+                self._render_tree(tree, fragment, root)
             else:
                 if is_not_quiet:
                     trace('Appending text fragment: %r', fragment)
@@ -223,7 +255,7 @@ class Engine(Interpreter, ContextCallbacks):
         self._doc_text = text = text.strip()
         # Internal document expansion does not trim spaces.
         try:
-            self._render(text)
+            self._render(text, root=True)
         except Abort:
             trace('Rendering aborted.')
         r = self._gather_output(self._output, as_str=True)
@@ -243,33 +275,43 @@ class Engine(Interpreter, ContextCallbacks):
     def items(self) -> Items:
         return self._ctx.items()
 
+    MAX_DEBUG_DEPTH = 2 if is_not_quiet else 1
+
     @classmethod
-    def debug_node(cls, node: Tree | Token | None, depth: int = 0) -> str:
+    def debug_node(cls, node: Tree | Token | None, *, depth: int = 0) -> str:
         if node is None:
             return '/'
         if isinstance(node, Token):
-            return f'{node.type}({node.value})'
+            return f'{node.type}({node.value.strip()})'
         assert isinstance(node, Tree)
         nr = len(node.children)
         if nr > 1:
-            if depth > 2:
+            if depth > cls.MAX_DEBUG_DEPTH:
                 return f'{node.data}[{nr}]'
             nr = f'[{nr}]'
         else:
             nr = ''
-        chs = ', '.join(cls.debug_node(ch, depth + 1) for ch in node.children)
+        chs = ', '.join(cls.debug_node(ch, depth=depth + 1) for ch in node.children)
         return f'{node.data}{nr}({chs})'
 
-    @override
-    def visit(self, tree: Tree):
+    # This interface is only used for `stmt_list` and all types of `stmt` nodes.
+    def visit(
+        self, tree: Tree, *, direct_branch: bool = False, allow_tco: bool = False
+    ):
         assert isinstance(tree, Tree)
         self._tree = tree
 
-        if is_tracing:
-            trace('[%d %d] %s', self._depth, self._gas, self.debug_node(tree))
-
         self._consume_gas()
-        return super().visit(tree)
+        self._trace(tree, direct_branch=direct_branch, allow_tco=allow_tco)
+
+        if tree.data == 'expr':
+            self.expr(tree, direct_branch=direct_branch, allow_tco=allow_tco)
+        elif tree.data == 'stmt_list':
+            self.stmt_list(tree, direct_branch=direct_branch, allow_tco=allow_tco)
+        elif tree.data == 'branch':
+            self.branch(tree, allow_tco=allow_tco)
+        else:
+            super().visit(tree)
 
     # Override lark visitor to raise on unhandled nodes.
     @override
@@ -285,6 +327,9 @@ class Engine(Interpreter, ContextCallbacks):
     def _error(self, msg: str):
         ctx = self._tree_ctx()
         log.debug('Error: %s: %s', msg, ctx)
+        if is_tracing:
+            trace('%s', ''.join(traceback.format_stack(limit=5)))
+
         self.errors.append(f'{msg}: {ctx}')
 
         if len(self.errors) > 5:
@@ -296,18 +341,24 @@ class Engine(Interpreter, ContextCallbacks):
     @contextmanager
     def _push(self):
         # Recursion is allowed up to a limit.
+        old_output = self._output
+        old_dirty = self._dirty
+        old_doc_scope = self._doc_scope
+        sys_depth = stack_size2a()
+        trace(
+            'Push: %s %s %s (%s)',
+            self._depth,
+            old_output,
+            old_doc_scope,
+            sys_depth,
+        )
+
         if self._depth >= MAX_DEPTH:
             self._error('stack overflow')
             raise Abort()
 
-        old_output = self._output
-        old_branch_depth = self._branch_depth
-        old_dirty = self._dirty
-        old_doc_scope = self._doc_scope
-        trace('Push: %d %s %s', self._depth, old_output, old_doc_scope)
         self._depth += 1
         self._output = []
-        self._branch_depth = 0
         self._dirty = False
         self._doc_scope = self._scope.current()
         err = False
@@ -326,7 +377,6 @@ class Engine(Interpreter, ContextCallbacks):
             if err:
                 old_output.extend(self._output)
             self._output = old_output
-            self._branch_depth = old_branch_depth
             self._dirty = old_dirty
             self._doc_scope = old_doc_scope
 
@@ -371,13 +421,9 @@ class Engine(Interpreter, ContextCallbacks):
 
         self._block_inner_body(inner)
 
-    # Entry of the syntax: '{ ... }', or '...;' in a single line.
-    # Works like a simpler `_code_block` without scope modifier.
-    def _block_inner(self, tree: Tree):
-        if self._block_inner_scan(tree) is None:
-            self._block_inner_body(tree)
-
-    def _block_inner_scan(self, tree: Tree, *, captured: bool = False) -> SubDoc | None:
+    def _block_inner_scan(
+        self, tree: Tree, *, captured: bool = False, root: bool = False
+    ) -> SubDoc | None:
         assert tree.data == 'block_inner', tree
         # Find any doc_def before entering statements to enable sub-docs.
         for i, ch in enumerate(tree.children):
@@ -419,23 +465,59 @@ class Engine(Interpreter, ContextCallbacks):
                 # Skip evaluating the entire block!
                 return sub_doc
 
-            # Common doc definition.
-            if self._depth == 0:
-                key = ch.children[0]
-                if key is None:
-                    self._error('empty doc definition')
-                    return None
+            # Doc name definition: {name:}
+            key = ch.children[0]
+            if key is None:
+                self._error('empty doc definition')
+                return
 
-                key = self._iden(key)
+            key = self._iden(key)
+
+            # Common doc definition is only allowed at the root level.
+            # But we don't complain otherwise, since recursions also trigger this.
+            if root:
                 trace('doc_def: %s', key)
                 if self.doc_name is not None:
                     self._error(f'doc name redefined: {self.doc_name} -> {key}')
                 else:
                     self.doc_name = key
+            else:
+                trace('doc_def: ignored: %s', key)
 
-            return None
+            return
 
+    # Trampoline for TCO. Starting point of block execution.
     def _block_inner_body(self, tree: Tree, *, ctx: dict[str, Any] | None = None):
+        ref_scope = None
+        while True:
+            try:
+                if ref_scope is None:
+                    self._block_inner_scoped(tree, ctx=ctx)
+                else:
+                    self._scope.push_raw(ref_scope)
+                    try:
+                        self._block_inner_scoped(tree, ctx=ctx)
+                    finally:
+                        self._scope.pop()
+            except TCO as e:
+                # "Stack-unwinding" based TCO! (maybe more expensive than normal calls...)
+                # Output has been protected and folded in `_push` on exceptions.
+                sub_doc = e.tree
+                ref_scope = e.scope
+                ctx = e.ctx
+                if is_tracing:
+                    trace(
+                        'TCO @ %s: %s\n-> %s',
+                        ref_scope,
+                        self.debug_node(sub_doc),
+                        self.debug_node(tree),
+                    )
+                tree = sub_doc
+            else:
+                break
+
+    # Enforce scope modifier before block.
+    def _block_inner_scoped(self, tree: Tree, *, ctx: dict[str, Any] | None = None):
         if (scope := tree.children[0]) is not None:
             scope = narrow(scope, Tree)
             assert scope.data == 'scope'
@@ -446,45 +528,82 @@ class Engine(Interpreter, ContextCallbacks):
 
             self._scope.push(name)
             try:
-                self._block_inner_exec(tree, ctx=ctx)
+                self._block_inner_prepare_ctx(ctx)
+                self._block_inner_exec(tree)
             finally:
                 self._scope.pop()
         else:
-            self._block_inner_exec(tree, ctx=ctx)
+            self._block_inner_prepare_ctx(ctx)
+            self._block_inner_exec(tree)
 
-    def _block_inner_exec(self, tree: Tree, *, ctx: dict[str, Any] | None):
+    # Enforce argument context.
+    def _block_inner_prepare_ctx(self, ctx: dict[str, Any] | None = None):
         if ctx:
             for key, val in ctx.items():
                 self._scope.set(key, try_to_value(val), self._ctx.__setitem__)
-        for ch in tree.children[1:]:
-            if ch is None:
-                continue
+
+    # Execute!
+    def _block_inner_exec(self, tree: Tree):
+        stmt_list = narrow(tree.children[-1], Tree)
+        if self._is_empty_stmt(stmt_list):
+            stmt_list = None
+
+        refs = []
+        for ch in tree.children[1:-1]:
             ch = narrow(ch, Tree)
             match ch.data:
                 # Db doc expand: {:doc} (same as {*doc} in unary expressions)
                 case 'doc_ref':
-                    iden = self._iden(ch.children[-1])
-                    self._put_val(self._doc_ref(iden))
-                # Db doc get: handled before in `block_inner()`.
+                    key = self._iden(ch.children[-1])
+                    refs.append(key)
+                # Db doc get: handled before in `_block_inner_scan()`.
                 case 'doc_def':
                     continue
                 case _:
-                    self.visit(ch)
+                    # `block_inner` can contain at most one statement.
+                    raise ValueError(f'Bad block_inner child: {tree.pretty()}')
 
-    def stmt_list(self, tree: Tree):
-        # Flatten right-recursion.
-        while True:
+        # TCOs are actually more expensive than normal calls due to exception handling,
+        # so we only enable it in deeper recursions.
+        allow_tco = self._depth >= MIN_TCO_DEPTH
+        if stmt_list is None:
+            if refs:
+                last = refs.pop()
+                for key in refs:
+                    self._put_val(self._doc_ref(key))
+                self._put_val(self._doc_ref(last, allow_tco=allow_tco))
+        else:
+            for key in refs:
+                self._put_val(self._doc_ref(key))
+            self.visit(stmt_list, allow_tco=allow_tco)
+
+    def stmt_list(
+        self, tree: Tree, *, direct_branch: bool = False, allow_tco: bool = False
+    ):
+        # Flatten right-recursion with a trampoline.
+        todo = []
+        while tree.children:
             for stmt in tree.children:
                 stmt = narrow(stmt, Tree)
                 if stmt.data == 'stmt_list':
                     tree = stmt
                     break
-                self.visit(stmt)
+                todo.append(stmt)
             else:
                 break
 
+        if todo:
+            last = todo.pop()
+            for stmt in todo:
+                self.visit(stmt, direct_branch=direct_branch)
+            self.visit(last, direct_branch=direct_branch, allow_tco=allow_tco)
+
+    @staticmethod
+    def _is_empty_stmt(tree: Tree) -> bool:
+        return tree.data == 'stmt_list' and not tree.children
+
     # Conditional branch: {<cond> ? true-directive : false-directive} (false part optional)
-    def branch(self, tree: Tree):
+    def branch(self, tree: Tree, *, allow_tco: bool = False):
         cond = narrow(tree.children[0], Tree)
 
         # Allow undefined vars as falsy in conditions.
@@ -527,24 +646,47 @@ class Engine(Interpreter, ContextCallbacks):
             if to_split is not None:
                 to_split = narrow(to_split, Tree)
                 if to_split.data == 'stmt_list' and (chs := to_split.children):
-                    rest = chs[1] if len(chs) > 1 else None
+                    if len(chs) > 1:
+                        rest = narrow(chs[1], Tree)
+                        if self._is_empty_stmt(rest):
+                            rest = None
                     if split_left:
                         left = chs[0]
                     else:
                         right = chs[0]
 
-        if (to := left if test else right) is not None:
-            to = narrow(to, Tree)
-            self._branch_depth += 1
-            try:
-                self.visit(to)
-            finally:
-                self._branch_depth -= 1
+        if is_tracing:
+            trace(
+                'branch: test=%s val=%r tco=%s\nleft=%s\nright=%s\nrest=%s',
+                test,
+                val,
+                allow_tco,
+                self.debug_node(left),
+                self.debug_node(right),
+                self.debug_node(rest),
+            )
 
-        if rest is not None:
-            self.visit(narrow(rest, Tree))
+        to = left if test else right
+        if rest is None:
+            if to is not None:
+                self.visit(narrow(to, Tree), direct_branch=True, allow_tco=allow_tco)
+        else:
+            if to is not None:
+                self.visit(narrow(to, Tree), direct_branch=True)
+            self.visit(rest, allow_tco=allow_tco)
 
-    def expr(self, tree: Tree):
+    def _trace(
+        self, tree: Tree, *, direct_branch: bool = False, allow_tco: bool = False
+    ):
+        if is_tracing:
+            st = [str(self._depth), str(self._gas)]
+            if direct_branch:
+                st.append('branch')
+            if allow_tco:
+                st.append('tco')
+            trace('[%s] %s', ' '.join(st), self.debug_node(tree))
+
+    def expr(self, tree: Tree, *, direct_branch: bool = False, allow_tco: bool = False):
         # Expression statement: {<expr>}
         # The value is directly appended to output.
         if isinstance(inner := tree.children[0], Tree):
@@ -554,12 +696,14 @@ class Engine(Interpreter, ContextCallbacks):
                     return self._assign(inner)
                 case 'unary_chain':
                     # Optimize: flatten the unary chain directly to output, without capturing.
-                    return self._unary_chain(inner, put=self._put_val)
+                    return self._unary_chain(
+                        inner, put=self._put_val, allow_tco=allow_tco
+                    )
                 case 'code_block':
                     # Optimize: flatten the nested block.
                     return self._code_block(inner)
 
-        val = self._expr(tree, permissive=self._branch_depth == 0)
+        val = self._expr(tree, permissive=not direct_branch)
         self._put_val(val)
 
     def _evaluate(self, tree: Tree | Token | None, *, permissive: bool = False) -> str:
@@ -669,13 +813,28 @@ class Engine(Interpreter, ContextCallbacks):
             # Ambiguous naked literal / var: {some_name}
             # Treated as var only if `permissive` is True and contains no whitespace.
             case 'naked_lit':
-                key = narrow(ch.children[0], Token).value.strip()
-                if permissive and self._check_iden(key):
-                    return self._scope.get(key, as_str=as_str, allow_undef=allow_undef)
-                return key
+                return self._naked_lit(
+                    ch,
+                    as_str=as_str,
+                    permissive=permissive,
+                    allow_undef=allow_undef,
+                )
 
             case _:
                 raise ValueError(f'Bad expr: {tree.pretty()}')
+
+    def _naked_lit(
+        self,
+        tree: Tree,
+        *,
+        as_str: bool = False,
+        permissive: bool = False,
+        allow_undef: bool = False,
+    ) -> Value:
+        key = narrow(tree.children[0], Token).value.strip()
+        if permissive and self._check_iden(key):
+            return self._scope.get(key, as_str=as_str, allow_undef=allow_undef)
+        return key
 
     def _check_iden(self, key: str) -> bool:
         if not key:
@@ -709,11 +868,19 @@ class Engine(Interpreter, ContextCallbacks):
         return key
 
     def _unary_chain(
-        self, tree: Tree, *, put: Callable[[Value], None], allow_undef: bool = False
+        self,
+        tree: Tree,
+        *,
+        put: Callable[[Value], None],
+        allow_undef: bool = False,
+        allow_tco: bool = False,
     ):
+        self._trace(tree, allow_tco=allow_tco)
         assert tree.children, tree
-        for ch in tree.children:
-            val = self._unary(narrow(ch, Tree), allow_undef=allow_undef)
+        last = len(tree.children) - 1
+        for i, ch in enumerate(tree.children):
+            tco = allow_tco and i == last
+            val = self._unary(narrow(ch, Tree), allow_undef=allow_undef, allow_tco=tco)
             trace('Unary value: %r', val)
             put(val)
 
@@ -729,11 +896,16 @@ class Engine(Interpreter, ContextCallbacks):
         return to_str(val) if as_str else val
 
     def _unary(
-        self, tree: Tree, *, as_str: bool = False, allow_undef: bool = False
+        self,
+        tree: Tree,
+        *,
+        as_str: bool = False,
+        allow_undef: bool = False,
+        allow_tco: bool = False,
     ) -> Value:
+        self._trace(tree, allow_tco=allow_tco)
         op = narrow(tree.children[0], Token).value
         name = tree.children[1]
-        trace('Unary: %s %s', op, name)
 
         # `allow_undef` does affect nested expressions in dynamic identifiers.
         key = self._dyn_iden(name)
@@ -756,7 +928,7 @@ class Engine(Interpreter, ContextCallbacks):
 
             # Db doc expand: {*doc} (same as {:doc})
             case '*':
-                return self._doc_ref(key)
+                return self._doc_ref(key, allow_tco=allow_tco)
 
             # Variable get in "root" scope: {::name}
             # Always resolve in the scope where the current doc (not necessarily
@@ -800,9 +972,12 @@ class Engine(Interpreter, ContextCallbacks):
         # Self-mapping when no argument is given.
         return self._doc_text
 
-    def _doc_ref(self, key: str) -> Value:
+    def _doc_ref(self, key: str, *, allow_tco: bool = False) -> Value:
         val = self._scope.get(key, allow_undef=True)
-        trace('_doc_ref: key=%s val=%r', key, val)
+        if is_tracing:
+            s = ' (tco)' if allow_tco else ''
+            trace('_doc_ref%s: key=%s val=%r', s, key, val)
+
         if isinstance(val, Box):
             val: Box[SubDoc]
             sub_doc = val.data.tree
@@ -812,6 +987,9 @@ class Engine(Interpreter, ContextCallbacks):
                     key,
                     self.debug_node(sub_doc),
                 )
+            if allow_tco:
+                raise TCO(sub_doc, self._scope.current())
+
         else:
             sub_doc = None
             doc_id, doc = self._get_doc(key)

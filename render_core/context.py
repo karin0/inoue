@@ -281,6 +281,10 @@ class ScopedContext:
         self._scopes.append(new)
         self._prefixes[name] = new
 
+    def push_raw(self, prefix: str):
+        trace('Entering raw scope: %s', prefix)
+        self._scopes.append(prefix)
+
     def pop(self):
         last = self._scopes.pop()
         trace('Leaving scope: %s', last)

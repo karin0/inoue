@@ -978,12 +978,12 @@ f = @ { ↦ a=$0; b=$1; "a + b" };
 
     STD = r'''
 wile = while = {cond, body ↦
-  *cond ? *body*while
+  *cond ? *body *while
 };
 fur = for = {init, cond, step, body ↦
   *init ;
   _body = $body;
-  body = { ↦ *_body*step };
+  body = { ↦ *_body *step };
   *while
 };
 '''
@@ -1034,6 +1034,40 @@ n="8";
 "fur(init, cond, step, body)";
 '''
         self.render_it(self.STD + text, ctx, eq='\n'.join(str(i) for i in range(1, 9)))
+
+    def test_tco(self):
+        text = r'''
+r = @ {
+    n = "100";
+    { init ↦ i = "0" };
+    { cond ↦ "i<n" };
+    { step ↦ i = "i+1" };
+    { body ↦ };
+    *for;
+};
+.i = 100 ? Ok : Fail;
+'''
+        self.render_it(self.STD + text, eq='Ok')
+
+    def test_tco_fact(self):
+        text = r'''
+fac = {
+@; n, m ↦
+    "n>1" ?
+      .n = "n-1";
+      .m = "(n-1)*m";
+      *fac
+    : $m ;
+};
+"fac(10, 10)";
+.n = .m = "50";
+*fac;
+'''
+        import math
+
+        ans = math.factorial(10)
+        ans2 = math.factorial(50)
+        self.render_it(text, eq=f'{ans}\n{ans2}')
 
 
 if __name__ == '__main__':
