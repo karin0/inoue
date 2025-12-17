@@ -127,8 +127,12 @@ def get_pm_key(key: str) -> str | None:
 
 
 class OverriddenDict(UserDict):
-    def __init__(self, overrides: dict[str, Value]):
-        super().__init__()
+    def __init__(self, data: dict[str, Value], overrides: dict[str, Value]):
+        for val in data.values():
+            if not is_value_type(val):
+                raise TypeError(f'bad data value type: {type(val)}: {val}')
+        super().__init__(data)
+
         for val in overrides.values():
             if not is_value_type(val):
                 raise TypeError(f'bad override value type: {type(val)}: {val}')

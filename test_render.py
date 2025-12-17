@@ -23,6 +23,8 @@ if os.environ.get('TEST_TRACE') == '1':
     log_instance.info.side_effect = log_effect
     log_instance.warning.side_effect = log_effect
     log_instance.error.side_effect = log_effect
+else:
+    log_effect = lambda *_: None
 
 from render_core import Value, Engine
 from render_core.context import persisted
@@ -74,16 +76,17 @@ class TestRender(unittest.TestCase):
     def render_it(
         self,
         text: str,
-        overrides: dict[str, Value] | None = None,
+        ctx: dict[str, Value] | None = None,
         *,
         e: str | tuple[str, ...] = '',
         eq: str | None = None,
     ) -> str:
-        if overrides is None:
-            overrides = {}
-        ctx = Engine(overrides)
+        if ctx is None:
+            ctx = {}
+        ctx: Engine = Engine(ctx)
         r = ctx.render(text)
         dump = f'Render: {text}\nResult:{r}\nerrors: {ctx.errors}\nctx: {ctx.items()}'
+        log_effect('Gas used: %s', ctx._gas)
 
         if e:
             if isinstance(e, str):

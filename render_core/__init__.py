@@ -103,12 +103,17 @@ class SubDoc:
 class Engine(Interpreter, ContextCallbacks):
     def __init__(
         self,
-        overrides: dict[str, Value],
+        ctx: dict[str, Value] | None = None,
+        overrides: dict[str, Value] | None = None,
         *,
         doc_id: int | None = None,
     ):
         super().__init__()
-        self._ctx = OverriddenDict(overrides)
+        if ctx is None:
+            ctx = {}
+        if overrides is None:
+            overrides = {}
+        self._ctx = OverriddenDict(ctx, overrides)
         self._doc_id = doc_id
         self._doc_text = ''
 
@@ -231,7 +236,7 @@ class Engine(Interpreter, ContextCallbacks):
                 try:
                     tree = parse_fragment(fragment)
                 except LarkError as e:
-                    self._error(f'parse: {fragment!r}: {type(e).__name__}: {e}')
+                    self._error(f'parse: {fragment}: {type(e).__name__}: {e}')
                     continue
 
                 new_misses = parse_fragment.cache_info().misses
@@ -266,7 +271,7 @@ class Engine(Interpreter, ContextCallbacks):
             trace('Rendering aborted.')
         r = self._gather_output(self._output, as_str=True)
         if is_tracing:
-            trace('Final rendered result: %r', r)
+            trace('Final rendered result: %r\nGas cost: %s', r, self._gas)
             self._ctx.debug()
         return r.strip()  # type: ignore
 

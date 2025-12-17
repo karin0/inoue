@@ -189,7 +189,7 @@ def create_engine(
         overrides['_source'] = source
     if msg := update.effective_message:
         overrides['_msg_id'] = str(msg.message_id)
-    return Engine(overrides, doc_id=doc_id)
+    return Engine(overrides=overrides, doc_id=doc_id)
 
 
 def render_text(
