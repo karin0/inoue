@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import math
 import warnings
 import unittest
 from unittest.mock import MagicMock
@@ -1066,11 +1067,25 @@ fac = {
 .n = .m = "50";
 *fac;
 '''
-        import math
 
         ans = math.factorial(10)
         ans2 = math.factorial(50)
         self.render_it(text, eq=f'{ans}\n{ans2}')
+
+    def test_tco_ffi(self):
+        text = r'''
+fac = {
+@; n, m ↦
+    m ?= "1";
+    "n>1" ?
+      "yield fac(n-1, n*m)";
+    : $m ;
+};
+"fac(50)";
+'''
+        ans = math.factorial(50)
+        self.render_it(text, eq=str(ans))
+        self.render_it(text.replace('yield ', ''), e='stack overflow')
 
 
 if __name__ == '__main__':

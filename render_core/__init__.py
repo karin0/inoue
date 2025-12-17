@@ -4,7 +4,17 @@ import functools
 import traceback
 from enum import Enum, auto
 from contextlib import contextmanager
-from typing import Any, Callable, Sequence, Type, TypeVar, Literal, cast, override
+from typing import (
+    Any,
+    Callable,
+    NoReturn,
+    Sequence,
+    Type,
+    TypeVar,
+    Literal,
+    cast,
+    override,
+)
 
 from lark import Lark, Token, Tree
 from lark.visitors import Interpreter
@@ -89,6 +99,14 @@ type MaybeTCO = TCO | None
 
 Tco = _TCO.Tco
 
+type TCOContext = tuple[Tree, str, dict[str, Any] | None]
+
+
+class Break(Exception):
+    def __init__(self, data: Value | TCOContext):
+        super().__init__(data)
+        self.data = data
+
 
 class SubDoc:
     def __init__(self, tree: Tree, args: tuple[str, ...] | None):
@@ -127,7 +145,7 @@ class Engine(Interpreter, ContextCallbacks):
         self._dirty: bool = False
         self._doc_scope: str = ''
 
-        self._tco: tuple[Tree, str, dict[str, Any] | None] | None = None
+        self._tco: TCOContext | None = None
 
         self._tree: Tree | None = None
         self._gas: int = 0
@@ -504,21 +522,31 @@ class Engine(Interpreter, ContextCallbacks):
     def _block_inner_body(self, tree: Tree, *, ctx: dict[str, Any] | None = None):
         ref_scope = None
         while True:
-            if ref_scope is None:
-                r = self._block_inner_scoped(tree, ctx=ctx)
-            else:
-                old_doc_scope = self._doc_scope
-                self._doc_scope = ref_scope
-                self._scope.push_raw(ref_scope)
-                try:
+            try:
+                if ref_scope is None:
                     r = self._block_inner_scoped(tree, ctx=ctx)
-                finally:
-                    self._scope.pop()
-                    self._doc_scope = old_doc_scope
+                else:
+                    old_doc_scope = self._doc_scope
+                    self._doc_scope = ref_scope
+                    self._scope.push_raw(ref_scope)
+                    try:
+                        r = self._block_inner_scoped(tree, ctx=ctx)
+                    finally:
+                        self._scope.pop()
+                        self._doc_scope = old_doc_scope
+            except Break as b:
+                data = b.data
+                trace('Break: %s', data)
+                if isinstance(data, tuple):
+                    assert self._tco is None, self._tco
+                    self._tco = data
+                    r = Tco
+                else:
+                    self._put_val(data)
+                    r = None
 
             if r is Tco:
                 # Manual "stack unwinding" for TCO.
-                # Output has been protected and folded in `_push` on exceptions.
                 assert self._tco is not None
                 sub_doc, ref_scope, ctx = self._tco
                 self._tco = None
@@ -557,6 +585,7 @@ class Engine(Interpreter, ContextCallbacks):
 
     # Enforce argument context.
     def _block_inner_prepare_ctx(self, ctx: dict[str, Any] | None = None):
+        trace('_block_inner_prepare_ctx: %s', ctx)
         if ctx:
             for key, val in ctx.items():
                 self._scope.set(key, try_to_value(val), self._ctx.__setitem__)
@@ -812,7 +841,7 @@ class Engine(Interpreter, ContextCallbacks):
                 )
                 try:
                     val = self._scope.eval(expr)
-                except Abort as e:
+                except (Abort, Break) as e:
                     # This includes `Exit`.
                     trace(f'evaluate: %r', e)
                     raise
@@ -1031,26 +1060,60 @@ class Engine(Interpreter, ContextCallbacks):
                 self._block_inner_body(sub_doc)
             return self._gather_output(self._output, trim=True)
 
+    def _create_ctx(
+        self, sub_doc: SubDoc, args: tuple, kwargs: dict[str, Any]
+    ) -> dict[str, Any]:
+        arg_list = sub_doc.args
+        if arg_list:
+            for arg_name, arg in zip(arg_list, args):
+                kwargs.setdefault(arg_name, arg)
+            for i in range(len(args), len(arg_list)):
+                kwargs.setdefault(arg_list[i], '')
+            if len(args) > len(arg_list):
+                self._error(f'box takes at most {len(arg_list)} args, got {len(args)}')
+        else:
+            for i, arg in enumerate(args):
+                kwargs.setdefault(str(i), arg)
+        return kwargs
+
     @override
     def _call_boxed(self, sub_doc: SubDoc, *args, **kwargs) -> Value | None:
         tree = sub_doc.tree
-        arg_list = sub_doc.args
         assert tree.data == 'block_inner', tree
-        trace('_call_boxed: %s args=%s kwargs=%s', self.debug_node(tree), args, kwargs)
+        if is_tracing:
+            trace(
+                '_call_boxed: %s args=%s kwargs=%s', self.debug_node(tree), args, kwargs
+            )
 
         # Recursive boxed calls are still limited by `MAX_DEPTH`.
+        ctx = self._create_ctx(sub_doc, args, kwargs)
         with self._push():
-            if arg_list:
-                if len(args) == len(arg_list):
-                    for arg_name, arg in zip(arg_list, args):
-                        kwargs.setdefault(arg_name, arg)
-                else:
-                    self._error(f'box takes {len(arg_list)} args, got {len(args)}')
-            else:
-                for i, arg in enumerate(args):
-                    kwargs.setdefault(str(i), arg)
-            self._block_inner_body(tree, ctx=kwargs)
+            self._block_inner_body(tree, ctx=ctx)
             return self._gather_output(self._output, default=None)
+
+    # Break from current block with value.
+    # It's more like "break" or "return", but "break" cannot have a value, and
+    # "return" might mean the higher "doc" level.
+    @override
+    def _handle_yield(self, value):
+        trace('_handle_yield: %s', value)
+        raise Break(try_to_value(value))
+
+    # Do TCO if breaking with a sub-doc call.
+    @override
+    def _yield_boxed(self, sub_doc: SubDoc, *args, **kwargs) -> NoReturn:
+        tree = sub_doc.tree
+        assert tree.data == 'block_inner', tree
+        if is_tracing:
+            trace(
+                '_yield_boxed: %s args=%s kwargs=%s',
+                self.debug_node(tree),
+                args,
+                kwargs,
+            )
+        ctx = self._create_ctx(sub_doc, args, kwargs)
+        tco = (sub_doc.tree, self._scope.current(), ctx)
+        raise Break(tco)
 
     # Due to LALR limitations, AOE chains have very different semantics:
     # - In expression statements, they set context vars and return ''.

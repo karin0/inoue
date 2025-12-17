@@ -1,4 +1,5 @@
 import os
+import ast
 import time
 import logging
 from datetime import datetime
@@ -262,6 +263,14 @@ class ContextCallbacks(ABC):
     def _call_boxed(self, data, *args, **kwargs) -> Value | None:
         pass
 
+    @abstractmethod
+    def _yield_boxed(self, data, *args, **kwargs) -> Value | None:
+        pass
+
+    @abstractmethod
+    def _handle_yield(self, data) -> Value | None:
+        pass
+
 
 class ScopedContext:
     def __init__(
@@ -277,6 +286,7 @@ class ScopedContext:
         funcs.setdefault('prefix', self._prefix_func)
         funcs: EvalFunctions = EvalFunctions(funcs, self)
         self._eval = SimpleEval(functions=funcs, names=self)
+        self._eval.nodes[ast.Yield] = self._eval_yield
         self._funcs = funcs.data
 
     def push(self, name: str):
@@ -366,6 +376,25 @@ class ScopedContext:
             return None
 
         raise KeyError(key)
+
+    def _eval_yield(self, node: ast.Yield):
+        data = node.value
+        trace('_eval_yield: %s', data)
+        if isinstance(data, ast.Call):
+            func = data.func
+            if isinstance(func, ast.Name):
+                func = func.id
+                key, val = self.resolve_raw(func)
+                trace('_eval_yield: call %s: %s = %r', func, key, val)
+                if isinstance(val, Box):
+                    return self._cb._yield_boxed(
+                        val.data,
+                        *(self._eval._eval(a) for a in data.args),
+                        **dict(self._eval._eval(k) for k in data.keywords),
+                    )
+
+        data = self._eval._eval(data) if data else None
+        return self._cb._handle_yield(data)
 
     def eval(self, expr: str) -> Value:
         val = self._eval.eval(expr)
