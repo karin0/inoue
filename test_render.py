@@ -83,21 +83,23 @@ class TestRender(unittest.TestCase):
             overrides = {}
         ctx = Engine(overrides)
         r = ctx.render(text)
+        dump = f'Render: {text}\nResult:{r}\nerrors: {ctx.errors}\nctx: {ctx.items()}'
+
         if e:
             if isinstance(e, str):
                 e = (e,)
             for e in e:
                 self.assertTrue(
                     any(e in str(err) for err in ctx.errors),
-                    f'Render: {text} expected error: {e}, got: {ctx.errors}',
+                    f'{dump}\nexpected error: {e}',
                 )
         else:
             self.assertFalse(
                 ctx.errors,
-                f'Render: {text}\nResult:{r}\nerrors: {ctx.errors}\nctx: {ctx.items()}',
+                f'{dump}\nexpected no errors',
             )
         if eq is not None:
-            self.assertEqual(r, eq, f'Render: {text}')
+            self.assertEqual(r, eq, dump)
         return r
 
     def render_it_all(
@@ -589,6 +591,17 @@ Write the following sentence twice, the second time within quotes.
         result = self.render_it(text)
         self.assertEqual(result, "Escaped backslash: \\ and quote: '")
 
+        text = r'\{ not a block ! \}'
+        self.render_it(text, eq='{ not a block ! }')
+        self.render_it(text + '\nabc', eq='{ not a block ! }\nabc')
+
+        text = r'not a block either ! \;'
+        self.render_it(text, eq='not a block either ! ;')
+        self.render_it(text + '\nabc', eq='not a block either ! ;\nabc')
+
+        text = r'backslash as text \\  \;'
+        self.render_it(text, eq=r'backslash as text \  ;')
+
     def test_unclosed(self):
         text = r"""{ text = `Raw backslash: \ and quote: '`; text }"""
         result = self.render_it(text, e='Unclosed')
@@ -601,6 +614,28 @@ Write the following sentence twice, the second time within quotes.
         text = r'''a=1; a;'''
         result = self.render_it(text)
         self.assertEqual(result, '1')
+
+        # Naked block across multiple lines.
+        text = r'''a=1; a = {
+c={
+    '51';
+    {
+        '4';
+    }
+};
+"'114' + c";
+};
+{
+a
+};
+@ns {
+    b=$a;
+    b;
+};
+ns.b;
+'''
+        result = self.render_it(text)
+        self.assertEqual(result + '\n', '114514\n' * 3)
 
         text = r''' {1 {'2'} {3{4 {"'partly'"}; 'closed' '''
         result = self.render_it(text, e='Unclosed')
@@ -941,7 +976,7 @@ f = @ { ↦ a=$0; b=$1; "a + b" };
 '''
         self.assertEqual(self.render_it(text), '1\n2\n3 2 1\n42\n42\n42\n1\n\n120\n162')
 
-    STD = r'''{
+    STD = r'''
 wile = while = {cond, body ↦
   *cond ? *body*while
 };
@@ -951,7 +986,7 @@ fur = for = {init, cond, step, body ↦
   body = { ↦ *_body*step };
   *while
 };
-}'''
+'''
 
     def test_loop(self):
         text = r'''

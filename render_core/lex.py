@@ -1,4 +1,4 @@
-from typing import Iterable
+from typing import Iterable, Literal
 from .context import trace, is_not_quiet
 
 lex_errors = []
@@ -7,40 +7,77 @@ if not is_not_quiet:
     trace = lambda *_: None
 
 
-# Find all "code blocks" and "block lines" - lines that ends with `;`, which are treated
-# like a `block_inner`.
 def lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str | None]]:
+    r'''
+    Chunks the input `text` into code blocks and text fragments.
+
+    A code block (technically treated as `block_inner` in the grammar) is either:
+
+    1. An outermost `{ ... }` block with balanced braces, or
+    2. A (shortest) contiguous chunk of lines that:
+        - ends with r';\s*$', and
+        - has no unclosed `{}` inside.
+
+    For 1., the outermost braces are stripped from the yielded chunk to match
+    the `block_inner`. This means the scope modifiers before it ('@ [name]') is
+    treated as texts (use naked blocks or nested code blocks to preserve them).
+
+    For 2. (naked blocks), the chunk without the trailing whitespaces is yielded,
+    followed by a `(False, None)` to indicate an "implicit" line break.
+
+    Text fragments outside code blocks are yielded as-is.
+    '''
+    trace('Lexing text (block=%s): %s', block, text)
+
     block_starts = []
     if block:
         # Pretend a `{` before the start.
         block_starts.append(-1)
 
-    buf = []  # buffered fragments inside code blocks
+    # Escaping state inside and outside code blocks.
+    escape = False
+
+    # Lexical states that are only valid inside blocks.
+    comment = False
     quote = None
     raw = False
-    comment = False
-    escape = False
+
+    # Buffered chunks inside a block.
+    buf = []
+
+    # The next position we should yield from.
+    cursor = 0
+
+    # Positions of escaping `\` chars in text fragments.
     escaping_indices = []
-    cursor = 0  # number of chars processed
 
-    line_start = 0
-    line_buf = []
+    # Fragments found but deferred to yield, until we confirm they are not
+    # part of a naked block (via a line break in a text fragment).
+    naked_buf = []
+    naked_start = 0
 
-    yield_kind = None
-    yield_buf = []
-
-    def yield_text(start: int, end: int):
-        if start >= end:
-            return
-
-        # Remove escaping `\` before `{`.
+    def text_fragments(start: int, end: int) -> Iterable[tuple[Literal[False], str]]:
+        # Remove escaping `\` chars in text fragments.
+        trace('text_fragments: %s to %s, %s', start, end, escaping_indices)
+        escaping_indices.append(end)
         for i in escaping_indices:
-            assert start < i < end
-            yield_buf.append(text[start:i])
+            if start < i:
+                chunk = text[start:i]
+                yield False, chunk
+            else:
+                assert start == i, (start, i, end)
             start = i + 1
         escaping_indices.clear()
 
-        yield_buf.append(text[start:end])
+    def test_naked(chunk) -> str | None:
+        trace('test_naked: %r', chunk)
+        if (stem := chunk.rstrip()).endswith(';'):
+            escape_pos = naked_start + len(stem) - 2
+            if escape_pos in escaping_indices:
+                trace('test_naked: escaped at %s', escape_pos)
+            else:
+                trace('test_naked: Naked block: %r\n  Dropped: %s', chunk, naked_buf)
+                return stem
 
     for p, c in enumerate(text):
         if escape:
@@ -82,14 +119,11 @@ def lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str | None]]:
             buf.append('\'')
             cursor = p
 
-        yield_kind = None
-        yield_buf.clear()
-
         match c:
             case '{':
                 if not block_starts:
-                    yield_kind = False
-                    yield_text(cursor, p)
+                    for fragment in text_fragments(cursor, p):
+                        naked_buf.append(fragment)
                     cursor = p
 
                 block_starts.append(p)
@@ -108,6 +142,7 @@ def lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str | None]]:
                 if not block_starts:
                     chunk = text[cursor:p]
                     buf.append(chunk)
+
                     # Remove the block start '{'.
                     # We cannot save `p+1` directly when '{' is found, in case of
                     # unclosed blocks that are recovered as final texts later.
@@ -116,8 +151,7 @@ def lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str | None]]:
                     buf.clear()
                     if chunk:
                         trace('Lexed block: %r', chunk)
-                        yield_kind = True
-                        yield_buf.append(chunk)
+                        naked_buf.append((True, chunk))
                     cursor = p + 1
 
             case _:
@@ -125,86 +159,66 @@ def lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str | None]]:
                     match c:
                         case "'" | '"':
                             quote = c
+
                         case '#':
                             comment = True
                             # Flush up before the comment.
                             if chunk := text[cursor:p]:
                                 buf.append(chunk)
                             cursor = p
+
                         case '`':
                             raw = True
                             # Flush up before the raw literal.
                             if chunk := text[cursor:p]:
                                 buf.append(chunk)
                             cursor = p
-                        case '\n':
-                            line_start = None
-                            if line_buf:
-                                yield from line_buf
-                                line_buf.clear()
+                        # We do not handle '\n' inside blocks, so a naked block
+                        # can contain multi-line blocks.
 
-                # We only handles escaping '\' chars inside quotes (which is inside blocks)
-                # or outside any blocks (which escapes '{' and '}').
+                # We only handles escaping '\' chars inside quotes (as such inside blocks)
+                # or outside any blocks (to escape '{', '}', ';' and '\' in text fragments).
                 # The latter ones here must be removed from the output fragments.
                 elif c == '\\':
                     escape = True
                     escaping_indices.append(p)
                 elif c == '\n':
-                    if line_start is not None:
-                        line = text[line_start:p]
-                        trace('Line: %r', line)
+                    if (stem := test_naked(text[naked_start:p])) is not None:
+                        naked_buf.clear()
+                        escaping_indices.clear()
 
-                        if (stem := line.rstrip()).endswith(';'):
-                            # Naked block line inside inline text.
-                            trace('Naked block line: %r\n  Dropped: %s', line, line_buf)
-                            line_buf.clear()
-                            escaping_indices.clear()
+                        yield False, text[cursor:naked_start]
+                        cursor = p + 1
+                        yield from lex(stem, block=True)
 
-                            yield False, text[cursor:line_start]
-                            cursor = p + 1
-                            yield from lex(stem, block=True)
+                        # We are actually consuming the line break here, but yielding a `\n`
+                        # each time would result in too many empty lines for consecutive
+                        # inline naked blocks (`a = 1;\nb = 2;\n...`).
+                        # `None` hints the implicit line break after the naked block here,
+                        # so the caller can decide smartly.
+                        yield False, None
 
-                            # We are actually consuming the line break here, but yielding a `\n`
-                            # each time would result in too many empty lines for consecutive block lines.
-                            # `None` hints the implicit line break after the naked block here.
-                            yield False, None
+                        naked_start = p + 1
+                        continue
 
-                            line_start = p + 1
-                            continue
+                    if naked_buf:
+                        yield from naked_buf
+                        naked_buf.clear()
 
-                    if line_buf:
-                        yield from line_buf
-                        line_buf.clear()
-
-                    yield_kind = False
-                    yield_text(cursor, p + 1)
-                    cursor = line_start = p + 1
-
-        if yield_kind is not None:
-            if any('\n' in part for part in yield_buf):
-                for fragment in yield_buf:
-                    yield yield_kind, fragment
-            else:
-                for fragment in yield_buf:
-                    trace('Preserving inline fragment: %s %r', yield_kind, fragment)
-                    line_buf.append((yield_kind, fragment))
+                    yield from text_fragments(cursor, p + 1)
+                    cursor = naked_start = p + 1
 
     # Flush final line buffer, pretending a EOF.
-    if not block and line_start is not None:
-        line = text[line_start:]
-        trace('Final Line: %r', line)
+    if not block and (stem := test_naked(text[naked_start:])) is not None:
+        yield False, text[cursor:naked_start]
+        yield from lex(stem, block=True)
+        return
 
-        if (stem := line.rstrip()).endswith(';'):
-            trace('Final naked block line: %r\n  Dropped: %s', line, line_buf)
-            yield False, text[cursor:line_start]
-            yield from lex(stem, block=True)
-            return
+    if naked_buf:
+        yield from naked_buf
 
-    if line_buf:
-        yield from line_buf
-
-    # Pretend a final `}` if `block` is set.
     if block:
+        # Pretend a final `}` to close the "virtual" block opened at the start.
         assert block_starts
         if len(block_starts) > 1:
             # There are NO text fragments or unclosed blocks in `block` mode, as the
@@ -212,7 +226,7 @@ def lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str | None]]:
             # to preprocess comments and raw literals with the `buf`.
             # Trying to recover would leak text fragments inside the block, so we
             # also leave it to cause a Lark parse error later.
-            msg = f'Unbalanced line block starting at position {block_starts} {cursor}'
+            msg = f'Unbalanced naked block starting at position {block_starts} {cursor}'
             lex_errors.append(msg)
             trace('%s %s', msg, text)
 
@@ -229,8 +243,8 @@ def lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str | None]]:
         trace('%s', msg)
 
         p = block_starts[0]
-        if p >= 0:
-            yield False, text[p]
+        assert p >= 0  # `block` mode cannot reach here.
+        yield False, text[p]
 
         rest = text[p + 1 :]
         trace('Recovering rest: %s', rest)
@@ -240,11 +254,5 @@ def lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str | None]]:
     # `buf` must be empty, since `block_starts` is empty.
     assert not buf
 
-    c = cursor
-    for i in escaping_indices:
-        assert i > c
-        yield False, text[c:i]
-        c = i + 1
-
-    if chunk := text[c:]:
-        yield False, chunk
+    # Flush final text fragments.
+    yield from text_fragments(cursor, len(text))
