@@ -1041,6 +1041,7 @@ n="8";
 
     def test_tco(self):
         text = r'''
+# tco test;
 r = @ {
     n = "100";
     { init ↦ i = "0" };

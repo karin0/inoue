@@ -38,7 +38,7 @@ def lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str | None]]:
     escape = False
 
     # Lexical states that are only valid inside blocks.
-    comment = False
+    comment: int = False
     quote = None
     raw = False
 
@@ -84,11 +84,19 @@ def lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str | None]]:
             escape = False
             continue
 
+        if comment == 2:
+            # /* ... */
+            if c == '/' and p and text[p - 1] == '*':
+                comment = False
+            cursor = p + 1
+            continue
+
         if comment:
             if c != '\n':
+                cursor = p + 1
                 continue
+
             # Skip the comment.
-            cursor = p
             comment = False
 
         if quote:
@@ -165,7 +173,20 @@ def lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str | None]]:
                             # Flush up before the comment.
                             if chunk := text[cursor:p]:
                                 buf.append(chunk)
-                            cursor = p
+
+                        case '/':
+                            if p + 1 < len(text):
+                                ch = text[p + 1]
+                                if ch == '/':
+                                    comment = True
+                                elif ch == '*':
+                                    comment = 2
+                                else:
+                                    continue
+
+                                # Flush up before the comment.
+                                if chunk := text[cursor:p]:
+                                    buf.append(chunk)
 
                         case '`':
                             raw = True

@@ -87,7 +87,7 @@ class Exit(Abort):
     pass
 
 
-# TCO, but more like a signal to break from the block execution and "execve"
+# TCO, but more like a signal to *break* from the block execution and "execve"
 # into another sub-doc.
 class _TCO(Enum):
     Tco = auto()
@@ -360,7 +360,7 @@ class Engine(Interpreter, ContextCallbacks):
         ctx = self._tree_ctx()
         log.debug('Error: %s: %s', msg, ctx)
         if is_tracing:
-            trace('%s', ''.join(traceback.format_stack(limit=5)))
+            trace('%s', ''.join(traceback.format_stack()))
 
         self.errors.append(f'{msg}: {ctx}')
 
@@ -518,8 +518,13 @@ class Engine(Interpreter, ContextCallbacks):
 
             return
 
-    # Trampoline for TCO. Starting point of block execution.
+    # Starting point of block execution.
+    # A block can provide semantics of a variable scope, a doc (name) definition, a
+    # sub-doc definition, any combination of them, or just a plain block of statements.
+    # A sub-doc *looks like* a "function", but when the scope modifier is absent,
+    # it may acts like a "macro" that operates on the same scope as the outer block.
     def _block_inner_body(self, tree: Tree, *, ctx: dict[str, Any] | None = None):
+        # Trampoline for "break" (see `_handle_yield`) or TCO.
         ref_scope = None
         while True:
             try:
@@ -592,9 +597,9 @@ class Engine(Interpreter, ContextCallbacks):
 
     # Execute!
     def _block_inner_exec(self, tree: Tree) -> MaybeTCO:
-        stmt_list = narrow(tree.children[-1], Tree)
-        if self._is_empty_stmt(stmt_list):
-            stmt_list = None
+        stmt = narrow(tree.children[-1], Tree)
+        if self._is_empty_stmt(stmt):
+            stmt = None
 
         refs = []
         for ch in tree.children[1:-1]:
@@ -611,7 +616,7 @@ class Engine(Interpreter, ContextCallbacks):
                     # `block_inner` can contain at most one statement.
                     raise ValueError(f'Bad block_inner child: {tree.pretty()}')
 
-        if stmt_list is None:
+        if stmt is None:
             if refs:
                 last = refs.pop()
                 for key in refs:
@@ -623,7 +628,7 @@ class Engine(Interpreter, ContextCallbacks):
         else:
             for key in refs:
                 self._put_val(self._doc_ref(key))
-            return self.visit(stmt_list, allow_tco=True)
+            return self.visit(stmt, allow_tco=True)
 
     def stmt_list(
         self, tree: Tree, *, direct_branch: bool = False, allow_tco: bool = False
@@ -1091,15 +1096,17 @@ class Engine(Interpreter, ContextCallbacks):
             self._block_inner_body(tree, ctx=ctx)
             return self._gather_output(self._output, default=None)
 
-    # Break from current block with value.
-    # It's more like "break" or "return", but "break" cannot have a value, and
-    # "return" might mean the higher "doc" level.
+    # *Break* from current block with a value.
+    # Despite the name, this is more like *break* with a value, but `ast.Break`
+    # cannot carry a value.
+    # We don't use `return` here because we don't terminate the entire doc or
+    # current sub-doc, just the current block.
     @override
     def _handle_yield(self, value):
         trace('_handle_yield: %s', value)
         raise Break(try_to_value(value))
 
-    # Do TCO if breaking with a sub-doc call.
+    # Do TCO if we are breaking with a sub-doc call.
     @override
     def _yield_boxed(self, sub_doc: SubDoc, *args, **kwargs) -> NoReturn:
         tree = sub_doc.tree

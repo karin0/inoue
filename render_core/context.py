@@ -357,9 +357,10 @@ class ScopedContext:
 
     # For `simpleeval` usage.
     def __getitem__(self, name: str) -> Value | ScopeProxy | None:
+        self._cb._consume_gas()
         key, val = self.resolve_raw(name)
         trace('eval: item: %s -> %r', key, val)
-        self._cb._consume_gas()
+
         if val is not None:
             return val
 
