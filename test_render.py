@@ -437,7 +437,7 @@ Write the following sentence twice, the second time within quotes.
         text = '{ a = "30"; b = "12"; c = ( ( "a + b" ) ) ; c }'
         result = self.render_it(text)
         self.assertEqual(result, '42')
-        self.assertEqual(self.render_it('{ ( ( ( 42 ) ) ) }'), '42')
+        self.assertEqual(self.render_it('a=42; { ( ( ( a ) ) ) };'), '42')
 
     def test_doc_name_definition(self):
         def f(text):

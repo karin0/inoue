@@ -804,7 +804,7 @@ class Engine(Interpreter, ContextCallbacks):
         ch = narrow(tree.children[0], Tree)
         while ch.data == 'expr':
             # Flatten nested expressions: {( ( ... ) )}
-            permissive = False
+            permissive = True
             assert len(ch.children) == 1
             ch = narrow(ch.children[0], Tree)
 
