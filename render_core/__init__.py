@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from typing import (
     Any,
     Callable,
+    Mapping,
     NoReturn,
     Sequence,
     Type,
@@ -124,6 +125,7 @@ class Engine(Interpreter, ContextCallbacks):
         ctx: dict[str, Value] | None = None,
         overrides: dict[str, Value] | None = None,
         *,
+        funcs: Mapping[str, Callable[..., Value | None]] | None = None,
         doc_id: int | None = None,
     ):
         super().__init__()
@@ -150,15 +152,14 @@ class Engine(Interpreter, ContextCallbacks):
         self._tree: Tree | None = None
         self._gas: int = 0
 
-        self._scope = ScopedContext(
-            self._ctx,
-            self,
-            {
-                '__file__': self._get_doc_func,
-                'print': self._print_func,
-                'exit': self._exit_func,
-            },
-        )
+        eval_funcs = {
+            '__file__': self._get_doc_func,
+            'print': self._print_func,
+            'exit': self._exit_func,
+        }
+        if funcs:
+            eval_funcs.update(funcs)
+        self._scope = ScopedContext(self._ctx, self, eval_funcs)
 
     @override
     def _consume_gas(self):
