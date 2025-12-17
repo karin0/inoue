@@ -2,6 +2,8 @@ import os
 import ast
 import time
 import logging
+import functools
+
 from datetime import datetime
 from abc import ABC, abstractmethod
 from typing import Any, Callable, TypeGuard
@@ -272,6 +274,11 @@ class ContextCallbacks(ABC):
         pass
 
 
+@functools.lru_cache
+def parse_ast(expr: str):
+    return SimpleEval.parse(expr)
+
+
 class ScopedContext:
     def __init__(
         self,
@@ -398,6 +405,6 @@ class ScopedContext:
         return self._cb._handle_yield(data)
 
     def eval(self, expr: str) -> Value:
-        val = self._eval.eval(expr)
+        val = self._eval.eval(expr, parse_ast(expr))
         trace('eval: %s -> %s', expr, val)
         return try_to_value(val)
