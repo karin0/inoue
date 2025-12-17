@@ -1079,14 +1079,13 @@ fac = {
 @; n, m ↦
     m ?= "1";
     "n>1" ?
-      "yield fac(n-1, n*m)";
+      "fac(n-1, n*m)";
     : $m ;
 };
 "fac(50)";
 '''
         ans = math.factorial(50)
         self.render_it(text, eq=str(ans))
-        self.render_it(text.replace('yield ', ''), e='stack overflow')
 
 
 if __name__ == '__main__':

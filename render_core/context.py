@@ -6,7 +6,7 @@ import functools
 
 from datetime import datetime
 from abc import ABC, abstractmethod
-from typing import Any, Callable, TypeGuard
+from typing import Any, Callable, Literal, TypeGuard, overload
 from collections import UserDict, OrderedDict
 from collections.abc import ItemsView, MutableMapping
 
@@ -265,14 +265,6 @@ class ContextCallbacks(ABC):
     def _call_boxed(self, data, *args, **kwargs) -> Value | None:
         pass
 
-    @abstractmethod
-    def _yield_boxed(self, data, *args, **kwargs) -> Value | None:
-        pass
-
-    @abstractmethod
-    def _handle_yield(self, data) -> Value | None:
-        pass
-
 
 @functools.lru_cache
 def parse_ast(expr: str):
@@ -293,7 +285,6 @@ class ScopedContext:
         funcs.setdefault('prefix', self._prefix_func)
         funcs: EvalFunctions = EvalFunctions(funcs, self)
         self._eval = SimpleEval(functions=funcs, names=self)
-        self._eval.nodes[ast.Yield] = self._eval_yield
         self._funcs = funcs.data
 
     def push(self, name: str):
@@ -385,26 +376,42 @@ class ScopedContext:
 
         raise KeyError(key)
 
-    def _eval_yield(self, node: ast.Yield):
-        data = node.value
-        trace('_eval_yield: %s', data)
-        if isinstance(data, ast.Call):
-            func = data.func
-            if isinstance(func, ast.Name):
+    @overload
+    def eval(
+        self, expr: str, *, allow_tco: Literal[True]
+    ) -> Value | tuple[Any, tuple, dict]: ...
+
+    @overload
+    def eval(self, expr: str, *, allow_tco: Literal[False] = False) -> Value: ...
+
+    def eval(
+        self, expr: str, *, allow_tco: bool = False
+    ) -> Value | tuple[Any, tuple, dict]:
+        node = parse_ast(expr)
+
+        # Manual TCO.
+        if allow_tco:
+            if isinstance(node, ast.Expr):
+                node = node.value
+            if isinstance(node, ast.Call) and isinstance(func := node.func, ast.Name):
                 func = func.id
                 key, val = self.resolve_raw(func)
-                trace('_eval_yield: call %s: %s = %r', func, key, val)
                 if isinstance(val, Box):
-                    return self._cb._yield_boxed(
-                        val.data,
-                        *(self._eval._eval(a) for a in data.args),
-                        **dict(self._eval._eval(k) for k in data.keywords),
-                    )
+                    if is_tracing:
+                        trace(
+                            'eval: TCO: %s -> %s\n  %s = %r',
+                            expr,
+                            ast.dump(node),
+                            key,
+                            val,
+                        )
+                    args = tuple(self._eval._eval(a) for a in node.args)
+                    kwargs = dict(self._eval._eval(k) for k in node.keywords)
+                    return val.data, args, kwargs
 
-        data = self._eval._eval(data) if data else None
-        return self._cb._handle_yield(data)
+        if is_tracing:
+            trace('eval: ast: %s -> %s', expr, ast.dump(node))
 
-    def eval(self, expr: str) -> Value:
-        val = self._eval.eval(expr, parse_ast(expr))
+        val = self._eval.eval(expr, node)
         trace('eval: %s -> %s', expr, val)
         return try_to_value(val)

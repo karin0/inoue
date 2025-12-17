@@ -7,13 +7,14 @@ from contextlib import contextmanager
 from typing import (
     Any,
     Callable,
+    Final,
     Mapping,
-    NoReturn,
     Sequence,
     Type,
     TypeVar,
     Literal,
     cast,
+    overload,
     override,
 )
 
@@ -98,15 +99,9 @@ type TCO = Literal[_TCO.Tco]
 
 type MaybeTCO = TCO | None
 
-Tco = _TCO.Tco
+Tco: Final = _TCO.Tco
 
 type TCOContext = tuple[Tree, str, dict[str, Any] | None]
-
-
-class Break(Exception):
-    def __init__(self, data: Value | TCOContext):
-        super().__init__(data)
-        self.data = data
 
 
 class SubDoc:
@@ -175,9 +170,11 @@ class Engine(Interpreter, ContextCallbacks):
             self._output.append(text)
 
     # Keep the original type to preserve types in code_block as expression when possible.
-    def _put_val(self, val: Value):
+    def _put_val(self, val: Value | TCO) -> MaybeTCO:
         if is_tracing and val != '':
-            trace('Putting value: %r', val)
+            trace('_put_val: %r', val)
+        if val is Tco:
+            return Tco
         if isinstance(val, str):
             self._put(val)
         else:
@@ -528,28 +525,17 @@ class Engine(Interpreter, ContextCallbacks):
         # Trampoline for "break" (see `_handle_yield`) or TCO.
         ref_scope = None
         while True:
-            try:
-                if ref_scope is None:
+            if ref_scope is None:
+                r = self._block_inner_scoped(tree, ctx=ctx)
+            else:
+                old_doc_scope = self._doc_scope
+                self._doc_scope = ref_scope
+                self._scope.push_raw(ref_scope)
+                try:
                     r = self._block_inner_scoped(tree, ctx=ctx)
-                else:
-                    old_doc_scope = self._doc_scope
-                    self._doc_scope = ref_scope
-                    self._scope.push_raw(ref_scope)
-                    try:
-                        r = self._block_inner_scoped(tree, ctx=ctx)
-                    finally:
-                        self._scope.pop()
-                        self._doc_scope = old_doc_scope
-            except Break as b:
-                data = b.data
-                trace('Break: %s', data)
-                if isinstance(data, tuple):
-                    assert self._tco is None, self._tco
-                    self._tco = data
-                    r = Tco
-                else:
-                    self._put_val(data)
-                    r = None
+                finally:
+                    self._scope.pop()
+                    self._doc_scope = old_doc_scope
 
             if r is Tco:
                 # Manual "stack unwinding" for TCO.
@@ -558,7 +544,7 @@ class Engine(Interpreter, ContextCallbacks):
                 self._tco = None
                 if is_tracing:
                     trace(
-                        'TCO @ %s: %s\n-> %s',
+                        'TCO @ %s: %s\n  -> %s',
                         ref_scope,
                         self.debug_node(sub_doc),
                         self.debug_node(tree),
@@ -623,9 +609,7 @@ class Engine(Interpreter, ContextCallbacks):
                 for key in refs:
                     self._put_val(self._doc_ref(key))
                 val = self._doc_ref(last, allow_tco=True)
-                if val is Tco:
-                    return val
-                self._put_val(val)
+                return self._put_val(val)
         else:
             for key in refs:
                 self._put_val(self._doc_ref(key))
@@ -741,6 +725,20 @@ class Engine(Interpreter, ContextCallbacks):
                 st.append('tco')
             trace('[%s] %s', ' '.join(st), self.debug_node(tree))
 
+    @overload
+    def expr(
+        self,
+        tree: Tree,
+        *,
+        direct_branch: Literal[False] = False,
+        allow_tco: Literal[False] = False,
+    ) -> None: ...
+
+    @overload
+    def expr(
+        self, tree: Tree, *, direct_branch: bool = False, allow_tco: Literal[True]
+    ) -> MaybeTCO: ...
+
     def expr(
         self, tree: Tree, *, direct_branch: bool = False, allow_tco: bool = False
     ) -> MaybeTCO:
@@ -759,6 +757,10 @@ class Engine(Interpreter, ContextCallbacks):
                 case 'code_block':
                     # Optimize: flatten the nested block.
                     return self._code_block(inner)
+                case 'dq_lit':
+                    # Optimize: chance to TCO.
+                    val = self._dq_lit(inner, allow_tco=allow_tco)
+                    return self._put_val(val)
 
         val = self._expr(tree, permissive=not direct_branch)
         self._put_val(val)
@@ -838,25 +840,7 @@ class Engine(Interpreter, ContextCallbacks):
             # Python expression: {"1 + 1"}
             # This should be non-mutating, i.e. side-effect free.
             case 'dq_lit':
-                expr = (
-                    narrow(ch.children[0], Token)
-                    .value[1:-1]
-                    .strip()
-                    .replace('\\"', '"')
-                    .replace('\\\\', '\\')
-                )
-                try:
-                    val = self._scope.eval(expr)
-                except (Abort, Break) as e:
-                    # This includes `Exit`.
-                    trace(f'evaluate: %r', e)
-                    raise
-                except Exception as e:
-                    self._error(f'evaluate: {expr!r}: {type(e).__name__}: {e}')
-                    return ''
-
-                # Not necessarily str!
-                return to_str(val) if as_str else val
+                return self._dq_lit(ch, as_str=as_str)
 
             # Literal: {'single quoted'}
             case 'sq_lit':
@@ -892,6 +876,55 @@ class Engine(Interpreter, ContextCallbacks):
         if permissive and self._check_iden(key):
             return self._scope.get(key, as_str=as_str, allow_undef=allow_undef)
         return key
+
+    @overload
+    def _dq_lit(
+        self, tree: Tree, *, as_str: Literal[True], allow_tco: Literal[False] = False
+    ) -> str: ...
+
+    @overload
+    def _dq_lit(
+        self, tree: Tree, *, as_str: Literal[True], allow_tco: Literal[True]
+    ) -> str | TCO: ...
+
+    @overload
+    def _dq_lit(
+        self, tree: Tree, *, as_str: bool = False, allow_tco: Literal[False] = False
+    ) -> Value: ...
+
+    @overload
+    def _dq_lit(
+        self, tree: Tree, *, as_str: bool = False, allow_tco: Literal[True]
+    ) -> Value | TCO: ...
+
+    def _dq_lit(
+        self, tree: Tree, *, as_str: bool = False, allow_tco: bool = False
+    ) -> Value | TCO:
+        value: str = narrow(tree.children[0], Token).value
+        expr = value[1:-1].strip().replace('\\"', '"').replace('\\\\', '\\')
+        try:
+            val = self._scope.eval(expr, allow_tco=allow_tco)
+        except Abort as e:
+            # This includes `Exit`.
+            trace(f'_dq_lit: %r', e)
+            raise
+        except Exception as e:
+            self._error(f'evaluate: {expr!r}: {type(e).__name__}: {e}')
+            if is_tracing:
+                s = traceback.format_exc()
+                trace('%s', s)
+            return ''
+
+        if isinstance(val, tuple):
+            assert allow_tco
+            assert self._tco is None
+            sub_doc: SubDoc = val[0]
+            ctx = self._create_ctx(*val)
+            self._tco = (sub_doc.tree, self._scope.current(), ctx)
+            return Tco
+
+        # Not necessarily str!
+        return to_str(val) if as_str else val
 
     def _check_iden(self, key: str) -> bool:
         if not key:
@@ -1096,32 +1129,6 @@ class Engine(Interpreter, ContextCallbacks):
         with self._push():
             self._block_inner_body(tree, ctx=ctx)
             return self._gather_output(self._output, default=None)
-
-    # *Break* from current block with a value.
-    # Despite the name, this is more like *break* with a value, but `ast.Break`
-    # cannot carry a value.
-    # We don't use `return` here because we don't terminate the entire doc or
-    # current sub-doc, just the current block.
-    @override
-    def _handle_yield(self, value):
-        trace('_handle_yield: %s', value)
-        raise Break(try_to_value(value))
-
-    # Do TCO if we are breaking with a sub-doc call.
-    @override
-    def _yield_boxed(self, sub_doc: SubDoc, *args, **kwargs) -> NoReturn:
-        tree = sub_doc.tree
-        assert tree.data == 'block_inner', tree
-        if is_tracing:
-            trace(
-                '_yield_boxed: %s args=%s kwargs=%s',
-                self.debug_node(tree),
-                args,
-                kwargs,
-            )
-        ctx = self._create_ctx(sub_doc, args, kwargs)
-        tco = (sub_doc.tree, self._scope.current(), ctx)
-        raise Break(tco)
 
     # Due to LALR limitations, AOE chains have very different semantics:
     # - In expression statements, they set context vars and return ''.
