@@ -173,6 +173,7 @@ class Engine(Interpreter, ContextCallbacks):
         if is_tracing and val != '':
             trace('_put_val: %r', val)
         if val is Tco:
+            # Manual "stack unwinding" for TCO.
             return Tco
         if isinstance(val, str):
             self._put(val)
@@ -219,11 +220,11 @@ class Engine(Interpreter, ContextCallbacks):
 
         # Entry of the syntax: '{ ... }', or '...;' in a single line.
         # Works like a simpler `_code_block` without scope modifier.
-        if self._block_inner_scan(tree, root=root) is not None:
+        if self._scan_block(tree, root=root) is not None:
             return
 
         try:
-            self._block_inner_body(tree)
+            self._run_block(tree)
         except Exit:
             # "exit()" called: stop rendering, but only for *this fragment*.
             # Fragments afterwards and outer docs will continue rendering.
@@ -447,13 +448,13 @@ class Engine(Interpreter, ContextCallbacks):
             inner.children[0] = scope
             tree.children[0] = None
 
-        sub_doc = self._block_inner_scan(inner, captured=captured)
+        sub_doc = self._scan_block(inner, captured=captured)
         if sub_doc is not None:
             return self._put_val(Box(sub_doc))
 
-        self._block_inner_body(inner)
+        self._run_block(inner)
 
-    def _block_inner_scan(
+    def _scan_block(
         self, tree: Tree, *, captured: bool = False, root: bool = False
     ) -> SubDoc | None:
         assert tree.data == 'block_inner', tree
@@ -465,7 +466,6 @@ class Engine(Interpreter, ContextCallbacks):
             ):
                 continue
 
-            # Db doc name set: {name:}
             op = narrow(ch.children[1], Token).value
 
             # Sub-document definition:
@@ -518,70 +518,78 @@ class Engine(Interpreter, ContextCallbacks):
 
             return
 
-    # Starting point of block execution.
-    # A block can provide semantics of a variable scope, a doc (name) definition, a
-    # sub-doc definition, any combination of them, or just a plain block of statements.
-    # A sub-doc *looks like* a "function", but when the scope modifier is absent,
-    # it may acts like a "macro" that operates on the same scope as the outer block.
-    def _block_inner_body(self, tree: Tree, *, ctx: dict[str, Any] | None = None):
-        # Trampoline for "break" (see `_handle_yield`) or TCO.
+    def _set_tco(self, sub_doc: SubDoc, env: dict[str, Any] | None = None):
+        assert self._tco is None
+        self._tco = (sub_doc.tree, self._scope.current(), env)
+
+    def _run_block(self, tree: Tree, *, env: dict[str, Any] | None = None):
+        '''
+        Entrypoint of block execution.
+
+        A block can provide semantics of a (dynamic) scope, a doc (name) definition, a
+        sub-doc definition, any combination of them, or just a plain block of statements.
+
+        A sub-doc may look like a "function", but is actually a `code_block` with
+        deferred execution, and is completely *orthogonal* to the variable scoping
+        mechanism, i.e. a sub-doc may or may not introduce a new scope.
+
+        Maybe we can think of it as a "first-class macro" with runtime evaluation.
+        '''
+
+        # Trampoline for TCO.
         ref_scope = None
         while True:
-            if ref_scope is None:
-                r = self._block_inner_scoped(tree, ctx=ctx)
-            else:
-                old_doc_scope = self._doc_scope
-                self._doc_scope = ref_scope
-                self._scope.push_raw(ref_scope)
-                try:
-                    r = self._block_inner_scoped(tree, ctx=ctx)
-                finally:
+            if (scope_name := self._block_inner_resolve_scope(tree)) is not None:
+                self._scope.push(scope_name)
+
+            # Env must be set in the inner scope, after all pushing.
+            self._block_inner_set_env(env)
+
+            try:
+                r = self._block_inner_exec(tree)
+            finally:
+                if scope_name is not None:
                     self._scope.pop()
-                    self._doc_scope = old_doc_scope
+                if ref_scope is not None:
+                    # Pushed below.
+                    last = self._scope.pop()
+                    assert last == ref_scope
 
-            if r is Tco:
-                # Manual "stack unwinding" for TCO.
-                assert self._tco is not None
-                sub_doc, ref_scope, ctx = self._tco
-                self._tco = None
-                if is_tracing:
-                    trace(
-                        'TCO @ %s: %s\n  -> %s',
-                        ref_scope,
-                        self.debug_node(sub_doc),
-                        self.debug_node(tree),
-                    )
-                tree = sub_doc
+            if r is not Tco:
+                return
+
+            assert self._tco is not None
+            # Replace our arguments.
+            tree, ref_scope, env = self._tco
+            self._tco = None
+
+            if is_tracing:
+                trace(
+                    'TCO @ %s -> %s: %s',
+                    self._scope.current(),
+                    ref_scope,
+                    self.debug_node(tree),
+                )
+
+            if ref_scope == self._scope.current():
+                ref_scope = None
             else:
-                break
+                self._scope.push_raw(ref_scope)
 
-    # Enforce scope modifier before block.
-    def _block_inner_scoped(
-        self, tree: Tree, *, ctx: dict[str, Any] | None = None
-    ) -> MaybeTCO:
+    # Find the scope modifier.
+    def _block_inner_resolve_scope(self, tree: Tree) -> str | None:
         if (scope := tree.children[0]) is not None:
             scope = narrow(scope, Tree)
             assert scope.data == 'scope'
             if (scope := scope.children[0]) is None:
-                name = ''
-            else:
-                name = self._dyn_iden(scope)
+                return ''
+            return self._dyn_iden(scope)
 
-            self._scope.push(name)
-            try:
-                self._block_inner_prepare_ctx(ctx)
-                return self._block_inner_exec(tree)
-            finally:
-                self._scope.pop()
-        else:
-            self._block_inner_prepare_ctx(ctx)
-            return self._block_inner_exec(tree)
-
-    # Enforce argument context.
-    def _block_inner_prepare_ctx(self, ctx: dict[str, Any] | None = None):
-        trace('_block_inner_prepare_ctx: %s', ctx)
-        if ctx:
-            for key, val in ctx.items():
+    # Enforce context in the inner scope.
+    def _block_inner_set_env(self, env: dict[str, Any] | None = None):
+        trace('_block_inner_set_env: %s', env)
+        if env:
+            for key, val in env.items():
                 self._scope.set(key, try_to_value(val), self._ctx.__setitem__)
 
     # Execute!
@@ -598,7 +606,7 @@ class Engine(Interpreter, ContextCallbacks):
                 case 'doc_ref':
                     key = self._iden(ch.children[-1])
                     refs.append(key)
-                # Db doc get: handled before in `_block_inner_scan()`.
+                # Db doc get: handled before in `_scan_block()`.
                 case 'doc_def':
                     continue
                 case _:
@@ -919,10 +927,7 @@ class Engine(Interpreter, ContextCallbacks):
 
         if isinstance(val, tuple):
             assert allow_tco
-            assert self._tco is None
-            sub_doc: SubDoc = val[0]
-            ctx = self._create_ctx(*val)
-            self._tco = (sub_doc.tree, self._scope.current(), ctx)
+            self._set_tco(val[0], self._create_block_env(*val))
             return Tco
 
         # Not necessarily str!
@@ -1073,17 +1078,15 @@ class Engine(Interpreter, ContextCallbacks):
             trace('_doc_ref%s: key=%s val=%r', s, key, val)
 
         if isinstance(val, Box):
-            val: Box[SubDoc]
-            sub_doc = val.data.tree
+            sub_doc: SubDoc = val.data
             if is_tracing:
                 trace(
                     '_doc_ref: Rendering sub-doc: %s %s',
                     key,
-                    self.debug_node(sub_doc),
+                    self.debug_node(sub_doc.tree),
                 )
             if allow_tco:
-                assert self._tco is None
-                self._tco = (sub_doc, self._scope.current(), None)
+                self._set_tco(sub_doc)
                 return Tco
 
         else:
@@ -1098,10 +1101,10 @@ class Engine(Interpreter, ContextCallbacks):
             if sub_doc is None:
                 self._render(doc)
             else:
-                self._block_inner_body(sub_doc)
+                self._run_block(sub_doc.tree)
             return self._gather_output(self._output, trim=True)
 
-    def _create_ctx(
+    def _create_block_env(
         self, sub_doc: SubDoc, args: tuple, kwargs: dict[str, Any]
     ) -> dict[str, Any]:
         arg_list = sub_doc.args
@@ -1127,9 +1130,9 @@ class Engine(Interpreter, ContextCallbacks):
             )
 
         # Recursive boxed calls are still limited by `MAX_DEPTH`.
-        ctx = self._create_ctx(sub_doc, args, kwargs)
+        env = self._create_block_env(sub_doc, args, kwargs)
         with self._push():
-            self._block_inner_body(tree, ctx=ctx)
+            self._run_block(tree, env=env)
             return self._gather_output(self._output, default=None)
 
     # Due to LALR limitations, AOE chains have very different semantics:

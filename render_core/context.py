@@ -297,9 +297,10 @@ class ScopedContext:
         trace('Entering raw scope: %s', prefix)
         self._scopes.append(prefix)
 
-    def pop(self):
+    def pop(self) -> str:
         last = self._scopes.pop()
         trace('Leaving scope: %s', last)
+        return last
 
     def _prefix_func(self) -> str:
         return self._scopes[-1]
