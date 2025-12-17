@@ -2,17 +2,18 @@ import os
 import sys
 import functools
 import traceback
+from enum import Enum, auto
 from contextlib import contextmanager
-from typing import Any, Callable, Sequence, Type, TypeVar, cast, override
+from typing import Any, Callable, Sequence, Type, TypeVar, Literal, cast, override
 
 from lark import Lark, Token, Tree
 from lark.visitors import Interpreter
 from lark.exceptions import LarkError
 
 from db import db
-from render_core.lex import lex
 from util import log, notify, shorten
 
+from .lex import lex
 from .context import (
     is_tracing,
     is_not_quiet,
@@ -30,7 +31,6 @@ from .context import (
 from .lex import lex, lex_errors
 
 MAX_DEPTH = 20
-MIN_TCO_DEPTH = 10
 MAX_GAS = 2000
 
 
@@ -77,13 +77,17 @@ class Exit(Abort):
     pass
 
 
-# TCO, but more like a signal to "execve" the caller context.
-class TCO(Exception):
-    def __init__(self, tree: Tree, scope: str, ctx: dict[str, Any] | None = None):
-        super().__init__(tree)
-        self.tree = tree
-        self.scope = scope
-        self.ctx = ctx
+# TCO, but more like a signal to break from the block execution and "execve"
+# into another sub-doc.
+class _TCO(Enum):
+    Tco = auto()
+
+
+type TCO = Literal[_TCO.Tco]
+
+type MaybeTCO = TCO | None
+
+Tco = _TCO.Tco
 
 
 class SubDoc:
@@ -117,6 +121,8 @@ class Engine(Interpreter, ContextCallbacks):
         self._depth: int = 0
         self._dirty: bool = False
         self._doc_scope: str = ''
+
+        self._tco: tuple[Tree, str, dict[str, Any] | None] | None = None
 
         self._tree: Tree | None = None
         self._gas: int = 0
@@ -297,21 +303,24 @@ class Engine(Interpreter, ContextCallbacks):
     # This interface is only used for `stmt_list` and all types of `stmt` nodes.
     def visit(
         self, tree: Tree, *, direct_branch: bool = False, allow_tco: bool = False
-    ):
+    ) -> MaybeTCO:
         assert isinstance(tree, Tree)
         self._tree = tree
 
         self._consume_gas()
         self._trace(tree, direct_branch=direct_branch, allow_tco=allow_tco)
 
-        if tree.data == 'expr':
-            self.expr(tree, direct_branch=direct_branch, allow_tco=allow_tco)
-        elif tree.data == 'stmt_list':
-            self.stmt_list(tree, direct_branch=direct_branch, allow_tco=allow_tco)
-        elif tree.data == 'branch':
-            self.branch(tree, allow_tco=allow_tco)
-        else:
-            super().visit(tree)
+        match tree.data:
+            case 'expr':
+                return self.expr(tree, direct_branch=direct_branch, allow_tco=allow_tco)
+            case 'stmt_list':
+                return self.stmt_list(
+                    tree, direct_branch=direct_branch, allow_tco=allow_tco
+                )
+            case 'branch':
+                return self.branch(tree, allow_tco=allow_tco)
+            case _:
+                return super().visit(tree)
 
     # Override lark visitor to raise on unhandled nodes.
     @override
@@ -490,21 +499,24 @@ class Engine(Interpreter, ContextCallbacks):
     def _block_inner_body(self, tree: Tree, *, ctx: dict[str, Any] | None = None):
         ref_scope = None
         while True:
-            try:
-                if ref_scope is None:
-                    self._block_inner_scoped(tree, ctx=ctx)
-                else:
-                    self._scope.push_raw(ref_scope)
-                    try:
-                        self._block_inner_scoped(tree, ctx=ctx)
-                    finally:
-                        self._scope.pop()
-            except TCO as e:
-                # "Stack-unwinding" based TCO! (maybe more expensive than normal calls...)
+            if ref_scope is None:
+                r = self._block_inner_scoped(tree, ctx=ctx)
+            else:
+                old_doc_scope = self._doc_scope
+                self._doc_scope = ref_scope
+                self._scope.push_raw(ref_scope)
+                try:
+                    r = self._block_inner_scoped(tree, ctx=ctx)
+                finally:
+                    self._scope.pop()
+                    self._doc_scope = old_doc_scope
+
+            if r is Tco:
+                # Manual "stack unwinding" for TCO.
                 # Output has been protected and folded in `_push` on exceptions.
-                sub_doc = e.tree
-                ref_scope = e.scope
-                ctx = e.ctx
+                assert self._tco is not None
+                sub_doc, ref_scope, ctx = self._tco
+                self._tco = None
                 if is_tracing:
                     trace(
                         'TCO @ %s: %s\n-> %s',
@@ -517,7 +529,9 @@ class Engine(Interpreter, ContextCallbacks):
                 break
 
     # Enforce scope modifier before block.
-    def _block_inner_scoped(self, tree: Tree, *, ctx: dict[str, Any] | None = None):
+    def _block_inner_scoped(
+        self, tree: Tree, *, ctx: dict[str, Any] | None = None
+    ) -> MaybeTCO:
         if (scope := tree.children[0]) is not None:
             scope = narrow(scope, Tree)
             assert scope.data == 'scope'
@@ -529,12 +543,12 @@ class Engine(Interpreter, ContextCallbacks):
             self._scope.push(name)
             try:
                 self._block_inner_prepare_ctx(ctx)
-                self._block_inner_exec(tree)
+                return self._block_inner_exec(tree)
             finally:
                 self._scope.pop()
         else:
             self._block_inner_prepare_ctx(ctx)
-            self._block_inner_exec(tree)
+            return self._block_inner_exec(tree)
 
     # Enforce argument context.
     def _block_inner_prepare_ctx(self, ctx: dict[str, Any] | None = None):
@@ -543,7 +557,7 @@ class Engine(Interpreter, ContextCallbacks):
                 self._scope.set(key, try_to_value(val), self._ctx.__setitem__)
 
     # Execute!
-    def _block_inner_exec(self, tree: Tree):
+    def _block_inner_exec(self, tree: Tree) -> MaybeTCO:
         stmt_list = narrow(tree.children[-1], Tree)
         if self._is_empty_stmt(stmt_list):
             stmt_list = None
@@ -563,23 +577,23 @@ class Engine(Interpreter, ContextCallbacks):
                     # `block_inner` can contain at most one statement.
                     raise ValueError(f'Bad block_inner child: {tree.pretty()}')
 
-        # TCOs are actually more expensive than normal calls due to exception handling,
-        # so we only enable it in deeper recursions.
-        allow_tco = self._depth >= MIN_TCO_DEPTH
         if stmt_list is None:
             if refs:
                 last = refs.pop()
                 for key in refs:
                     self._put_val(self._doc_ref(key))
-                self._put_val(self._doc_ref(last, allow_tco=allow_tco))
+                val = self._doc_ref(last, allow_tco=True)
+                if val is Tco:
+                    return val
+                self._put_val(val)
         else:
             for key in refs:
                 self._put_val(self._doc_ref(key))
-            self.visit(stmt_list, allow_tco=allow_tco)
+            return self.visit(stmt_list, allow_tco=True)
 
     def stmt_list(
         self, tree: Tree, *, direct_branch: bool = False, allow_tco: bool = False
-    ):
+    ) -> MaybeTCO:
         # Flatten right-recursion with a trampoline.
         todo = []
         while tree.children:
@@ -596,14 +610,14 @@ class Engine(Interpreter, ContextCallbacks):
             last = todo.pop()
             for stmt in todo:
                 self.visit(stmt, direct_branch=direct_branch)
-            self.visit(last, direct_branch=direct_branch, allow_tco=allow_tco)
+            return self.visit(last, direct_branch=direct_branch, allow_tco=allow_tco)
 
     @staticmethod
     def _is_empty_stmt(tree: Tree) -> bool:
         return tree.data == 'stmt_list' and not tree.children
 
     # Conditional branch: {<cond> ? true-directive : false-directive} (false part optional)
-    def branch(self, tree: Tree, *, allow_tco: bool = False):
+    def branch(self, tree: Tree, *, allow_tco: bool = False) -> MaybeTCO:
         cond = narrow(tree.children[0], Tree)
 
         # Allow undefined vars as falsy in conditions.
@@ -668,12 +682,13 @@ class Engine(Interpreter, ContextCallbacks):
 
         to = left if test else right
         if rest is None:
-            if to is not None:
-                self.visit(narrow(to, Tree), direct_branch=True, allow_tco=allow_tco)
-        else:
-            if to is not None:
-                self.visit(narrow(to, Tree), direct_branch=True)
-            self.visit(rest, allow_tco=allow_tco)
+            if to is None:
+                return
+            return self.visit(narrow(to, Tree), direct_branch=True, allow_tco=allow_tco)
+
+        if to is not None:
+            self.visit(narrow(to, Tree), direct_branch=True)
+        return self.visit(rest, allow_tco=allow_tco)
 
     def _trace(
         self, tree: Tree, *, direct_branch: bool = False, allow_tco: bool = False
@@ -686,7 +701,9 @@ class Engine(Interpreter, ContextCallbacks):
                 st.append('tco')
             trace('[%s] %s', ' '.join(st), self.debug_node(tree))
 
-    def expr(self, tree: Tree, *, direct_branch: bool = False, allow_tco: bool = False):
+    def expr(
+        self, tree: Tree, *, direct_branch: bool = False, allow_tco: bool = False
+    ) -> MaybeTCO:
         # Expression statement: {<expr>}
         # The value is directly appended to output.
         if isinstance(inner := tree.children[0], Tree):
@@ -874,7 +891,7 @@ class Engine(Interpreter, ContextCallbacks):
         put: Callable[[Value], None],
         allow_undef: bool = False,
         allow_tco: bool = False,
-    ):
+    ) -> MaybeTCO:
         self._trace(tree, allow_tco=allow_tco)
         assert tree.children, tree
         last = len(tree.children) - 1
@@ -882,6 +899,8 @@ class Engine(Interpreter, ContextCallbacks):
             tco = allow_tco and i == last
             val = self._unary(narrow(ch, Tree), allow_undef=allow_undef, allow_tco=tco)
             trace('Unary value: %r', val)
+            if val is Tco:
+                return val
             put(val)
 
     def _get_by_raw_key(
@@ -902,7 +921,7 @@ class Engine(Interpreter, ContextCallbacks):
         as_str: bool = False,
         allow_undef: bool = False,
         allow_tco: bool = False,
-    ) -> Value:
+    ) -> Value | TCO:
         self._trace(tree, allow_tco=allow_tco)
         op = narrow(tree.children[0], Token).value
         name = tree.children[1]
@@ -972,7 +991,7 @@ class Engine(Interpreter, ContextCallbacks):
         # Self-mapping when no argument is given.
         return self._doc_text
 
-    def _doc_ref(self, key: str, *, allow_tco: bool = False) -> Value:
+    def _doc_ref(self, key: str, *, allow_tco: bool = False) -> Value | TCO:
         val = self._scope.get(key, allow_undef=True)
         if is_tracing:
             s = ' (tco)' if allow_tco else ''
@@ -988,7 +1007,9 @@ class Engine(Interpreter, ContextCallbacks):
                     self.debug_node(sub_doc),
                 )
             if allow_tco:
-                raise TCO(sub_doc, self._scope.current())
+                assert self._tco is None
+                self._tco = (sub_doc, self._scope.current(), None)
+                return Tco
 
         else:
             sub_doc = None
