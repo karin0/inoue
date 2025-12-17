@@ -156,9 +156,9 @@ class TestRender(unittest.TestCase):
 
         self.assertEqual(
             self.render_it(
-                'a=1; a; @{a; a=7; $a; ::a; @q {a; a=8; a; $a; ::a; }; a; }; a;'
+                'a=1; a; @{a; a=7; $a; a=::a; a; c=@q {a; a=3; a; $a; ::a; }; c; a; }; a;'
             ),
-            '1171788171',
+            '1171133111',
         )
 
     def test_compare(self):

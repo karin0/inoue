@@ -335,6 +335,9 @@ class ScopedContext:
     def current(self) -> str:
         return self._scopes[-1]
 
+    def last(self) -> str | None:
+        return self._scopes[-2] if len(self._scopes) >= 2 else None
+
     def current_key(self, name: str) -> str:
         return self._scopes[-1] + name
 

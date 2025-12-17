@@ -140,7 +140,6 @@ class Engine(Interpreter, ContextCallbacks):
         self._root_output: list[str] = []
         self._depth: int = 0
         self._dirty: bool = False
-        self._doc_scope: str = ''
 
         self._tco: TCOContext | None = None
 
@@ -373,13 +372,12 @@ class Engine(Interpreter, ContextCallbacks):
         # Recursion is allowed up to a limit.
         old_output = self._output
         old_dirty = self._dirty
-        old_doc_scope = self._doc_scope
         sys_depth = stack_size2a()
         trace(
-            'Push: %s %s %s (%s)',
+            '[%s] Push @ %s: %s (%s)',
             self._depth,
+            self._scope.current(),
             old_output,
-            old_doc_scope,
             sys_depth,
         )
 
@@ -390,7 +388,6 @@ class Engine(Interpreter, ContextCallbacks):
         self._depth += 1
         self._output = []
         self._dirty = False
-        self._doc_scope = self._scope.current()
         err = False
         try:
             yield
@@ -399,7 +396,13 @@ class Engine(Interpreter, ContextCallbacks):
             raise
         finally:
             self._depth -= 1
-            trace('Pop: %d %s %s', self._depth, old_output, self._output)
+            trace(
+                '[%s] Pop @ %s: %s %s',
+                self._depth,
+                self._scope.current(),
+                old_output,
+                self._output,
+            )
             assert self._depth >= 0
             if self._depth == 0 and self._root_output:
                 old_output.extend(self._root_output)
@@ -408,7 +411,6 @@ class Engine(Interpreter, ContextCallbacks):
                 old_output.extend(self._output)
             self._output = old_output
             self._dirty = old_dirty
-            self._doc_scope = old_doc_scope
 
     def _print_func(self, *args):
         out = self._root_output if self._depth > 0 else self._output
@@ -1022,15 +1024,15 @@ class Engine(Interpreter, ContextCallbacks):
             case '*':
                 return self._doc_ref(key, allow_tco=allow_tco)
 
-            # Variable get in "root" scope: {::name}
-            # Always resolve in the scope where the current doc (not necessarily
-            # the first doc in the `_render` chain) begins.
-            # Also, this returns '' if undefined.
-            # This is useful for "recursive calls" to retrieve "arguments" passed
-            # from outer docs.
+            # Variable read in the last scope: {::name}
             case '::':
-                key = self._doc_scope + key
-                return self._get_by_raw_key(key, as_str=as_str, allow_undef=True)
+                last_scope = self._scope.last()
+                if last_scope is None:
+                    self._error('no last scope for ::' + key)
+                    return ''
+                return self._get_by_raw_key(
+                    last_scope + key, as_str=as_str, allow_undef=True
+                )
 
             case _:
                 raise ValueError(f'Bad deref op: {op}')
