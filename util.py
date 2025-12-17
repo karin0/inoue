@@ -1,11 +1,10 @@
 import os
-import time
 import asyncio
 import logging
 import traceback
 
 from html import escape as html_escape
-from typing import Sequence
+from typing import Awaitable, Callable, Sequence, Concatenate
 from collections import deque
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -257,6 +256,34 @@ def is_id_trusted(sender_id: int) -> bool:
     return sender_id in (USER_ID, CHAN_ID, GROUP_ID)
 
 
+async def try_send_text[**P, R](
+    func: Callable[Concatenate[str, P], Awaitable[R]],
+    text: str,
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> R:
+    if not ('parse_mode' in kwargs or 'entities' in kwargs):
+        return await func(text, *args, **kwargs)
+
+    try:
+        return await func(text, *args, **kwargs)
+    except Exception as e:
+        e = str(e)
+        if "Can't parse entities:" in e:
+            log.warning(
+                'try_send_text: falling back without entities: %s %s %s %s',
+                e,
+                func,
+                args,
+                kwargs,
+            )
+            new_text = truncate_text(str(e) + '\n' + text)
+            kwargs.pop('parse_mode', None)
+            kwargs.pop('entities', None)
+            return await func(new_text, *args, **kwargs)
+        raise
+
+
 # Note: the return value could be `None` if `allow_not_modified` is set.
 async def reply_text(
     update: MessageSource,
@@ -275,7 +302,8 @@ async def reply_text(
 
     # Can only be called when `key` is missing in the cache.
     async def _do_reply_text():
-        resp = await m.reply_text(
+        resp = await try_send_text(
+            m.reply_text,
             text,
             parse_mode=parse_mode,
             reply_markup=reply_markup,
@@ -294,8 +322,10 @@ async def reply_text(
     resp_msg_id = int(resp_msg_id)
     log.debug('Editing cached response: %s -> %s', key, resp_msg_id)
 
+    assert bot is not None
     try:
-        resp = await bot.edit_message_text(
+        resp = await try_send_text(
+            bot.edit_message_text,
             text,
             m.chat.id,
             resp_msg_id,

@@ -1,4 +1,6 @@
+import re
 import asyncio
+from typing import Mapping
 
 from telegram import (
     InlineQuery,
@@ -19,6 +21,7 @@ from util import (
     get_msg_arg,
     get_msg_url,
     reply_text,
+    try_send_text,
     shorten,
     truncate_text,
     escape,
@@ -45,8 +48,31 @@ def encode_flags(flags: dict[str, bool]) -> str:
     return ''.join((CALLBACK_SIGNS[v] + k) for k, v in flags.items())
 
 
+CTX_ENV_PREFIX = '_env.'
+
+
+def get_ctx(
+    ctx: Engine | Mapping[str, Value], key: str, default: Value | None = None
+) -> Value | None:
+    v = ctx.get(CTX_ENV_PREFIX + key)
+    if v is None:
+        v = ctx.get('_' + key)
+        if v is None:
+            return default
+    return v
+
+
+def get_ctx_flag(
+    ctx: Engine | Mapping[str, Value], key: str, default: bool = False
+) -> bool | Value:
+    v = get_ctx(ctx, key)
+    if v is None:
+        return default
+    return v and v != '0'
+
+
 def make_markup(
-    path: str | None, ctx: Engine, state: dict[str, bool] | None
+    path: str | None, ctx: Engine | Mapping[str, Value], state: dict[str, bool] | None
 ) -> InlineKeyboardMarkup | None:
     if not path:
         return None
@@ -63,6 +89,9 @@ def make_markup(
 
     flags = {}
     for k, v in ctx.items():
+        if k.startswith(CTX_ENV_PREFIX):
+            continue
+
         if v == '0' or v == 0:  # This covers `False` as well.
             v = False
         elif v == '1' or v == 1:
@@ -96,41 +125,57 @@ def make_markup(
             data = encode_flags(state) + path
             row.append(InlineKeyboardButton(name, callback_data=data))
 
+        hide_flags = get_ctx_flag(ctx, 'hide_flags')
         for k, v in flags.items():
             if not v:
                 # Hide conflicting options.
                 if (
                     k == '_pre'
-                    and flags.get('_fold') in ('1', True)
+                    and get_ctx_flag(ctx, 'fold')
                     or k == '_fold'
-                    and flags.get('_pre') in ('1', True)
+                    and get_ctx_flag(ctx, 'pre', True)
                 ):
+                    log.debug('make_markup: hiding conflicting flag %s', k)
                     continue
 
             old = k in state
+            log.debug('make_markup: flag %s in=%s new=%s s=%s', k, old, v, state)
             state[k] = not v
 
-            if icon := ctx.get('_icon.' + k):
+            if icon := get_ctx(ctx, 'icon.' + k):
                 icon = str(icon)
-            else:
+                push_button(icon + (':=' if old else '=') + '01'[v])
+            elif not hide_flags:
                 icon = SPECIAL_FLAG_ICONS.get(k, k)
-            push_button(icon + (':=' if old else '=') + '01'[v])
+                push_button(icon + (':=' if old else '=') + '01'[v])
+            else:
+                log.debug('make_markup: hiding flag %s', k)
 
             if old:
                 state[k] = v
             else:
                 del state[k]
 
+        log.debug('make_markup: final state %s', state)
         if state:
             push_button('🔄')
 
     if doc_id:
         row.append(InlineKeyboardButton('🔗', get_msg_url(doc_id)))
 
+    row_limit = get_ctx(ctx, 'btns_per_row', 5)
+    try:
+        row_limit = int(row_limit)
+    except ValueError:
+        row_limit = 5
+
     # Group 5 buttons per row
-    rows = [row[i : i + 5] for i in range(0, len(row), 5)]
+    rows = [row[i : i + row_limit] for i in range(0, len(row), row_limit)]
 
     return InlineKeyboardMarkup(rows)
+
+
+reg_cleanup = re.compile(r'\n{3,}')
 
 
 def rendered_response(
@@ -146,27 +191,41 @@ def rendered_response(
     result = truncate_text(result)
     parse_mode = None
 
-    if ctx.get_flag('_fold'):
-        result, parse_mode = blockquote_block(result)
-        do_escape = html_escape
-    elif ctx.get_flag('_pre', True):
-        result, parse_mode = pre_block(result)
-        do_escape = escape
+    if get_ctx_flag(ctx, 'cleanup', True):
+        result = reg_cleanup.sub('\n\n', result)
 
-    if parse_mode:
-        if flags:
-            suffix = do_escape(encode_flags(flags))
-            if len(result) + len(suffix) <= MAX_TEXT_LENGTH:
-                result += suffix
+    if not errors:
+        if get_ctx_flag(ctx, 'md'):
+            parse_mode = 'MarkdownV2'
+            do_escape = escape
+        elif get_ctx_flag(ctx, 'html'):
+            parse_mode = 'HTML'
+            do_escape = html_escape
+        else:
+            if get_ctx_flag(ctx, 'fold'):
+                result, parse_mode = blockquote_block(result)
+                do_escape = html_escape
+            elif get_ctx_flag(ctx, 'pre', True):
+                result, parse_mode = pre_block(result)
+                do_escape = escape
 
-        if footer := ctx.get('_footer'):
-            suffix = do_escape(footer)
+        if parse_mode:
             if flags:
-                suffix = ' ' + suffix
-            if len(result) + len(suffix) <= MAX_TEXT_LENGTH:
-                result += suffix
+                suffix = do_escape(encode_flags(flags))
+                if len(result) + len(suffix) <= MAX_TEXT_LENGTH:
+                    result += suffix
+
+            if footer := get_ctx(ctx, 'footer'):
+                suffix = do_escape(footer)
+                if flags:
+                    suffix = ' ' + suffix
+                if len(result) + len(suffix) <= MAX_TEXT_LENGTH:
+                    result += suffix
 
     return result, parse_mode, make_markup(path, ctx, flags)
+
+
+ENGINE_FUNCS = {'escape': escape, 'html_escape': html_escape}
 
 
 def create_engine(
@@ -189,7 +248,8 @@ def create_engine(
         overrides['_source'] = source
     if msg := update.effective_message:
         overrides['_msg_id'] = str(msg.message_id)
-    return Engine(overrides=overrides, doc_id=doc_id)
+    log.debug('create_engine: overrides %s', overrides)
+    return Engine(overrides=overrides, funcs=ENGINE_FUNCS, doc_id=doc_id)
 
 
 def render_text(
@@ -301,15 +361,17 @@ async def handle_render_callback(
 
     try:
         if query.inline_message_id:
-            await ctx.bot.edit_message_text(
-                text=result,
+            await try_send_text(
+                ctx.bot.edit_message_text,
+                result,
                 inline_message_id=query.inline_message_id,
                 reply_markup=markup,
                 parse_mode=parse_mode,
             )
         else:
-            await ctx.bot.edit_message_text(
-                text=result,
+            await try_send_text(
+                ctx.bot.edit_message_text,
+                result,
                 chat_id=update.effective_chat.id,
                 message_id=query.message.message_id,
                 reply_markup=markup,
