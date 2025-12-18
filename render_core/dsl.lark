@@ -36,7 +36,7 @@ doc_ref: ":" iden
 branch: expr "?" stmt_list (":" stmt_list)? BRANCH_END?
 BRANCH_END: "!"
 
-swap: dyn_iden "^" dyn_iden
+swap: lvalue "^" lvalue
 
 repl: iden ("|" repl_pair)+
 repl_pair: [expr] "/" [expr]
@@ -48,6 +48,10 @@ repl_pair: [expr] "/" [expr]
      | compare
      | assign_or_equal
      | paren
+     | subscript
+
+subscript: dyn_iden "[" expr "]"
+?lvalue: dyn_iden | subscript
 
 // Parentheses cannot be empty. Use '' for a empty value.
 ?paren: "(" expr ")"
@@ -55,7 +59,7 @@ repl_pair: [expr] "/" [expr]
 // "Assignments" are technically expressions, but have different semantics as statements.
 // We have to distinguish between assignments and equality conditions manually in
 // the interpreter to avoid ambiguity of `=` in LALR.
-assign_or_equal: dyn_iden ASSIGN_OP [expr]
+assign_or_equal: lvalue ASSIGN_OP [expr]
 ASSIGN_OP: "=" | ":=" | "?="
 
 // Not arithmetic operators!

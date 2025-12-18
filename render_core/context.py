@@ -6,13 +6,14 @@ import functools
 
 from datetime import datetime
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Literal, TypeGuard, Mapping, overload
+from typing import Any, Callable, Literal, Type, TypeGuard, Mapping, overload
 from collections import UserDict, OrderedDict
 from collections.abc import ItemsView, MutableMapping
 
 from simpleeval import SimpleEval, DEFAULT_FUNCTIONS
 
 from util import log
+from .tco import Tco, TCO
 
 is_tracing = os.environ.get('TRACE') == '1' and log.isEnabledFor(logging.DEBUG)
 is_not_quiet = os.environ.get('TRACE_QUIET') != '1'
@@ -281,6 +282,9 @@ class ScopedContext:
         funcs.setdefault('prefix', self._prefix_func)
         funcs_ = EvalFunctions(funcs, self)
         self._eval = SimpleEval(functions=funcs_, names=self)
+        self._eval_str = self._eval.eval
+        self._eval_node = self._eval._eval
+        self._eval.nodes[ast.Subscript] = self._eval_subscript
         self._funcs = funcs_.data
 
     def push(self, name: str):
@@ -355,6 +359,11 @@ class ScopedContext:
 
     # For `simpleeval` usage.
     def __getitem__(self, name: str) -> Value | ScopeProxy | None:
+        if (r := self._eval_get_name(name)) is Tco:
+            raise KeyError(name)
+        return r
+
+    def _eval_get_name(self, name: str) -> Value | ScopeProxy | None | TCO:
         self._cb._consume_gas()
         key, val = self.resolve_raw(name)
         trace('eval: item: %s -> %r', key, val)
@@ -372,9 +381,30 @@ class ScopedContext:
                 trace('Implicit function result: %s() -> %r', name, r)
                 return r
             log.error('Unsafe function result: %s() -> %r (%r)', name, r, type(r))
-            return None
 
-        raise KeyError(key)
+        return Tco
+
+    def _eval_subscript(self, node: ast.Subscript):
+        if is_tracing:
+            trace('_eval_subscript: %s', ast.dump(node))
+        container_node = node.value
+        if isinstance(container_node, ast.Name):
+            container = self._eval_get_name(container_node.id)
+            if container is Tco:
+                slice = self._eval_node(node.slice)
+                key = container_node.id + str(slice)
+                raw_key, val = self.resolve_raw(key)
+                trace('_eval_subscript: %s -> %s = %r', key, raw_key, val)
+                if val is None:
+                    raise KeyError(key)
+                return val
+        else:
+            container = self._eval_node(container_node)
+
+        slice = self._eval_node(node.slice)
+        r = container[slice]  # type: ignore[index]
+        trace('_eval_subscript: %r[%r] = %r', container, slice, r)
+        return r
 
     @overload
     def eval(
@@ -405,13 +435,13 @@ class ScopedContext:
                             key,
                             val,
                         )
-                    args = tuple(self._eval._eval(a) for a in node.args)
-                    kwargs = dict(self._eval._eval(k) for k in node.keywords)
+                    args = tuple(self._eval_node(a) for a in node.args)
+                    kwargs = dict(self._eval_node(k) for k in node.keywords)
                     return val, args, kwargs
 
         if is_tracing:
             trace('eval: ast: %s -> %s', expr, ast.dump(node))
 
-        val = self._eval.eval(expr, node)
+        val = self._eval_str(expr, node)
         trace('eval: %s -> %s', expr, val)
         return try_to_value(val)

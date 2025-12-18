@@ -1089,6 +1089,23 @@ fac = {
         ans = math.factorial(50)
         self.render_it(text, eq=str(ans))
 
+    def test_subscript(self):
+        text = r'''
+i = "1";
+a[i] = "7";
+a[i];
+a1;
+j = 6;
+a[j] = "42";
+a[j] ^ a[i];
+a[i];
+a[j];
+k = "7";
+a[k] = 11;
+"a[i] + a[j] + int(a[k][1])";
+'''
+        self.render_it(text, eq='7\n7\n42\n7\n50')
+
 
 if __name__ == '__main__':
     unittest.main()

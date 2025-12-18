@@ -852,6 +852,26 @@ class Engine(Interpreter, ContextCallbacks):
         assert isinstance(s, str), s
         return s
 
+    @overload
+    def _expr(
+        self,
+        tree: Tree,
+        *,
+        as_str: Literal[True],
+        permissive: bool = False,
+        allow_undef: bool = False,
+    ) -> str: ...
+
+    @overload
+    def _expr(
+        self,
+        tree: Tree,
+        *,
+        as_str: Literal[False] = False,
+        permissive: bool = False,
+        allow_undef: bool = False,
+    ) -> Value: ...
+
     def _expr(
         self,
         tree: Tree,
@@ -921,6 +941,10 @@ class Engine(Interpreter, ContextCallbacks):
                 with self._push():
                     self._run_block(inner)
                     return self._gather_output(self._output, as_str=as_str)
+
+            case 'subscript':
+                key = self._subscript(ch)
+                return self._scope.get(key, as_str=as_str, allow_undef=allow_undef)
 
             # Python expression: {"1 + 1"}
             # This should be non-mutating, i.e. side-effect free.
@@ -1025,19 +1049,37 @@ class Engine(Interpreter, ContextCallbacks):
         self._check_iden(key)
         return key
 
-    def _dyn_iden(self, tree: Tree | Token) -> str:
-        if isinstance(tree, Tree):
-            # Paren expression as dynamic identifier:
-            # {k=a; $(k)} means {$a}.
-            assert tree.data == 'expr'
-            key = self._expr(tree, permissive=True, as_str=True)
-            assert isinstance(key, str), key
-            key = key.strip()
-        else:
-            key = tree.value.strip()
-
+    def _expr_iden(self, tree: Tree) -> str:
+        # Paren expression as dynamic identifier:
+        # {k=a; $(k)} means {$a}.
+        assert tree.data == 'expr', tree
+        key = self._expr(tree, permissive=True, as_str=True).strip()
         self._check_iden(key)
         return key
+
+    def _dyn_iden(self, tree: Tree | Token) -> str:
+        if isinstance(tree, Tree):
+            return self._expr_iden(tree)
+
+        key = tree.value.strip()
+        self._check_iden(key)
+        return key
+
+    def _subscript(self, tree: Tree) -> str:
+        assert tree.data == 'subscript', tree
+        key = self._dyn_iden(tree.children[0])
+        val = self._expr(tree.children[1], permissive=True, as_str=True)
+        assert isinstance(val, str), val
+        key = key.strip() + val.strip()
+        self._check_iden(key)
+        return key
+
+    def _lvalue(self, tree: Tree | Token) -> str:
+        if isinstance(tree, Tree):
+            if tree.data == 'expr':
+                return self._expr_iden(tree)
+            return self._subscript(tree)
+        return self._iden(tree)
 
     def _get_by_raw_key(
         self, key: str, *, as_str: bool = False, allow_undef: bool = False
@@ -1214,7 +1256,7 @@ class Engine(Interpreter, ContextCallbacks):
     # - Otherwise, they check whether all the assigned vars equal the final value, and return '1' or '0'.
     # But in both cases, the ASSIGN_OP besides the first one must be '='.
     def _resolve_aoe_chain(self, tree: Tree) -> tuple[Sequence[str], str, Tree | None]:
-        keys = [self._dyn_iden(tree.children[0])]
+        keys = [self._lvalue(tree.children[0])]
         op = narrow(tree.children[1], Token).value
         val = None
 
@@ -1225,7 +1267,7 @@ class Engine(Interpreter, ContextCallbacks):
             if not (isinstance(tree, Tree) and tree.data == 'assign_or_equal'):
                 val = rest
                 break
-            keys.append(self._dyn_iden(tree.children[0]))
+            keys.append(self._lvalue(tree.children[0]))
             if narrow(tree.children[1], Token).value != '=':
                 self._error('bad assign op in chain: ' + op)
 
@@ -1322,8 +1364,8 @@ class Engine(Interpreter, ContextCallbacks):
     # Context swap: {key1^key2}
     # To be "atomic", This allows modifying vars in outer scopes.
     def swap(self, tree: Tree):
-        key1 = self._dyn_iden(tree.children[0])
-        key2 = self._dyn_iden(tree.children[1])
+        key1 = self._lvalue(tree.children[0])
+        key2 = self._lvalue(tree.children[1])
         key1, val1 = self._scope.resolve_raw(key1)
         key2, val2 = self._scope.resolve_raw(key2)
         self._scope.set_or_del_raw(key1, val2)
