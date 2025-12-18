@@ -1059,7 +1059,7 @@ class Engine(Interpreter, ContextCallbacks):
         key = self._lvalue(tree.children[0])
         val = self._expr(tree.children[1], permissive=True, as_str=True)
         assert isinstance(val, str), val
-        key = key.strip() + val.strip()
+        key = key.strip() + '.' + val.strip()
         self._check_iden(key)
         return key
 

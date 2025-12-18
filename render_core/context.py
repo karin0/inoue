@@ -392,7 +392,7 @@ class ScopedContext:
             container = self._eval_get_name(container_node.id)
             if container is Tco:
                 slice = self._eval_node(node.slice)
-                key = container_node.id + str(slice)
+                key = container_node.id + '.' + str(slice)
                 raw_key, val = self.resolve_raw(key)
                 trace('_eval_subscript: %s -> %s = %r', key, raw_key, val)
                 if val is None:
