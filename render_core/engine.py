@@ -506,7 +506,7 @@ class Engine(Interpreter, ContextCallbacks):
     # Create a boxed sub-doc value from `block_inner`, and store it in the current
     # scope if uncaptured.
     def _sub_doc(
-        self, tree: Tree, sub_doc_token: str | None, *, captured: bool = False
+        self, tree: Tree, sub_doc_token: str, *, captured: bool = False
     ) -> SubDoc:
         if sub_doc_token:
             if captured:
@@ -1113,8 +1113,30 @@ class Engine(Interpreter, ContextCallbacks):
         op = narrow(tree.children[0], Token).value
         name = tree.children[1]
 
-        # `allow_undef` does affect nested expressions in dynamic identifiers.
+        if isinstance(name, Tree) and name.data == 'code_block':
+            if op != '*':
+                self._error('block after non-ref operator: ' + op)
+                return ''
+
+            inner, sub_doc_token = self._scan_code_block(name)
+            if sub_doc_token is None:
+                self._error('non-sub-doc block after * operator')
+                return ''
+
+            # Render the immediate sub-doc and capture the result, like in
+            # `self._doc_ref()`, but without name resolution.
+            # A captured sub-doc definition should not cause any side-effects
+            # (storing into scope), so we skip the `self._sub_doc()` call.
+            if allow_tco:
+                return self._set_tco(inner)
+
+            with self._push():
+                self._run_block(inner)
+                return self._gather_output(self._output, trim=True, as_str=as_str)
+
+        # `allow_undef` does not affect nested expressions in dynamic identifiers.
         key = self._lvalue(name)
+        trace('_unary: op=%r key=%r', op, key)
 
         match op:
             # Flag set: {+name} or {-name}
@@ -1219,7 +1241,9 @@ class Engine(Interpreter, ContextCallbacks):
             for i in range(len(args), len(params)):
                 kwargs.setdefault(params[i], '')
             if len(args) > len(params):
-                self._error(f'box takes at most {len(params)} args, got {len(args)}')
+                self._error(
+                    f'box takes at most {len(params)} args {params}, got {len(args)}'
+                )
         else:
             for i, arg in enumerate(args):
                 kwargs.setdefault(str(i), arg)

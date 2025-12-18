@@ -156,12 +156,27 @@ class TestRender(unittest.TestCase):
             self.render_it('d=10; +a+b+c;\n:doc; :doc; :doc; *doc;'), '11110' * 4
         )
 
-        self.assertEqual(
-            self.render_it(
-                'a=1; a; @{a; a=7; $a; a=::a; a; c=@q {a; a=3; a; $a; ::a; }; c; a; }; a;'
-            ),
-            '1171133111',
-        )
+        self.render_it('a=1; a; @{a; a=7; $a; a=::a; a; c=@q {a; a=3; a; $a; ::a; }; c; a; }; a;' ,eq='1171133111')
+        text = '''
+.a = "3";
+.b = "2";
+* @ { a, b ↦
+    "a+b"
+};
+* @ { named ↦
+    "a*b"
+}; .a; .b;
+named ? ERR;
+* @ { ↦
+    "a*b-a";
+    a;
+    b;
+};
+'''
+        self.render_it(text, eq='5\n632\n332')
+        self.render_it('+{};', e='non-ref')
+        self.render_it('*{};', e='non-sub-doc')
+
 
     def test_compare(self):
         ctx = {'status': '200'}
