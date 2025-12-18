@@ -10,20 +10,20 @@ code_block: [scope] "{" block_inner "}"
 block_inner: [scope ";"] ((doc_def | doc_ref) (";" doc_ref)*)? stmt_list
 
 // Statements, or statement-like modifiers.
-scope: "@" [dyn_iden]
+scope: "@" [lvalue]
 !doc_def: [iden] (":" | "↦")
 doc_ref: ":" iden
 
-?stmt_list: stmt? (";" stmt_list)?
+?stmt_list: stmt? (";" stmt?)*
 
 ?stmt: swap
      | repl
      | expr
      | branch
 
-// Variable names can be dynamically evaluated, except in 'expr' (permissive)
-// and 'repl'.
-?dyn_iden: iden | paren
+// Variable names can be dynamically evaluated, except in 'expr' (where paren
+// works as nested expr) and 'repl'.
+?lvalue: iden | subscript | paren
 
 // Other statements
 
@@ -42,16 +42,19 @@ repl: iden ("|" repl_pair)+
 repl_pair: [expr] "/" [expr]
 
 // Expressions.
+// 'lvalue' has different semantics inside 'expr'.
+// A 'iden' here is treated as either a identifier or literal, but distinguishing
+// them here breaks lexing, since we want to allow whitespaces inside naked literals.
+// A 'paren' (i.e. nested 'expr') just replaces the outer one.
+// The only dymamic name resolution allowed here is 'subscript'.
 !expr: literal
      | unary_chain
      | code_block
      | compare
      | assign_or_equal
-     | paren
-     | subscript
+     | lvalue
 
-subscript: dyn_iden "[" expr "]"
-?lvalue: dyn_iden | subscript
+subscript: lvalue "[" expr "]"
 
 // Parentheses cannot be empty. Use '' for a empty value.
 ?paren: "(" expr ")"
@@ -65,7 +68,7 @@ ASSIGN_OP: "=" | ":=" | "?="
 // Not arithmetic operators!
 UNARY_OP: "+" | "-" | "*" | "$" | "::"
 
-!unary: UNARY_OP dyn_iden
+!unary: UNARY_OP lvalue
 !unary_chain: unary+
 
 // Even more equality! Expressions cannot be empty here either.
@@ -73,12 +76,8 @@ compare: expr _EQUAL expr
 
 // Higher than ASSIGN_OP.
 _EQUAL.10: "=="
-
-// A 'naked_lit' is actually either a identifier or literal, but distinguishing
-// them here breaks lexing, since we want to allow whitespaces inside naked literals.
 ?literal: ESCAPED_STRING  -> dq_lit
         | SQ_STRING       -> sq_lit
-        | iden            -> naked_lit
 
 ?iden: LITERAL
 

@@ -640,7 +640,7 @@ class Engine(Interpreter, ContextCallbacks):
             assert scope.data == 'scope'
             if (scope := scope.children[0]) is None:
                 return ''
-            return self._dyn_iden(scope)
+            return self._lvalue(scope)
 
     # Enforce context in the inner scope.
     def _block_inner_set_env(self, env: dict[str, Any] | None = None):
@@ -685,23 +685,17 @@ class Engine(Interpreter, ContextCallbacks):
     def stmt_list(
         self, tree: Tree, *, direct_branch: bool = False, allow_tco: bool = False
     ) -> MaybeTCO:
-        # Flatten right-recursion with a trampoline.
-        todo = []
-        while tree.children:
-            for stmt in tree.children:
-                stmt = narrow(stmt, Tree)
-                if stmt.data == 'stmt_list':
-                    tree = stmt
-                    break
-                todo.append(stmt)
-            else:
-                break
+        if not tree.children:
+            return
 
-        if todo:
-            last = todo.pop()
-            for stmt in todo:
-                self.visit(stmt, direct_branch=direct_branch)
-            return self.visit(last, direct_branch=direct_branch, allow_tco=allow_tco)
+        if allow_tco:
+            for stmt in tree.children[:-1]:
+                self.visit(narrow(stmt, Tree), direct_branch=direct_branch)
+            last = narrow(tree.children[-1], Tree)
+            return self.visit(last, direct_branch=direct_branch, allow_tco=True)
+        else:
+            for stmt in tree.children:
+                self.visit(narrow(stmt, Tree), direct_branch=direct_branch)
 
     @staticmethod
     def _is_empty_stmt(tree: Tree) -> bool:
@@ -903,12 +897,25 @@ class Engine(Interpreter, ContextCallbacks):
         self._consume_gas()
 
         assert len(tree.children) == 1
-        ch = narrow(tree.children[0], Tree)
-        while ch.data == 'expr':
-            # Flatten nested expressions: {( ( ... ) )}
-            permissive = True
-            assert len(ch.children) == 1
-            ch = narrow(ch.children[0], Tree)
+        ch = tree.children[0]
+        while True:
+            if isinstance(ch, Tree):
+                if ch.data == 'expr':
+                    # Flatten nested expressions: {( ( ... ) )}
+                    permissive = True
+                    assert len(ch.children) == 1
+                    ch = ch.children[0]
+                    continue
+                break
+
+            # Ambiguous naked literal / var: {some_name}
+            # Treated as var only if `permissive` is True and contains no whitespace.
+            return self._naked_lit(
+                ch,
+                as_str=as_str,
+                permissive=permissive,
+                allow_undef=allow_undef,
+            )
 
         match ch.data:
             case 'unary_chain':
@@ -960,28 +967,18 @@ class Engine(Interpreter, ContextCallbacks):
                     .replace('\\\\', '\\')
                 )
 
-            # Ambiguous naked literal / var: {some_name}
-            # Treated as var only if `permissive` is True and contains no whitespace.
-            case 'naked_lit':
-                return self._naked_lit(
-                    ch,
-                    as_str=as_str,
-                    permissive=permissive,
-                    allow_undef=allow_undef,
-                )
-
             case _:
                 raise ValueError(f'Bad expr: {tree.pretty()}')
 
     def _naked_lit(
         self,
-        tree: Tree,
+        token: Token,
         *,
         as_str: bool = False,
         permissive: bool = False,
         allow_undef: bool = False,
     ) -> Value:
-        key = narrow(tree.children[0], Token).value.strip()
+        key = token.value.strip()
         if permissive and self._check_iden(key):
             return self._scope.get(key, as_str=as_str, allow_undef=allow_undef)
         return key
@@ -1057,17 +1054,9 @@ class Engine(Interpreter, ContextCallbacks):
         self._check_iden(key)
         return key
 
-    def _dyn_iden(self, tree: Tree | Token) -> str:
-        if isinstance(tree, Tree):
-            return self._expr_iden(tree)
-
-        key = tree.value.strip()
-        self._check_iden(key)
-        return key
-
     def _subscript(self, tree: Tree) -> str:
         assert tree.data == 'subscript', tree
-        key = self._dyn_iden(tree.children[0])
+        key = self._lvalue(tree.children[0])
         val = self._expr(tree.children[1], permissive=True, as_str=True)
         assert isinstance(val, str), val
         key = key.strip() + val.strip()
@@ -1125,7 +1114,7 @@ class Engine(Interpreter, ContextCallbacks):
         name = tree.children[1]
 
         # `allow_undef` does affect nested expressions in dynamic identifiers.
-        key = self._dyn_iden(name)
+        key = self._lvalue(name)
 
         match op:
             # Flag set: {+name} or {-name}
