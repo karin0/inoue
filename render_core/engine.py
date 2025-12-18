@@ -593,7 +593,7 @@ class Engine(Interpreter, ContextCallbacks):
         Maybe we can think of it as a "first-class macro" with runtime evaluation.
         '''
 
-        # Trampoline for TCO.
+        # Trampoline for TCO, a.k.a. blockchain!
         ref_scope = None
         while True:
             if (scope_name := self._block_inner_resolve_scope(tree)) is not None:
@@ -818,16 +818,23 @@ class Engine(Interpreter, ContextCallbacks):
                     return self._assign(inner)
                 case 'unary_chain':
                     # Optimize: flatten the unary chain directly to output, without capturing.
-                    return self._unary_chain(
-                        inner, put=self._put_val, allow_tco=allow_tco
-                    )
+                    tree = inner
+                    self._trace(tree, allow_tco=allow_tco)
+                    assert tree.children, tree
+                    for ch in tree.children[:-1]:
+                        val = self._unary(narrow(ch, Tree))
+                        trace('unary_chain: %r', val)
+                        self._put_val(val)
+
+                    last = narrow(tree.children[-1], Tree)
+                    val = self._unary(last, allow_tco=allow_tco)
+                    return self._put_val(val)
                 case 'code_block':
                     # Optimize: skip `self._push()` for direct output.
                     inner, sub_doc_token = self._scan_code_block(inner)
                     if sub_doc_token is None:
                         if allow_tco:
-                            self._set_tco(inner)
-                            return Tco
+                            return self._set_tco(inner)
                         return self._run_block(inner)
                     return self._put_val(self._sub_doc(inner, sub_doc_token))
                 case 'dq_lit':
@@ -885,13 +892,14 @@ class Engine(Interpreter, ContextCallbacks):
 
         match ch.data:
             case 'unary_chain':
+                tree = ch
+                assert tree.children, tree
                 out = []
-
-                def put(val: Value):
+                for ch in tree.children:
+                    val = self._unary(narrow(ch, Tree), allow_undef=allow_undef)
+                    trace('unary_chain (captured): %r', val)
                     if val != '':
                         out.append(val)
-
-                self._unary_chain(ch, put=put, allow_undef=allow_undef)
                 return self._gather_output(out, as_str=as_str)
 
             case 'assign_or_equal':
@@ -995,8 +1003,7 @@ class Engine(Interpreter, ContextCallbacks):
         if isinstance(val, tuple):
             assert allow_tco
             sub_doc: SubDoc = val[0]
-            self._set_tco(sub_doc.tree, self._create_block_env(*val))
-            return Tco
+            return self._set_tco(sub_doc.tree, self._create_block_env(*val))
 
         # Not necessarily str!
         return to_str(val) if as_str else val
@@ -1032,25 +1039,6 @@ class Engine(Interpreter, ContextCallbacks):
         self._check_iden(key)
         return key
 
-    def _unary_chain(
-        self,
-        tree: Tree,
-        *,
-        put: Callable[[Value], Any],
-        allow_undef: bool = False,
-        allow_tco: bool = False,
-    ) -> MaybeTCO:
-        self._trace(tree, allow_tco=allow_tco)
-        assert tree.children, tree
-        last = len(tree.children) - 1
-        for i, ch in enumerate(tree.children):
-            tco = allow_tco and i == last
-            val = self._unary(narrow(ch, Tree), allow_undef=allow_undef, allow_tco=tco)
-            trace('Unary value: %r', val)
-            if val is Tco:
-                return val
-            put(val)
-
     def _get_by_raw_key(
         self, key: str, *, as_str: bool = False, allow_undef: bool = False
     ) -> Value:
@@ -1061,6 +1049,26 @@ class Engine(Interpreter, ContextCallbacks):
                 self._error('undefined: ' + key)
             return ''
         return to_str(val) if as_str else val
+
+    @overload
+    def _unary(
+        self,
+        tree: Tree,
+        *,
+        as_str: bool = False,
+        allow_undef: bool = False,
+        allow_tco: Literal[False] = False,
+    ) -> Value: ...
+
+    @overload
+    def _unary(
+        self,
+        tree: Tree,
+        *,
+        as_str: bool = False,
+        allow_undef: bool = False,
+        allow_tco: Literal[True],
+    ) -> Value | TCO: ...
 
     def _unary(
         self,
@@ -1154,8 +1162,7 @@ class Engine(Interpreter, ContextCallbacks):
                     self.debug_node(tree),
                 )
             if allow_tco:
-                self._set_tco(tree)
-                return Tco
+                return self._set_tco(tree)
 
             with self._push():
                 self._run_block(tree)

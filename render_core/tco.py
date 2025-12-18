@@ -3,8 +3,8 @@ from typing import Any, Final, Literal
 from lark import Tree
 
 
-# TCO, but more like a signal to *break* from the block execution and "execve"
-# into another sub-doc.
+# TCO, but more like a signal to *break* from the current execution and "execve"
+# into another block.
 class _TCO(Enum):
     Tco = auto()
 
