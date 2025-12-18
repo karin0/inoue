@@ -254,7 +254,9 @@ class Engine(Interpreter, ContextCallbacks):
 
         # Entry of the syntax: '{ ... }', or '...;' in a single line.
         # Works like a simpler `_code_block` without scope modifier.
-        if self._scan_block(tree, root=root) is not None:
+        sub_doc_token = self._scan_block(tree, root=root)
+        if sub_doc_token is not None:
+            self._sub_doc(tree, sub_doc_token)
             return
 
         try:
@@ -339,12 +341,17 @@ class Engine(Interpreter, ContextCallbacks):
     MAX_DEBUG_DEPTH = 2 if is_not_quiet else 1
 
     @classmethod
-    def debug_node(cls, node: Tree | Token | None, *, depth: int = 0) -> str:
+    def debug_node(
+        cls, node: Tree | Token | tuple[Tree, str] | None, *, depth: int = 0
+    ) -> str:
         if node is None:
             return '/'
         if isinstance(node, Token):
             return f'{node.type}({node.value.strip()})'
-        assert isinstance(node, Tree)
+        if isinstance(node, tuple):
+            # Cached node from `_scan_code_block`.
+            return f'Cached({node[0].data}, {node[1]})'
+        assert isinstance(node, Tree), node
         nr = len(node.children)
         if nr > 1:
             if depth > cls.MAX_DEBUG_DEPTH:
@@ -463,34 +470,69 @@ class Engine(Interpreter, ContextCallbacks):
 
     # Nested block: {{ ... }}
     # With scope: {@name {...}} (name optional, defaults to '')
-    def _code_block(self, tree: Tree, *, captured: bool = False):
-        inner = narrow(tree.children[1], Tree)
-        assert inner.data == 'block_inner'
+    # This wraps `_scan_block()` for a `code_block` for runtime caching.
+    # To reduce stack usage, the caller is responsible for calling `_sub_doc()`
+    # or `_run_block()`, based on whether a sub-doc token is returned.
+    def _scan_code_block(
+        self, tree: Tree, *, captured: bool = False
+    ) -> tuple[Tree, str | None]:
+        inner = tree.children[1]
+        if isinstance(inner, Tree):
+            assert inner.data == 'block_inner'
 
-        if (scope := tree.children[0]) is not None:
-            scope = narrow(scope, Tree)
-            assert scope.data == 'scope'
-            if is_tracing:
-                trace('_code_block: scope: %s', self.debug_node(scope))
+            if (scope := tree.children[0]) is not None:
+                scope = narrow(scope, Tree)
+                assert scope.data == 'scope'
+                if is_tracing:
+                    trace('_code_block: scope: %s', self.debug_node(scope))
 
-            if inner.children[0] is not None:
-                assert inner.children[0].data == 'scope'
-                self._error('double scope')
+                if inner.children[0] is not None:
+                    assert inner.children[0].data == 'scope'
+                    self._error('double scope')
 
-            # Embed our own scope into the 'block_inner'.
-            # This need to be idempotent, since the tree is cached and may be reused.
-            inner.children[0] = scope
-            tree.children[0] = None
+                # Embed our own scope into the 'block_inner'.
+                # This need to be idempotent, since the tree is cached and may be reused.
+                inner.children[0] = scope
+                tree.children[0] = None
 
-        sub_doc = self._scan_block(inner, captured=captured)
-        if sub_doc is not None:
-            return self._put_val(Box(sub_doc))
+            sub_doc_token = self._scan_block(inner)
 
-        self._run_block(inner)
+            # Cache the scan result.
+            tree.children[1] = r = (inner, sub_doc_token)
+            return r
 
-    def _scan_block(
-        self, tree: Tree, *, captured: bool = False, root: bool = False
-    ) -> SubDoc | None:
+        if is_tracing:
+            trace('_code_block: cached: %s', inner[1])
+        return inner
+
+    # Create a boxed sub-doc value from `block_inner`, and store it in the current
+    # scope if uncaptured.
+    def _sub_doc(
+        self, tree: Tree, sub_doc_token: str | None, *, captured: bool = False
+    ) -> Value:
+        if sub_doc_token:
+            if captured:
+                args = tuple(r for s in sub_doc_token.split(',') if (r := s.strip()))
+                sub_doc = SubDoc(tree, args)
+                trace('Captured sub-doc: %s %s', sub_doc_token, sub_doc)
+            else:
+                key = sub_doc_token
+                self._check_iden(key)
+                sub_doc = SubDoc(tree, None)
+                trace('Uncaptured sub-doc: %s %s', key, sub_doc)
+                box = Box(sub_doc)
+                # Side-effect: the box is saved in the current scope.
+                self._scope.set(key, box, self._ctx.__setitem__)
+                return box
+        else:
+            sub_doc = SubDoc(tree, None)
+            if not captured:
+                self._error('unnamed sub-doc must be captured')
+
+        return Box(sub_doc)
+
+    # Returns name of the sub-doc.
+    def _scan_block(self, tree: Tree, *, root: bool = False) -> str | None:
         assert tree.data == 'block_inner', tree
         # Find any doc_def before entering statements to enable sub-docs.
         for i, ch in enumerate(tree.children):
@@ -511,25 +553,9 @@ class Engine(Interpreter, ContextCallbacks):
                 key = ch.children[0]
                 trace('doc_def: sub_doc: %s %s', key, op)
 
-                if key is not None:
-                    key = ch.children[0]
-                    if captured:
-                        key = narrow(key, Token).value.strip()
-                        args = tuple(r for s in key.split(',') if (r := s.strip()))
-                        sub_doc = SubDoc(tree, args)
-                        trace('Captured sub-doc: %s %s', key, sub_doc)
-                    else:
-                        key = self._iden(key)
-                        sub_doc = SubDoc(tree, None)
-                        trace('Uncaptured sub-doc: %s %s', key, sub_doc)
-                        self._scope.set(key, Box(sub_doc), self._ctx.__setitem__)
-                else:
-                    sub_doc = SubDoc(tree, None)
-                    if not captured:
-                        self._error('unnamed sub-doc must be captured')
-
-                # Skip evaluating the entire block!
-                return sub_doc
+                # The caller should skip evaluating the entire block (`_run_block`)
+                # in this branch.
+                return '' if key is None else narrow(key, Token).value.strip()
 
             # Doc name definition: {name:}
             key = ch.children[0]
@@ -799,8 +825,11 @@ class Engine(Interpreter, ContextCallbacks):
                         inner, put=self._put_val, allow_tco=allow_tco
                     )
                 case 'code_block':
-                    # Optimize: flatten the nested block.
-                    return self._code_block(inner)
+                    # Optimize: skip `self._push()` for direct output.
+                    inner, sub_doc_token = self._scan_code_block(inner)
+                    if sub_doc_token is None:
+                        return self._run_block(inner)
+                    return self._put_val(self._sub_doc(inner, sub_doc_token))
                 case 'dq_lit':
                     # Optimize: chance to TCO.
                     val = self._dq_lit(inner, allow_tco=allow_tco)
@@ -877,8 +906,12 @@ class Engine(Interpreter, ContextCallbacks):
 
             # Nested block: {{ ... }}
             case 'code_block':
+                inner, sub_doc_token = self._scan_code_block(ch)
+                if sub_doc_token is not None:
+                    return self._sub_doc(inner, sub_doc_token, captured=True)
+
                 with self._push():
-                    self._code_block(ch, captured=True)
+                    self._run_block(inner)
                     return self._gather_output(self._output, as_str=as_str)
 
             # Python expression: {"1 + 1"}
