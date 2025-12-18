@@ -25,7 +25,7 @@ from lark.exceptions import LarkError
 from db import db
 from util import log, notify, shorten
 
-from .lex import lex
+from .lex import lex, lex_errors
 from .context import (
     is_tracing,
     is_not_quiet,
@@ -40,7 +40,6 @@ from .context import (
     ScopedContext,
     ContextCallbacks,
 )
-from .lex import lex, lex_errors
 
 MAX_DEPTH = 20
 MAX_GAS = 2000
@@ -74,9 +73,20 @@ def parse_fragment(text: str) -> Tree:
 T = TypeVar('T', bound=Tree | Token)
 
 
-def narrow(x: Tree | Token, target_type: Type[T]) -> T:
-    assert isinstance(x, target_type), x
-    return cast(T, x)
+if is_tracing:
+
+    def narrow(  # pyright: ignore[reportRedeclaration]
+        x: Tree | Token, target_type: Type[T]
+    ) -> T:
+        assert isinstance(x, target_type), x
+        return cast(T, x)
+
+else:
+
+    def narrow(  # pyright: ignore[reportRedeclaration]
+        x: Tree | Token, target_type: Type[T]
+    ) -> T:
+        return cast(T, x)
 
 
 # Abort the entire rendering, until the "root" document.
@@ -180,6 +190,46 @@ class Engine(Interpreter, ContextCallbacks):
         else:
             self._dirty = True
             self._output.append(val)
+
+    @overload
+    def _gather_output(
+        self,
+        out: list[Value],
+        default: Literal[None],
+        *,
+        as_str: Literal[False] = False,
+        trim: bool = False,
+    ) -> Value | None: ...
+
+    @overload
+    def _gather_output(
+        self,
+        out: list[Value],
+        default: Literal[None],
+        *,
+        as_str: Literal[True],
+        trim: bool = False,
+    ) -> str | None: ...
+
+    @overload
+    def _gather_output(
+        self,
+        out: list[Value],
+        default: Value = '',
+        *,
+        as_str: Literal[False] = False,
+        trim: bool = False,
+    ) -> Value: ...
+
+    @overload
+    def _gather_output(
+        self,
+        out: list[Value],
+        default: Value = '',
+        *,
+        as_str: Literal[True],
+        trim: bool = False,
+    ) -> str: ...
 
     # The output implementation is responsible for filtering out any empty strings,
     # like in `_put` or `_unary_chain`.
@@ -740,7 +790,7 @@ class Engine(Interpreter, ContextCallbacks):
         self,
         tree: Tree,
         *,
-        direct_branch: Literal[False] = False,
+        direct_branch: bool = False,
         allow_tco: Literal[False] = False,
     ) -> None: ...
 
@@ -968,7 +1018,7 @@ class Engine(Interpreter, ContextCallbacks):
         self,
         tree: Tree,
         *,
-        put: Callable[[Value], None],
+        put: Callable[[Value], Any],
         allow_undef: bool = False,
         allow_tco: bool = False,
     ) -> MaybeTCO:
@@ -1089,19 +1139,18 @@ class Engine(Interpreter, ContextCallbacks):
                 self._set_tco(sub_doc)
                 return Tco
 
-        else:
-            sub_doc = None
-            doc_id, doc = self._get_doc(key)
-            trace('_doc_ref: Rendering doc: %s %s', key, doc_id)
-            if self.first_doc_id is None:
-                trace('first_doc_id: %s', doc_id)
-                self.first_doc_id = doc_id
+            with self._push():
+                self._run_block(sub_doc.tree)
+                return self._gather_output(self._output, trim=True)
+
+        doc_id, doc = self._get_doc(key)
+        trace('_doc_ref: Rendering doc: %s %s', key, doc_id)
+        if self.first_doc_id is None:
+            trace('first_doc_id: %s', doc_id)
+            self.first_doc_id = doc_id
 
         with self._push():
-            if sub_doc is None:
-                self._render(doc)
-            else:
-                self._run_block(sub_doc.tree)
+            self._render(doc)
             return self._gather_output(self._output, trim=True)
 
     def _create_block_env(

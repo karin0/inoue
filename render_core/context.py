@@ -283,9 +283,9 @@ class ScopedContext:
         self._data = ctx
         self._cb = callbacks
         funcs.setdefault('prefix', self._prefix_func)
-        funcs: EvalFunctions = EvalFunctions(funcs, self)
-        self._eval = SimpleEval(functions=funcs, names=self)
-        self._funcs = funcs.data
+        funcs_ = EvalFunctions(funcs, self)
+        self._eval = SimpleEval(functions=funcs_, names=self)
+        self._funcs = funcs_.data
 
     def push(self, name: str):
         new = self._scopes[-1] + name + '.'
@@ -301,9 +301,6 @@ class ScopedContext:
         last = self._scopes.pop()
         trace('Leaving scope: %s', last)
         return last
-
-    def _prefix_func(self) -> str:
-        return self._scopes[-1]
 
     def resolve_raw(
         self, name: str, default: Value | None = None, as_str: bool = False
@@ -332,6 +329,9 @@ class ScopedContext:
         _, val = self.resolve_raw(name, '', as_str=as_str)
         assert val is not None
         return val
+
+    def _prefix_func(self) -> str:
+        return self._scopes[-1]
 
     def current(self) -> str:
         return self._scopes[-1]
