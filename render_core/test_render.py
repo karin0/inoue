@@ -27,6 +27,8 @@ if os.environ.get('TEST_TRACE') == '1':
 else:
     log_effect = lambda *_: None
 
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from render_core import Value, Engine
 from render_core.context import persisted
 

@@ -6,7 +6,7 @@ import functools
 
 from datetime import datetime
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Literal, TypeGuard, overload
+from typing import Any, Callable, Literal, TypeGuard, Mapping, overload
 from collections import UserDict, OrderedDict
 from collections.abc import ItemsView, MutableMapping
 
@@ -130,7 +130,7 @@ def get_pm_key(key: str) -> str | None:
 
 
 class OverriddenDict(UserDict):
-    def __init__(self, data: dict[str, Value], overrides: dict[str, Value]):
+    def __init__(self, data: Mapping[str, Value], overrides: dict[str, Value]):
         for val in data.values():
             if not is_value_type(val):
                 raise TypeError(f'bad data value type: {type(val)}: {val}')
