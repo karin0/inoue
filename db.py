@@ -1,3 +1,4 @@
+import os
 import atexit
 import logging
 from sqlite3 import connect, Connection
@@ -7,9 +8,14 @@ from context import is_guest, ME_LOWER
 log = logging.getLogger(ME_LOWER + '.db')
 
 
+ALLOWED_GUEST_DOC_PREFIXES = tuple(r for s in os.environ.get(
+    'ALLOWED_GUEST_DOC_PREFIXES', ''
+).split(',') if (r := s.strip()))
+
+
 class DataStore:
     def __init__(self):
-        self.conn: Connection | None = None
+        self.conn: Connection = None
 
     def connect(self, file: str):
         assert self.conn is None
@@ -54,8 +60,10 @@ class DataStore:
 
     def get_doc(self, name: str) -> tuple[int, str] | None:
         if is_guest():
-            if name.startswith('doc'):
-                log.info('get_doc: allowed guest access to doc: %s', name)
+            for prefix in ALLOWED_GUEST_DOC_PREFIXES:
+                if name.startswith(prefix):
+                    log.info('get_doc: allowed guest access to doc: %s', name)
+                    break
             else:
                 log.info('get_doc: disallowed guest access to doc: %s', name)
                 return None

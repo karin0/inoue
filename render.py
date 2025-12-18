@@ -32,11 +32,12 @@ from util import (
     encode_chat_id,
 )
 from db import db
+from render_sys import Syscall
 from render_core import Engine, Value
 
 # '/' is kept for compatibility, which was used for '-'.
 CALLBACK_SIGNS = '-+/'
-ALL_CALLBACK_SIGNS = frozenset('-+/:#`')
+ALL_CALLBACK_SIGNS = frozenset('-+/:#`@')
 
 SPECIAL_FLAG_ICONS = {
     '_pre': '📋',
@@ -44,11 +45,42 @@ SPECIAL_FLAG_ICONS = {
 }
 
 
+def is_safe_key(key: str) -> bool:
+    return all(c not in ALL_CALLBACK_SIGNS for c in key)
+
+
 def encode_flags(flags: dict[str, bool]) -> str:
     return ''.join((CALLBACK_SIGNS[v] + k) for k, v in flags.items())
 
 
 CTX_ENV_PREFIX = '_env.'
+MEMORY_KEY = 'mem'
+MEMORY_KEY_RAW = '_mem'
+
+
+def encode_type(val: Value) -> str:
+    if isinstance(val, bool):
+        return '@b' + '01'[val]
+    if isinstance(val, int):
+        return ('@i' + str(val)) if val >= 0 else ('@I' + str(-val))
+    if isinstance(val, float):
+        return ('@f' + str(val)) if val >= 0 else ('@F' + str(-val))
+    return '@s' + str(val)
+
+
+def decode_type(val: str, typ: str) -> Value:
+    match typ:
+        case 'b':
+            return val == '1'
+        case 'i':
+            return int(val)
+        case 'I':
+            return -int(val)
+        case 'f':
+            return float(val)
+        case 'F':
+            return -float(val)
+    return val
 
 
 def get_ctx(
@@ -73,11 +105,11 @@ def get_ctx_flag(
 
 def make_markup(
     path: str | None, ctx: Engine | Mapping[str, Value], state: dict[str, bool] | None
-) -> InlineKeyboardMarkup | None:
+) -> tuple[InlineKeyboardMarkup, str | None] | None:
     if not path:
         return None
 
-    # query data: ('-'|'+' <flag-key>)* <path-header: ':'|'#'|'`'> <path-body>
+    # query data: ('-'|'+' <flag-key>)* ['@' <memory>] <path-header: ':'|'#'|'`'> <path-body>
     # where '-' means 0, '+' means 1
 
     size = len(path.encode('utf-8'))
@@ -87,9 +119,18 @@ def make_markup(
     if size > InlineKeyboardButton.MAX_CALLBACK_DATA:
         return None
 
+    memory = ''
+    if (val := get_ctx(ctx, MEMORY_KEY)) is not None and is_safe_key(
+        payload := encode_type(val)
+    ):
+        delta = len(payload.encode('utf-8'))
+        if size + delta <= InlineKeyboardButton.MAX_CALLBACK_DATA:
+            memory = payload
+            size += delta
+
     flags = {}
     for k, v in ctx.items():
-        if k.startswith(CTX_ENV_PREFIX):
+        if k.startswith(CTX_ENV_PREFIX) or k == MEMORY_KEY_RAW or not is_safe_key(k):
             continue
 
         if v == '0' or v == 0:  # This covers `False` as well.
@@ -102,14 +143,22 @@ def make_markup(
         if size + len(k.encode('utf-8')) + 1 <= InlineKeyboardButton.MAX_CALLBACK_DATA:
             flags[k] = v
 
-    log.debug('make_markup: flags %s state %s', flags, state)
+    log.debug('make_markup: flags %s state %s memory %r', flags, state, memory)
 
     # The external state takes precedence even over `ctx.overrides`.
     if state:
         flags.update(state)
 
-    if (doc_id := ctx.first_doc_id) is None and not flags:
+    has_state = state or memory
+
+    doc_id = ctx.first_doc_id
+    if doc_id is not None and not get_ctx_flag(ctx, 'ref', True):
+        doc_id = None
+
+    if doc_id is None and not has_state:
         return None
+
+    may_have_state = has_state or flags
 
     row = [
         InlineKeyboardButton(
@@ -117,12 +166,13 @@ def make_markup(
         )
     ]
 
-    if flags:
+    ret = None
+    if may_have_state:
         if state is None:
             state = {}
 
         def push_button(name: str):
-            data = encode_flags(state) + path
+            data = encode_flags(state) + memory + path
             row.append(InlineKeyboardButton(name, callback_data=data))
 
         hide_flags = get_ctx_flag(ctx, 'hide_flags')
@@ -157,8 +207,9 @@ def make_markup(
                 del state[k]
 
         log.debug('make_markup: final state %s', state)
-        if state:
-            push_button('🔄')
+        if has_state:
+            ret = encode_flags(state) + memory
+            row.append(InlineKeyboardButton('🔄', callback_data=ret + path))
 
     if doc_id:
         row.append(InlineKeyboardButton('🔗', get_msg_url(doc_id)))
@@ -172,7 +223,7 @@ def make_markup(
     # Group 5 buttons per row
     rows = [row[i : i + row_limit] for i in range(0, len(row), row_limit)]
 
-    return InlineKeyboardMarkup(rows)
+    return InlineKeyboardMarkup(rows), ret
 
 
 reg_cleanup = re.compile(r'\n{3,}')
@@ -190,6 +241,10 @@ def rendered_response(
 
     result = truncate_text(result)
     parse_mode = None
+    if ret := make_markup(path, ctx, flags):
+        markup, current_state = ret
+    else:
+        markup = current_state = None
 
     if get_ctx_flag(ctx, 'cleanup', True):
         result = reg_cleanup.sub('\n\n', result)
@@ -210,8 +265,8 @@ def rendered_response(
                 do_escape = escape
 
         if parse_mode:
-            if flags:
-                suffix = do_escape(encode_flags(flags))
+            if current_state:
+                suffix = do_escape(current_state)
                 if len(result) + len(suffix) <= MAX_TEXT_LENGTH:
                     result += suffix
 
@@ -222,10 +277,15 @@ def rendered_response(
                 if len(result) + len(suffix) <= MAX_TEXT_LENGTH:
                     result += suffix
 
-    return result, parse_mode, make_markup(path, ctx, flags)
+    return result, parse_mode, markup
 
 
-ENGINE_FUNCS = {'escape': escape, 'html_escape': html_escape}
+ENGINE_FUNCS = {
+    k: v
+    for k in dir(Syscall)
+    if not k.startswith('_') and callable(v := getattr(Syscall, k))
+}
+ENGINE_FUNCS.update({'escape': escape, 'html_escape': html_escape})
 
 
 def create_engine(
@@ -233,6 +293,7 @@ def create_engine(
     flags: dict[str, bool] | None = None,
     *,
     doc_id: int | None = None,
+    memory: str | None = None,
 ) -> Engine:
     overrides: dict[str, Value] = dict(flags) if flags is not None else {}
     source = None
@@ -249,7 +310,23 @@ def create_engine(
     if msg := update.effective_message:
         overrides['_msg_id'] = str(msg.message_id)
     log.debug('create_engine: overrides %s', overrides)
-    return Engine(overrides=overrides, funcs=ENGINE_FUNCS, doc_id=doc_id)
+
+    # Attribute access should be forbidden in `simpleeval`, so `os` is safe.
+    data: dict[str, Value] = {'os': Syscall}
+    if memory is not None:
+        data[MEMORY_KEY_RAW] = decode_type(memory[1:], memory[0])
+
+    return Engine(data, overrides=overrides, funcs=ENGINE_FUNCS, doc_id=doc_id)
+
+
+def render_with(text: str, ctx: Engine) -> str:
+    r = ctx.render(text)
+    if Syscall._secret in r:
+        raise ValueError(
+            'dangerous output: %s',
+            r.replace(Syscall._secret, '****'),
+        )
+    return r
 
 
 def render_text(
@@ -258,7 +335,7 @@ def render_text(
     flags: dict[str, bool] | None = None,
     path: str | None = None,
 ) -> tuple[str, str | None, InlineKeyboardMarkup | None]:
-    result = ctx.render(text)
+    result = render_with(text, ctx)
     log.info('rendered %d -> %d', len(text), len(result))
 
     if path is None and len(text) + 2 < InlineKeyboardButton.MAX_CALLBACK_DATA:
@@ -328,6 +405,15 @@ async def handle_render_callback(
             j += 1
         flags[data[i:j]] = sign == true
 
+    if sign == '@':
+        j = i = i + 1
+        while i < len(data) and data[i] not in ALL_CALLBACK_SIGNS:
+            i += 1
+        memory = data[j:i]
+        log.debug('handle_render_callback: memory %r', memory)
+    else:
+        memory = None
+
     if len(path := data[i:]) <= 2:
         raise ValueError('bad path in render callback: ' + data)
 
@@ -353,7 +439,7 @@ async def handle_render_callback(
         case _:
             raise ValueError('bad render callback: ' + data)
 
-    engine = create_engine(update, flags, doc_id=doc_id)
+    engine = create_engine(update, flags, doc_id=doc_id, memory=memory)
     result, parse_mode, markup = render_text(engine, data, flags, path)
 
     query = update.callback_query
@@ -414,7 +500,7 @@ async def handle_render_doc(update: Update, msg: Message):
 
     id = msg.message_id
     ctx = create_engine(update, doc_id=id)
-    rendered = ctx.render(text)
+    rendered = render_with(text, ctx)
 
     info = []
     if name := ctx.doc_name:
