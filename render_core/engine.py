@@ -98,14 +98,14 @@ class Exit(Abort):
     pass
 
 
-class SubDoc:
-    def __init__(self, tree: Tree, args: tuple[str, ...] | None):
+class SubDoc(Box):
+    def __init__(self, tree: Tree, params: tuple[str, ...] | None):
         self.tree = tree
-        self.args = args
+        self.params = params
 
+    @override
     def __repr__(self) -> str:
-        tree = Engine.debug_node(self.tree)
-        return f'{{{self.args} ↦ {tree}}}'
+        return f'{{{self.params} ↦ {Engine.debug_node(self.tree)}}}'
 
 
 class Engine(Interpreter, ContextCallbacks):
@@ -473,9 +473,7 @@ class Engine(Interpreter, ContextCallbacks):
     # This wraps `_scan_block()` for a `code_block` for runtime caching.
     # To reduce stack usage, the caller is responsible for calling `_sub_doc()`
     # or `_run_block()`, based on whether a sub-doc token is returned.
-    def _scan_code_block(
-        self, tree: Tree, *, captured: bool = False
-    ) -> tuple[Tree, str | None]:
+    def _scan_code_block(self, tree: Tree) -> tuple[Tree, str | None]:
         inner = tree.children[1]
         if isinstance(inner, Tree):
             assert inner.data == 'block_inner'
@@ -509,27 +507,25 @@ class Engine(Interpreter, ContextCallbacks):
     # scope if uncaptured.
     def _sub_doc(
         self, tree: Tree, sub_doc_token: str | None, *, captured: bool = False
-    ) -> Value:
+    ) -> SubDoc:
         if sub_doc_token:
             if captured:
-                args = tuple(r for s in sub_doc_token.split(',') if (r := s.strip()))
-                sub_doc = SubDoc(tree, args)
+                params = tuple(r for s in sub_doc_token.split(',') if (r := s.strip()))
+                sub_doc = SubDoc(tree, params)
                 trace('Captured sub-doc: %s %s', sub_doc_token, sub_doc)
-            else:
-                key = sub_doc_token
-                self._check_iden(key)
-                sub_doc = SubDoc(tree, None)
-                trace('Uncaptured sub-doc: %s %s', key, sub_doc)
-                box = Box(sub_doc)
-                # Side-effect: the box is saved in the current scope.
-                self._scope.set(key, box, self._ctx.__setitem__)
-                return box
-        else:
-            sub_doc = SubDoc(tree, None)
-            if not captured:
-                self._error('unnamed sub-doc must be captured')
+                return sub_doc
 
-        return Box(sub_doc)
+            key = sub_doc_token
+            self._check_iden(key)
+            sub_doc = SubDoc(tree, None)
+            trace('Uncaptured sub-doc: %s %s', key, sub_doc)
+            # Side-effect: the box is saved in the current scope.
+            self._scope.set(key, sub_doc, self._ctx.__setitem__)
+            return sub_doc
+
+        if not captured:
+            self._error('unnamed sub-doc must be captured')
+        return SubDoc(tree, None)
 
     # Returns name of the sub-doc.
     def _scan_block(self, tree: Tree, *, root: bool = False) -> str | None:
@@ -578,9 +574,10 @@ class Engine(Interpreter, ContextCallbacks):
 
             return
 
-    def _set_tco(self, sub_doc: SubDoc, env: dict[str, Any] | None = None):
+    def _set_tco(self, tree: Tree, env: dict[str, Any] | None = None) -> TCO:
         assert self._tco is None
-        self._tco = (sub_doc.tree, self._scope.current(), env)
+        self._tco = (tree, self._scope.current(), env)
+        return Tco
 
     def _run_block(self, tree: Tree, *, env: dict[str, Any] | None = None):
         '''
@@ -828,6 +825,9 @@ class Engine(Interpreter, ContextCallbacks):
                     # Optimize: skip `self._push()` for direct output.
                     inner, sub_doc_token = self._scan_code_block(inner)
                     if sub_doc_token is None:
+                        if allow_tco:
+                            self._set_tco(inner)
+                            return Tco
                         return self._run_block(inner)
                     return self._put_val(self._sub_doc(inner, sub_doc_token))
                 case 'dq_lit':
@@ -994,7 +994,8 @@ class Engine(Interpreter, ContextCallbacks):
 
         if isinstance(val, tuple):
             assert allow_tco
-            self._set_tco(val[0], self._create_block_env(*val))
+            sub_doc: SubDoc = val[0]
+            self._set_tco(sub_doc.tree, self._create_block_env(*val))
             return Tco
 
         # Not necessarily str!
@@ -1144,20 +1145,20 @@ class Engine(Interpreter, ContextCallbacks):
             s = ' (tco)' if allow_tco else ''
             trace('_doc_ref%s: key=%s val=%r', s, key, val)
 
-        if isinstance(val, Box):
-            sub_doc: SubDoc = val.data
+        if isinstance(val, SubDoc):
+            tree = val.tree
             if is_tracing:
                 trace(
                     '_doc_ref: Rendering sub-doc: %s %s',
                     key,
-                    self.debug_node(sub_doc.tree),
+                    self.debug_node(tree),
                 )
             if allow_tco:
-                self._set_tco(sub_doc)
+                self._set_tco(tree)
                 return Tco
 
             with self._push():
-                self._run_block(sub_doc.tree)
+                self._run_block(tree)
                 return self._gather_output(self._output, trim=True)
 
         doc_id, doc = self._get_doc(key)
@@ -1173,26 +1174,26 @@ class Engine(Interpreter, ContextCallbacks):
     def _create_block_env(
         self, sub_doc: SubDoc, args: tuple, kwargs: dict[str, Any]
     ) -> dict[str, Any]:
-        arg_list = sub_doc.args
-        if arg_list:
-            for arg_name, arg in zip(arg_list, args):
-                kwargs.setdefault(arg_name, arg)
-            for i in range(len(args), len(arg_list)):
-                kwargs.setdefault(arg_list[i], '')
-            if len(args) > len(arg_list):
-                self._error(f'box takes at most {len(arg_list)} args, got {len(args)}')
+        params = sub_doc.params
+        if params:
+            for param, arg in zip(params, args):
+                kwargs.setdefault(param, arg)
+            for i in range(len(args), len(params)):
+                kwargs.setdefault(params[i], '')
+            if len(args) > len(params):
+                self._error(f'box takes at most {len(params)} args, got {len(args)}')
         else:
             for i, arg in enumerate(args):
                 kwargs.setdefault(str(i), arg)
         return kwargs
 
     @override
-    def _call_boxed(self, sub_doc: SubDoc, *args, **kwargs) -> Value | None:
+    def _call_box(self, sub_doc: SubDoc, *args, **kwargs) -> Value | None:
         tree = sub_doc.tree
         assert tree.data == 'block_inner', tree
         if is_tracing:
             trace(
-                '_call_boxed: %s args=%s kwargs=%s', self.debug_node(tree), args, kwargs
+                '_call_box: %s args=%s kwargs=%s', self.debug_node(tree), args, kwargs
             )
 
         # Recursive boxed calls are still limited by `MAX_DEPTH`.

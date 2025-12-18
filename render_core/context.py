@@ -19,15 +19,12 @@ is_not_quiet = os.environ.get('TRACE_QUIET') != '1'
 trace = log.debug if is_tracing else lambda *_: None
 
 
-class Box[T]:
-    def __init__(self, data: T):
-        self.data: T = data
-
-    def __str__(self):
+class Box:
+    def __str__(self) -> str:
         return ''
 
-    def __repr__(self):
-        return f'Box({repr(self.data)})'
+    def __repr__(self) -> str:
+        return 'Box(...)'
 
 
 # Allowed types for context values, as allowed by `simpleeval` by default (except None).
@@ -238,10 +235,9 @@ class EvalFunctions(UserDict):
 
         val = self._scope.get(name, allow_undef=True)
         if isinstance(val, Box):
-            data = val.data
 
             def wrapper(*args, **kwargs):
-                return self._scope._cb._call_boxed(data, *args, **kwargs)
+                return self._scope._cb._call_box(val, *args, **kwargs)
 
             return wrapper
 
@@ -262,7 +258,7 @@ class ContextCallbacks(ABC):
         pass
 
     @abstractmethod
-    def _call_boxed(self, data, *args, **kwargs) -> Value | None:
+    def _call_box(self, data, *args, **kwargs) -> Value | None:
         pass
 
 
@@ -390,7 +386,7 @@ class ScopedContext:
 
     def eval(
         self, expr: str, *, allow_tco: bool = False
-    ) -> Value | tuple[Any, tuple, dict]:
+    ) -> Value | tuple[Box, tuple, dict]:
         node = parse_ast(expr)
 
         # Manual TCO.
@@ -411,7 +407,7 @@ class ScopedContext:
                         )
                     args = tuple(self._eval._eval(a) for a in node.args)
                     kwargs = dict(self._eval._eval(k) for k in node.keywords)
-                    return val.data, args, kwargs
+                    return val, args, kwargs
 
         if is_tracing:
             trace('eval: ast: %s -> %s', expr, ast.dump(node))
