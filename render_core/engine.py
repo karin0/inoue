@@ -1023,7 +1023,10 @@ class Engine(Interpreter, ContextCallbacks):
 
         if isinstance(val, tuple):
             assert allow_tco
-            sub_doc: SubDoc = val[0]
+            sub_doc = val[0]
+            if not isinstance(sub_doc, SubDoc):
+                self._error('bad tail-call')
+                return ''
             return self._set_tco(sub_doc.tree, self._create_block_env(*val))
 
         # Not necessarily str!
@@ -1250,7 +1253,11 @@ class Engine(Interpreter, ContextCallbacks):
         return kwargs
 
     @override
-    def _call_box(self, sub_doc: SubDoc, *args, **kwargs) -> Value | None:
+    def _call_box(self, sub_doc: Box, *args, **kwargs) -> Value | None:
+        if not isinstance(sub_doc, SubDoc):
+            self._error('bad box call')
+            return
+
         tree = sub_doc.tree
         assert tree.data == 'block_inner', tree
         if is_tracing:
