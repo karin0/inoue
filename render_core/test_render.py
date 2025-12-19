@@ -623,6 +623,9 @@ Write the following sentence twice, the second time within quotes.
         text = r'backslash as text \\  \;'
         self.render_it(text, eq=r'backslash as text \  ;')
 
+        self.render_it(r"""'a\nb\rc';""", eq='a\nb\rc')
+        self.render_it(r"""a=`a\nb\rc'\n';a;""", eq=r"a\nb\rc'\n'")
+
     def test_unclosed(self):
         text = r"""{ text = `Raw backslash: \ and quote: '`; text }"""
         result = self.render_it(text, e='Unclosed')

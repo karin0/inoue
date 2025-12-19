@@ -123,7 +123,7 @@ def lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str | None]]:
             chunk = text[cursor + 1 : p]
             trace('Raw literal: %s', chunk)
             buf.append('\'')
-            buf.append(chunk.replace("'", r"\'"))
+            buf.append(chunk.replace('\\', '\\\\').replace("'", r"\'"))
             buf.append('\'')
             cursor = p
 
@@ -189,6 +189,7 @@ def lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str | None]]:
                                     buf.append(chunk)
 
                         case '`':
+                            trace('Raw literal starts at %s', p)
                             raw = True
                             # Flush up before the raw literal.
                             if chunk := text[cursor:p]:

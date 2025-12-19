@@ -960,12 +960,9 @@ class Engine(Interpreter, ContextCallbacks):
 
             # Literal: {'single quoted'}
             case 'sq_lit':
-                return (
-                    narrow(ch.children[0], Token)
-                    .value[1:-1]
-                    .replace("\\'", "'")
-                    .replace('\\\\', '\\')
-                )
+                r = narrow(ch.children[0], Token).value[1:-1]
+                r = r.encode('utf-8').decode('unicode_escape')
+                return r
 
             case _:
                 raise ValueError(f'Bad expr: {tree.pretty()}')
