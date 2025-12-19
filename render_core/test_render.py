@@ -248,9 +248,7 @@ named ? ERR;
         self.assertEqual(self.render_it('"\'s\'.encode()";'), 's')
         self.assertEqual(self.render_it('"\'s\'.encode";'), '')
 
-        self.assertAlmostEqual(
-            float(self.render_it('"__time__";')), time.time(), delta=2
-        )
+        self.assertAlmostEqual(float(self.render_it('"time";')), time.time(), delta=2)
 
         self.render_it('"100 ** 100 ** 100 ** 100";', e='Sorry')
         self.render_it('"\'qwq\' * int(1e9)";', e='Sorry')

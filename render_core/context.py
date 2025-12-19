@@ -208,9 +208,9 @@ def today_func() -> str:
 
 
 EVAL_FUNCS = {
-    '__time__': time.time,
-    '__date__': date_func,
-    '__today__': today_func,
+    'time': time.time,
+    'date': date_func,
+    'today': today_func,
 }
 
 
