@@ -60,12 +60,12 @@ MEMORY_KEY_RAW = '_mem'
 
 def encode_type(val: Value) -> str:
     if isinstance(val, bool):
-        return '@b' + '01'[val]
+        return 'b' + '01'[val]
     if isinstance(val, int):
-        return ('@i' + str(val)) if val >= 0 else ('@I' + str(-val))
+        return ('i' + str(val)) if val >= 0 else ('I' + str(-val))
     if isinstance(val, float):
-        return ('@f' + str(val)) if val >= 0 else ('@F' + str(-val))
-    return '@s' + str(val)
+        return ('f' + str(val)) if val >= 0 else ('F' + str(-val))
+    return 's' + str(val)
 
 
 def decode_type(val: str, typ: str) -> Value:
@@ -123,9 +123,9 @@ def make_markup(
     if (val := get_ctx(ctx, MEMORY_KEY)) is not None and is_safe_key(
         payload := encode_type(val)
     ):
-        delta = len(payload.encode('utf-8'))
+        delta = len(payload.encode('utf-8')) + 1
         if size + delta <= InlineKeyboardButton.MAX_CALLBACK_DATA:
-            memory = payload
+            memory = '@' + payload
             size += delta
 
     flags = {}
@@ -150,15 +150,14 @@ def make_markup(
         flags.update(state)
 
     has_state = state or memory
+    may_have_state = has_state or flags
 
     doc_id = ctx.first_doc_id
     if doc_id is not None and not get_ctx_flag(ctx, 'ref', True):
         doc_id = None
 
-    if doc_id is None and not has_state:
+    if doc_id is None and not may_have_state:
         return None
-
-    may_have_state = has_state or flags
 
     row = [
         InlineKeyboardButton(
@@ -239,6 +238,10 @@ def rendered_response(
     if errors := ctx.errors:
         result += f'\n\n---\n\n' + '\n'.join(errors)
 
+    if Syscall._secret in result:
+        log.error('dangerous output: %s', result.replace(Syscall._secret, '****'))
+        raise ValueError('dangerous output')
+
     result = truncate_text(result)
     parse_mode = None
     if ret := make_markup(path, ctx, flags):
@@ -285,16 +288,9 @@ ENGINE_FUNCS = {
     for k in dir(Syscall)
     if not k.startswith('_') and callable(v := getattr(Syscall, k))
 }
-ENGINE_FUNCS.update({'escape': escape, 'html_escape': html_escape})
 
 
-def create_engine(
-    update: Update,
-    flags: dict[str, bool] | None = None,
-    *,
-    doc_id: int | None = None,
-    memory: str | None = None,
-) -> Engine:
+def create_engine(update: Update, flags: dict[str, bool] | None = None) -> Engine:
     overrides: dict[str, Value] = dict(flags) if flags is not None else {}
     source = None
     if user := update.effective_user:
@@ -311,37 +307,32 @@ def create_engine(
         overrides['_msg_id'] = str(msg.message_id)
     log.debug('create_engine: overrides %s', overrides)
 
-    # Attribute access should be forbidden in `simpleeval`, so `os` is safe.
-    data: dict[str, Value] = {'os': Syscall}
-    if memory is not None:
-        data[MEMORY_KEY_RAW] = decode_type(memory[1:], memory[0])
-
-    return Engine(data, overrides=overrides, funcs=ENGINE_FUNCS, doc_id=doc_id)
-
-
-def render_with(text: str, ctx: Engine) -> str:
-    r = ctx.render(text)
-    if Syscall._secret in r:
-        raise ValueError(
-            'dangerous output: %s',
-            r.replace(Syscall._secret, '****'),
-        )
-    return r
+    # Access to attributes with underscores should be forbidden in `simpleeval`,
+    # so `os` is safe.
+    return Engine({'os': Syscall}, overrides=overrides, funcs=ENGINE_FUNCS)
 
 
 def render_text(
     ctx: Engine,
     text: str,
+    path: str | None,
     flags: dict[str, bool] | None = None,
-    path: str | None = None,
+    *,
+    doc_id: int | None = None,
 ) -> tuple[str, str | None, InlineKeyboardMarkup | None]:
-    result = render_with(text, ctx)
+    result = ctx.render(text)
+    if ctx.first_doc_id is None:
+        ctx.first_doc_id = doc_id
+
     log.info('rendered %d -> %d', len(text), len(result))
 
     if path is None and len(text) + 2 < InlineKeyboardButton.MAX_CALLBACK_DATA:
         path = '`' + text
 
     return rendered_response(flags, path, result, ctx)
+
+
+REG_DOC_REF = re.compile(r'[*:]\s*(\w+)\s*;')
 
 
 async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
@@ -361,11 +352,30 @@ async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
     else:
         return await reply_text(msg, 'Specify text or reply to a message to render.')
 
-    chat_prefix = encode_chat_id(msg, '')
-    path = f'#{chat_prefix}{msg.message_id}'
-    db['r-' + path] = text
-    res = render_text(create_engine(update), text, path=path)
+    if doc_ref := is_doc_ref(text, msg):
+        path, row = doc_ref
+        if path is None:
+            return await reply_text(msg, f'No doc: {text}')
+        doc_id, text = row
+    else:
+        chat_prefix = encode_chat_id(msg, '')
+        path = f'#{chat_prefix}{msg.message_id}'
+        db['r-' + path] = text
+        doc_id = None
+
+    res = render_text(create_engine(update), text, path, doc_id=doc_id)
+
     return await reply_text(msg, *res, allow_not_modified=True)
+
+
+def is_doc_ref(text: str) -> tuple[str, tuple[int, str]] | tuple[None, str] | None:
+    if m := REG_DOC_REF.fullmatch(text):
+        doc_name = m[1]
+        row = db.get_doc(doc_name)
+        log.info('handle_render: doc ref: %s %s', text, row)
+        if row is None:
+            return None, doc_name
+        return ':' + doc_name, row
 
 
 preview_cache = {}
@@ -383,7 +393,26 @@ async def handle_render_group(msg: Message, origin_id: int):
 
 
 async def handle_render_inline_query(update: Update, query: InlineQuery, text: str):
-    result, parse_mode, markup = render_text(create_engine(update), text)
+    if doc_ref := is_doc_ref(text):
+        path, row = doc_ref
+        if path is None:
+            msg = 'No doc: ' + row
+            r = InlineQueryResultArticle(
+                id='0',
+                title=msg,
+                input_message_content=InputTextMessageContent(msg),
+            )
+            return await query.answer((r,))
+        doc_id, text = row
+    elif len(text) + 2 < InlineKeyboardButton.MAX_CALLBACK_DATA:
+        path = '`' + text
+        doc_id = None
+    else:
+        doc_id = path = None
+
+    result, parse_mode, markup = render_text(
+        create_engine(update), text, path, doc_id=doc_id
+    )
     r = InlineQueryResultArticle(
         id='1',
         title=f'Render: {len(result)}',
@@ -424,10 +453,10 @@ async def handle_render_callback(
     doc_id = None
     match path[0]:
         case '`':
-            data = path[1:]
+            text = path[1:]
         case '#':
-            data = db.get('r-' + path)
-            if data is None:
+            text = db.get('r-' + path)
+            if text is None:
                 # TODO: report when cache expired
                 raise ValueError('unknown msg in render callback: ' + path)
         case ':':
@@ -435,12 +464,15 @@ async def handle_render_callback(
             if row is None:
                 # TODO: report when doc deleted
                 raise ValueError('unknown doc in render callback: ' + path)
-            doc_id, data = row
+            doc_id, text = row
         case _:
             raise ValueError('bad render callback: ' + data)
 
-    engine = create_engine(update, flags, doc_id=doc_id, memory=memory)
-    result, parse_mode, markup = render_text(engine, data, flags, path)
+    engine = create_engine(update, flags)
+    if memory is not None:
+        engine[MEMORY_KEY_RAW] = decode_type(memory[1:], memory[0])
+    engine['_state'] = data
+    result, parse_mode, markup = render_text(engine, text, path, flags, doc_id=doc_id)
 
     query = update.callback_query
     assert query is not None
@@ -499,8 +531,10 @@ async def handle_render_doc(update: Update, msg: Message):
         return
 
     id = msg.message_id
-    ctx = create_engine(update, doc_id=id)
-    rendered = render_with(text, ctx)
+    ctx = create_engine(update)
+    rendered = ctx.render(text)
+    if ctx.first_doc_id is None:
+        ctx.first_doc_id = id
 
     info = []
     if name := ctx.doc_name:
