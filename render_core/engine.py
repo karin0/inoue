@@ -20,14 +20,12 @@ from lark import Lark, Token, Tree
 from lark.visitors import Interpreter
 from lark.exceptions import LarkError
 
-from db import db
-from util import log, notify, shorten
-
 from .lex import lex, lex_errors
 from .context import (
     is_tracing,
     is_not_quiet,
     trace,
+    log,
     Value,
     Box,
     Items,
@@ -55,6 +53,12 @@ def stack_size2a(size=2):
         frame = frame.f_back
         if not frame:
             return size
+
+
+def shorten(text: str, max_len: int = 64) -> str:
+    if len(text) <= max_len:
+        return text
+    return text[: max_len // 2] + '...' + text[-(max_len // 2) :]
 
 
 parser = Lark.open(
@@ -113,9 +117,9 @@ class Engine(Interpreter, ContextCallbacks):
         self,
         ctx: Mapping[str, Value] | None = None,
         overrides: dict[str, Value] | None = None,
+        doc_loader: Callable[[str], str | None] | None = None,
         *,
         funcs: Mapping[str, Callable[..., Value | None]] | None = None,
-        doc_id: int | None = None,
     ):
         super().__init__()
         if ctx is None:
@@ -123,12 +127,11 @@ class Engine(Interpreter, ContextCallbacks):
         if overrides is None:
             overrides = {}
         self._ctx = OverriddenDict(ctx, overrides)
-        self._doc_id = doc_id
+        self._doc_src = doc_loader or (lambda _: None)
         self._doc_text = ''
 
         self.errors: list[str] = []
         self.doc_name: str | None = None
-        self.first_doc_id: int | None = None
 
         self._output: list[Value] = []
         self._root_output: list[str] = []
@@ -269,8 +272,7 @@ class Engine(Interpreter, ContextCallbacks):
             # More serious "exit": stop the entire rendering, skipping all fragments,
             # this and all outer docs.
             if is_not_quiet:
-                with notify.suppress():
-                    log.warning('Rendering aborted at fragment: %s', shorten(fragment))
+                log.warning('Rendering aborted at fragment: %s', shorten(fragment))
             raise
 
     def _render(self, text: str, *, root: bool = False):
@@ -327,7 +329,13 @@ class Engine(Interpreter, ContextCallbacks):
             self._ctx.debug()
         return r.strip()  # type: ignore
 
-    # Flatten view without scopes. For external use only.
+    # Flatten view without scopes to act as a MutableMapping. For external use only.
+    def __getitem__(self, key: str) -> Value:
+        return self._ctx[key]
+
+    def __setitem__(self, key: str, value: Value) -> None:
+        self._ctx[key] = value
+
     def get_flag(self, key: str, default: bool = False) -> bool:
         val = self._ctx.get(key, default)
         return bool(val) and val != '0'
@@ -337,6 +345,9 @@ class Engine(Interpreter, ContextCallbacks):
 
     def items(self) -> Items:
         return self._ctx.items()
+
+    def setdefault_override(self, key: str, value: Value) -> Value:
+        return self._ctx.setdefault_override(key, value)
 
     MAX_DEBUG_DEPTH = 2 if is_not_quiet else 1
 
@@ -1171,33 +1182,19 @@ class Engine(Interpreter, ContextCallbacks):
             case _:
                 raise ValueError(f'Bad deref op: {op}')
 
-    def _get_doc(self, key: str) -> tuple[int | None, str]:
-        # Allow self-reference in `handle_render` and `handle_render_doc`,
-        # where the doc is not saved yet.
-        # Note that `doc_id` can be None in `handle_render`, where the
-        # `doc_name` is transient and only used for recursion.
+    def _get_doc(self, key: str) -> str | None:
+        # Allow self-reference in when current doc is not saved yet.
         if self.doc_name == key:
-            return self._doc_id, self._doc_text
-        if row := db.get_doc(key):
-            return row
-        self._error('undefined doc: ' + key)
-        return None, ''
+            return self._doc_text
+        doc = self._doc_src(key)
+        if doc is None:
+            self._error('no doc: ' + key)
+        return doc
 
     # Used in dq_lit evaluation as `__file__` function.
-    def _get_doc_func(self, key=None) -> str:
+    def _get_doc_func(self, key=None) -> str | None:
         if isinstance(key, str):
-            return self._get_doc(key)[1]
-
-        if isinstance(key, int):
-            if self.first_doc_id is None:
-                self._error('unknown doc')
-                return ''
-            if (doc := db.get_doc_by_id(self.first_doc_id)) is None:
-                self._error(f'missing doc: {self.first_doc_id}')
-                return ''
-            return doc
-
-        # Self-mapping when no argument is given.
+            return self._get_doc(key)
         return self._doc_text
 
     def _doc_ref(self, key: str, *, allow_tco: bool = False) -> Value | TCO:
@@ -1221,12 +1218,11 @@ class Engine(Interpreter, ContextCallbacks):
                 self._run_block(tree)
                 return self._gather_output(self._output, trim=True)
 
-        doc_id, doc = self._get_doc(key)
-        trace('_doc_ref: Rendering doc: %s %s', key, doc_id)
-        if self.first_doc_id is None:
-            trace('first_doc_id: %s', doc_id)
-            self.first_doc_id = doc_id
+        doc = self._get_doc(key)
+        if doc is None:
+            return ''
 
+        trace('_doc_ref: Rendering doc: %s', key)
         with self._push():
             self._render(doc)
             return self._gather_output(self._output, trim=True)

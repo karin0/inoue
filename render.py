@@ -104,7 +104,10 @@ def get_ctx_flag(
 
 
 def make_markup(
-    path: str | None, ctx: Engine | Mapping[str, Value], state: dict[str, bool] | None
+    path: str | None,
+    ctx: Engine,
+    state: dict[str, bool] | None,
+    doc_id: int | None = None,
 ) -> tuple[InlineKeyboardMarkup, str | None] | None:
     if not path:
         return None
@@ -152,7 +155,6 @@ def make_markup(
     has_state = state or memory
     may_have_state = has_state or flags
 
-    doc_id = ctx.first_doc_id
     if doc_id is not None and not get_ctx_flag(ctx, 'ref', True):
         doc_id = None
 
@@ -213,10 +215,10 @@ def make_markup(
     if doc_id:
         row.append(InlineKeyboardButton('🔗', get_msg_url(doc_id)))
 
-    row_limit = get_ctx(ctx, 'btns_per_row', 5)
+    row_limit_ = get_ctx(ctx, 'btns_per_row', 5)
     try:
-        row_limit = int(row_limit)
-    except ValueError:
+        row_limit = int(row_limit_)
+    except (ValueError, TypeError):
         row_limit = 5
 
     # Group 5 buttons per row
@@ -228,61 +230,6 @@ def make_markup(
 reg_cleanup = re.compile(r'\n{3,}')
 
 
-def rendered_response(
-    flags: dict[str, bool] | None,
-    path: str | None,
-    result: str,
-    ctx: Engine,
-) -> tuple[str, str | None, InlineKeyboardMarkup | None]:
-    result = result or '[empty]'
-    if errors := ctx.errors:
-        result += f'\n\n---\n\n' + '\n'.join(errors)
-
-    if Syscall._secret in result:
-        log.error('dangerous output: %s', result.replace(Syscall._secret, '****'))
-        raise ValueError('dangerous output')
-
-    result = truncate_text(result)
-    parse_mode = None
-    if ret := make_markup(path, ctx, flags):
-        markup, current_state = ret
-    else:
-        markup = current_state = None
-
-    if get_ctx_flag(ctx, 'cleanup', True):
-        result = reg_cleanup.sub('\n\n', result)
-
-    if not errors:
-        if get_ctx_flag(ctx, 'md'):
-            parse_mode = 'MarkdownV2'
-            do_escape = escape
-        elif get_ctx_flag(ctx, 'html'):
-            parse_mode = 'HTML'
-            do_escape = html_escape
-        else:
-            if get_ctx_flag(ctx, 'fold'):
-                result, parse_mode = blockquote_block(result)
-                do_escape = html_escape
-            elif get_ctx_flag(ctx, 'pre', True):
-                result, parse_mode = pre_block(result)
-                do_escape = escape
-
-        if parse_mode:
-            if current_state:
-                suffix = do_escape(current_state)
-                if len(result) + len(suffix) <= MAX_TEXT_LENGTH:
-                    result += suffix
-
-            if footer := get_ctx(ctx, 'footer'):
-                suffix = do_escape(footer)
-                if flags:
-                    suffix = ' ' + suffix
-                if len(result) + len(suffix) <= MAX_TEXT_LENGTH:
-                    result += suffix
-
-    return result, parse_mode, markup
-
-
 ENGINE_FUNCS = {
     k: v
     for k in dir(Syscall)
@@ -290,46 +237,118 @@ ENGINE_FUNCS = {
 }
 
 
-def create_engine(update: Update, flags: dict[str, bool] | None = None) -> Engine:
-    overrides: dict[str, Value] = dict(flags) if flags is not None else {}
-    source = None
-    if user := update.effective_user:
-        overrides['_user_id'] = str(user.id)
-        overrides['_user_name'] = source = user.full_name
-    if chat := update.effective_chat:
-        overrides['_chat_id'] = str(chat.id)
-        if title := chat.title:
-            overrides['_chat_title'] = title
-            source = f'{title} @ {source}' if source else title
-    if source:
-        overrides['_source'] = source
-    if msg := update.effective_message:
-        overrides['_msg_id'] = str(msg.message_id)
-    log.debug('create_engine: overrides %s', overrides)
+class RenderContext:
+    def __init__(
+        self,
+        update: Update,
+        flags: dict[str, bool] | None = None,
+        doc_id: int | None = None,
+    ):
+        if flags is None:
+            flags = {}
+        self.flags = flags
 
-    # Access to attributes with underscores should be forbidden in `simpleeval`,
-    # so `os` is safe.
-    return Engine({'os': Syscall}, overrides=overrides, funcs=ENGINE_FUNCS)
+        overrides: dict[str, Value] = dict(flags) if flags is not None else {}
+        source = None
+        if user := update.effective_user:
+            overrides['_user_id'] = str(user.id)
+            overrides['_user_name'] = source = user.full_name
+        if chat := update.effective_chat:
+            overrides['_chat_id'] = str(chat.id)
+            if title := chat.title:
+                overrides['_chat_title'] = title
+                source = f'{title} @ {source}' if source else title
+        if source:
+            overrides['_source'] = source
+        if msg := update.effective_message:
+            overrides['_msg_id'] = str(msg.message_id)
+        log.debug('create_engine: overrides %s', overrides)
 
+        self._first_doc_id = None
+        self._default_doc_id = doc_id
 
-def render_text(
-    ctx: Engine,
-    text: str,
-    path: str | None,
-    flags: dict[str, bool] | None = None,
-    *,
-    doc_id: int | None = None,
-) -> tuple[str, str | None, InlineKeyboardMarkup | None]:
-    result = ctx.render(text)
-    if ctx.first_doc_id is None:
-        ctx.first_doc_id = doc_id
+        def doc_loader(name: str) -> str | None:
+            row = db.get_doc(name)
+            if row is None:
+                return None
+            if self._first_doc_id is None:
+                self._first_doc_id = row[0]
+            return row[1]
 
-    log.info('rendered %d -> %d', len(text), len(result))
+        # Access to attributes with underscores should be forbidden in `simpleeval`,
+        # so `os` is safe.
+        self.engine = Engine(
+            {'os': Syscall},
+            overrides=overrides,
+            doc_loader=doc_loader,
+            funcs=ENGINE_FUNCS,
+        )
 
-    if path is None and len(text) + 2 < InlineKeyboardButton.MAX_CALLBACK_DATA:
-        path = '`' + text
+    def render(
+        self,
+        text: str,
+        path: str | None,
+    ) -> tuple[str, str | None, InlineKeyboardMarkup | None]:
+        result = self.engine.render(text)
+        log.info('rendered %d -> %d', len(text), len(result))
+        return self.to_response(path, result)
 
-    return rendered_response(flags, path, result, ctx)
+    def to_response(
+        self,
+        path: str | None,
+        result: str,
+    ) -> tuple[str, str | None, InlineKeyboardMarkup | None]:
+        ctx = self.engine
+        result = result or '[empty]'
+        if errors := ctx.errors:
+            result += f'\n\n---\n\n' + '\n'.join(errors)
+
+        if Syscall._secret in result:
+            log.error('dangerous output: %s', result.replace(Syscall._secret, '****'))
+            raise ValueError('dangerous output')
+
+        first_doc_id = self._first_doc_id or self._default_doc_id
+
+        result = truncate_text(result)
+        parse_mode = None
+        if ret := make_markup(path, self.engine, self.flags, first_doc_id):
+            markup, current_state = ret
+        else:
+            markup = current_state = None
+
+        if get_ctx_flag(ctx, 'cleanup', True):
+            result = reg_cleanup.sub('\n\n', result)
+
+        if not errors:
+            if get_ctx_flag(ctx, 'md'):
+                parse_mode = 'MarkdownV2'
+                do_escape = escape
+            elif get_ctx_flag(ctx, 'html'):
+                parse_mode = 'HTML'
+                do_escape = html_escape
+            elif get_ctx_flag(ctx, 'fold'):
+                result, parse_mode = blockquote_block(result)
+                do_escape = html_escape
+            elif get_ctx_flag(ctx, 'pre', True):
+                result, parse_mode = pre_block(result)
+                do_escape = escape
+            else:
+                do_escape = lambda x: x[1 / 0]
+
+            if parse_mode:
+                if current_state:
+                    suffix = do_escape(current_state)
+                    if len(result) + len(suffix) <= MAX_TEXT_LENGTH:
+                        result += suffix
+
+                if footer := get_ctx(ctx, 'footer'):
+                    suffix = do_escape(str(footer))
+                    if current_state:
+                        suffix = ' ' + suffix
+                    if len(result) + len(suffix) <= MAX_TEXT_LENGTH:
+                        result += suffix
+
+        return result, parse_mode, markup
 
 
 REG_DOC_REF = re.compile(r'[*:]\s*(\w+)\s*;')
@@ -340,7 +359,7 @@ async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
     target = msg.reply_to_message
 
     if target:
-        text = (target.text or target.caption).strip()
+        text = (target.text or target.caption or '').strip()
         if not text:
             return await reply_text(msg, 'No text to render.')
 
@@ -352,7 +371,7 @@ async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
     else:
         return await reply_text(msg, 'Specify text or reply to a message to render.')
 
-    if doc_ref := is_doc_ref(text, msg):
+    if doc_ref := is_doc_ref(text):
         path, row = doc_ref
         if path is None:
             return await reply_text(msg, f'No doc: {text}')
@@ -363,8 +382,8 @@ async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
         db['r-' + path] = text
         doc_id = None
 
-    res = render_text(create_engine(update), text, path, doc_id=doc_id)
-
+    ctx = RenderContext(update, doc_id=doc_id)
+    res = ctx.render(text, path)
     return await reply_text(msg, *res, allow_not_modified=True)
 
 
@@ -383,9 +402,9 @@ preview_cache = {}
 
 async def handle_render_group(msg: Message, origin_id: int):
     if cache := preview_cache.pop(origin_id, None):
-        doc_name, *args = cache
+        ctx, doc_name, result = cache
         log.info('Doc in group: %s -> %s %s', msg.id, origin_id, doc_name)
-        args = rendered_response(None, ':' + doc_name, *args)
+        args = ctx.to_response(':' + doc_name, result)
         await reply_text(msg, *args, allow_not_modified=True)
 
     if left := tuple((id, name) for id, (name, *_) in preview_cache.items()):
@@ -410,9 +429,8 @@ async def handle_render_inline_query(update: Update, query: InlineQuery, text: s
     else:
         doc_id = path = None
 
-    result, parse_mode, markup = render_text(
-        create_engine(update), text, path, doc_id=doc_id
-    )
+    ctx = RenderContext(update, doc_id=doc_id)
+    result, parse_mode, markup = ctx.render(text, path)
     r = InlineQueryResultArticle(
         id='1',
         title=f'Render: {len(result)}',
@@ -423,7 +441,7 @@ async def handle_render_inline_query(update: Update, query: InlineQuery, text: s
 
 
 async def handle_render_callback(
-    update: Update, ctx: ContextTypes.DEFAULT_TYPE, data: str
+    update: Update, ctx_: ContextTypes.DEFAULT_TYPE, data: str
 ):
     flags = {}
     j = 0
@@ -468,11 +486,11 @@ async def handle_render_callback(
         case _:
             raise ValueError('bad render callback: ' + data)
 
-    engine = create_engine(update, flags)
+    ctx = RenderContext(update, flags, doc_id=doc_id)
     if memory is not None:
-        engine[MEMORY_KEY_RAW] = decode_type(memory[1:], memory[0])
-    engine['_state'] = data
-    result, parse_mode, markup = render_text(engine, text, path, flags, doc_id=doc_id)
+        ctx.engine[MEMORY_KEY_RAW] = decode_type(memory[1:], memory[0])
+    ctx.engine['_state'] = data
+    result, parse_mode, markup = ctx.render(text, path)
 
     query = update.callback_query
     assert query is not None
@@ -480,7 +498,7 @@ async def handle_render_callback(
     try:
         if query.inline_message_id:
             await try_send_text(
-                ctx.bot.edit_message_text,
+                ctx_.bot.edit_message_text,
                 result,
                 inline_message_id=query.inline_message_id,
                 reply_markup=markup,
@@ -488,7 +506,7 @@ async def handle_render_callback(
             )
         else:
             await try_send_text(
-                ctx.bot.edit_message_text,
+                ctx_.bot.edit_message_text,
                 result,
                 chat_id=update.effective_chat.id,
                 message_id=query.message.message_id,
@@ -531,14 +549,12 @@ async def handle_render_doc(update: Update, msg: Message):
         return
 
     id = msg.message_id
-    ctx = create_engine(update)
-    rendered = ctx.render(text)
-    if ctx.first_doc_id is None:
-        ctx.first_doc_id = id
+    ctx = RenderContext(update, doc_id=id)
+    result = ctx.engine.render(text)
 
     info = []
-    if name := ctx.doc_name:
-        preview_cache[id] = (name, rendered, ctx)
+    if name := ctx.engine.doc_name:
+        preview_cache[id] = (ctx, name, result)
         old_by_id, old_by_name = db.save_doc(id, name, text)
 
         action = 'new doc:'

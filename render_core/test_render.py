@@ -2,20 +2,19 @@ import os
 import sys
 import time
 import math
+from typing import Callable
 import warnings
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
-sys.modules['db'] = MagicMock()
 
-db_instance = MagicMock()
-sys.modules['db'].db = db_instance
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-sys.modules['util'] = MagicMock()
-sys.modules['util'].shorten = lambda x: x
+from render_core import Value, Engine
+from render_core.context import persisted
+
 
 log_instance = MagicMock()
-sys.modules['util'].log = log_instance
 
 if os.environ.get('TEST_TRACE') == '1':
     out = open('test.log', 'w', encoding='utf-8')
@@ -27,10 +26,6 @@ if os.environ.get('TEST_TRACE') == '1':
 else:
     log_effect = lambda *_: None
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from render_core import Value, Engine
-from render_core.context import persisted
 
 test_text = """
 Hello World
@@ -70,23 +65,34 @@ d?=D; e?=E; f?=F;
 {"float(price) * (1 + float(tax)) > 105"?Expensive: Cheap}
 """
 
+db_instance = MagicMock()
 
+
+def mock_db(func: Callable[[str], str | None]) -> Callable[[str], str | None]:
+    db_instance.side_effect = func
+    return func
+
+
+@patch('render_core.context.log', log_instance)
+@patch('render_core.engine.log', log_instance)
 class TestRender(unittest.TestCase):
     def setUp(self):
         db_instance.reset_mock()
         persisted.clear()
 
+    @staticmethod
+    def start(ctx: dict[str, Value] | None = None) -> Engine:
+        return Engine(ctx, doc_loader=db_instance)
+
     def render_it(
         self,
         text: str,
-        ctx: dict[str, Value] | None = None,
+        ctx_: dict[str, Value] | None = None,
         *,
         e: str | tuple[str, ...] = '',
         eq: str | None = None,
     ) -> str:
-        if ctx is None:
-            ctx = {}
-        ctx: Engine = Engine(ctx)
+        ctx = self.start(ctx_)
         r = ctx.render(text)
         dump = f'Render: {text}\nResult:{r}\nerrors: {ctx.errors}\nctx: {ctx.items()}'
         log_effect('Gas used: %s', ctx._gas)
@@ -109,11 +115,9 @@ class TestRender(unittest.TestCase):
         return r
 
     def render_it_all(
-        self, text: str, overrides: dict[str, 'Value'] | None = None
+        self, text: str, ctx_: dict[str, 'Value'] | None = None
     ) -> tuple[str, Engine]:
-        if overrides is None:
-            overrides = {}
-        ctx = Engine(overrides)
+        ctx = self.start(ctx_)
         r = ctx.render(text)
         self.assertFalse(ctx.errors, f'Render: {text} errors: {ctx.errors}')
         return r, ctx
@@ -141,12 +145,11 @@ class TestRender(unittest.TestCase):
         self.assertEqual(self.render_it('+a-b+c$a; b; c;'), '101')
         self.assertEqual(self.render_it('k=a; +a-b+c$(k); b; c;'), '101')
 
+        @mock_db
         def side_effect(name):
             if name == 'doc':
-                return (1, 'd?=2; a; b; c; d;')
+                return 'd?=2; a; b; c; d;'
             return None
-
-        db_instance.get_doc.side_effect = side_effect
 
         self.assertEqual(self.render_it('-a-b+c*doc;'), '0012')
         self.assertEqual(self.render_it('+a+b+c; *doc;'), '1112')
@@ -336,12 +339,11 @@ named ? ERR;
         self.assertEqual(ctx.get('mode'), 'write')
 
     def test_doc_recursion(self):
+        @mock_db
         def side_effect(name):
             if name == 'header':
-                return (1, "Title: {title}")
+                return "Title: {title}"
             return None
-
-        db_instance.get_doc.side_effect = side_effect
 
         result = self.render_it("{:header}\nBody", {'title': 'My Log'})
         self.assertEqual(result, "Title: My Log\nBody")
@@ -351,24 +353,23 @@ named ? ERR;
 bomb: ; n ?= "10"; n; n = "n - 1";
 n ? *bomb : Boom!;
 '''.strip()
-        ctx = Engine({})
+        ctx = self.start()
         result = ctx.render(text)
         a = [str(x) for x in range(10, 0, -1)]
         a.append('Boom')
         self.assertEqual(result, '\n'.join(a))
 
     def test_circular_dependency(self):
+        @mock_db
         def side_effect(name):
             if name == 'A':
-                return (1, "StartA {:B}")
+                return "StartA {:B}"
             if name == 'B':
-                return (2, "StartB {:A}")
+                return "StartB {:A}"
             return None
 
-        db_instance.get_doc.side_effect = side_effect
-
         text = "{:A}"
-        ctx = Engine({})
+        ctx = self.start()
         result = ctx.render(text)
         self.assertIn("StartB StartA StartB StartA StartB StartA", result)
         self.assertIn("stack overflow", str(ctx.errors))
@@ -458,7 +459,7 @@ Write the following sentence twice, the second time within quotes.
 
     def test_doc_name_definition(self):
         def f(text):
-            ctx = Engine({})
+            ctx = self.start()
             ctx.render(text)
             return ctx.doc_name
 
@@ -564,16 +565,15 @@ Write the following sentence twice, the second time within quotes.
         self.assertEqual(result, '1 This is naked`?=i:n$cluded!the!b`ac`kti`c\nks! 2')
 
     def test_common(self):
+        @mock_db
         def side_effect(name):
             if name == 'qwq':
-                return (1, "Default: {default} {$default}")
+                return "Default: {default} {$default}"
             elif name == 'doc1':
-                return (2, "This is doc1:\na;b;\nc;\n")
+                return "This is doc1:\na;b;\nc;\n"
             elif name == 'doc2':
-                return (3, "This is doc2:\nthis;\n")
+                return "This is doc2:\nthis;\n"
             return None
-
-        db_instance.get_doc.side_effect = side_effect
 
         result, ctx = self.render_it_all(test_text)
         answer = 'Hello World\n\n\n\n\nDefault: N/A N/A\nUser: Alice\n\n\nAlice\nAlice\nAlice\nN/AAlice\nThis is naked`included!the!b`ac`kti`cks! \n\nb \nthatthisisnaked\nhello\n  the\n    wonderful\n     美丽新   world.\nthat\nis alsonaked\nis alsoddDEF1xThis is naked`included!the!b`ac`kti`cks! \n\nThis is doc1:\nis alsod\nd\n\nThis is doc2:\nthat\n\n\nExpensive'
@@ -724,12 +724,7 @@ iter: ;
         db['iter3'] = 'iter3:;' + '*iter2;' * 100
         db['iter4'] = 'iter4:;' + '*iter3;' * 100
 
-        def side_effect(name):
-            if doc := db.get(name):
-                return (1, doc)
-            return None
-
-        db_instance.get_doc.side_effect = side_effect
+        mock_db(db.get)
 
         text = (
             r'''
