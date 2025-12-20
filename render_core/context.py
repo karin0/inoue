@@ -2,6 +2,7 @@ import os
 import ast
 import time
 import logging
+import inspect
 import functools
 
 from datetime import datetime
@@ -225,6 +226,9 @@ class ScopeProxy:
         return self._ctx._data[self._prefix + name]
 
 
+type Context = MutableMapping[str, Value]
+
+
 class EvalFunctions(UserDict):
     def __init__(self, funcs: dict[str, Callable], scope: 'ScopedContext'):
         super().__init__(DEFAULT_FUNCTIONS, **EVAL_FUNCS, **funcs)
@@ -242,7 +246,39 @@ class EvalFunctions(UserDict):
 
             return wrapper
 
-        return self.data[name]
+        func = self.data[name]
+        try:
+            sig = inspect.signature(func)
+        except ValueError as e:
+            # int, str
+            trace('eval: no sig: %s: %s', func, e)
+            return func
+
+        for name, param in sig.parameters.items():
+            type_ = param.annotation
+            if type_ is Context:
+                trace('eval: inject: %s %s', func, sig)
+                params = []
+                for p in sig.parameters.values():
+                    if p is not param:
+                        params.append(p)
+                new_sig = sig.replace(parameters=params)
+                break
+        else:
+            trace('eval: plain: %s %s', func, sig)
+            return func
+
+        def ctx_wrapper(*args, **kwargs):
+            bound = new_sig.bind_partial(*args, **kwargs)
+            bound.apply_defaults()
+            arguments = bound.arguments
+            arguments[name] = self._scope._data
+            real = sig.bind_partial()
+            real.arguments = bound.arguments
+            trace('eval: bound: %s -> %s', bound, real)
+            return func(*real.args, **real.kwargs)
+
+        return ctx_wrapper
 
     # Called by `simpleeval` internally, without `stat` invocation.
     def values(self):
@@ -271,7 +307,7 @@ def parse_ast(expr: str):
 class ScopedContext:
     def __init__(
         self,
-        ctx: OverriddenDict,
+        ctx: Context,
         callbacks: ContextCallbacks,
         funcs: dict[str, Callable],
     ):
@@ -284,6 +320,7 @@ class ScopedContext:
         self._eval = SimpleEval(functions=funcs_, names=self)
         self._eval_str = self._eval.eval
         self._eval_node = self._eval._eval
+        assert self._eval.nodes
         self._eval.nodes[ast.Subscript] = self._eval_subscript
         self._funcs = funcs_.data
 

@@ -1,4 +1,4 @@
 from .engine import Engine
-from .context import Value, Box
+from .context import Value, Box, Context
 
-__all__ = ['Engine', 'Value', 'Box']
+__all__ = ['Engine', 'Value', 'Box', 'Context']
