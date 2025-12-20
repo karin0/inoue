@@ -91,6 +91,11 @@ def _get_logger(name):
 
     logger.addHandler(notify)
 
+    if level == logging.DEBUG:
+        rc_log = logging.getLogger('render_core')
+        rc_log.setLevel(logging.DEBUG)
+        rc_log.addHandler(logging.FileHandler('render_core.log'))
+
     return logger
 
 
@@ -247,7 +252,6 @@ def encode_chat_id(m: Message, default: str = 'u') -> str:
     if chat_id == GROUP_ID:
         return 'g'
     if chat_id in GUEST_USER_IDS:
-        log.warning('reply_text: guest chat: %s', m)
         return f'G{chat_id}'
     raise ValueError(f'Bad chat for {m}')
 
@@ -298,6 +302,8 @@ async def reply_text(
     chat_kind = encode_chat_id(m)
     if chat_kind == 'c':
         log.warning('reply_text: channel chat: %s', m)
+    elif chat_kind.startswith('G'):
+        log.warning('reply_text: guest chat: %s\n  %s', m, text)
     key = f'{chat_kind}-{m.message_id}'
 
     # Can only be called when `key` is missing in the cache.

@@ -32,8 +32,8 @@ from util import (
     encode_chat_id,
 )
 from db import db
-from render_sys import Syscall
 from render_core import Engine, Value
+from render_sys import Syscall, Signature
 
 # '/' is kept for compatibility, which was used for '-'.
 CALLBACK_SIGNS = '-+/'
@@ -250,6 +250,8 @@ class RenderContext:
 
         overrides: dict[str, Value] = dict(flags) if flags is not None else {}
         source = None
+
+        # Existing `overrides` are frozen and immutable in `Engine`, so this is safe.
         if user := update.effective_user:
             overrides['_user_id'] = str(user.id)
             overrides['_user_name'] = source = user.full_name
@@ -262,6 +264,12 @@ class RenderContext:
             overrides['_source'] = source
         if msg := update.effective_message:
             overrides['_msg_id'] = str(msg.message_id)
+
+        if doc_id is not None:
+            # We assume content from saved docs is trusted.
+            overrides['_trusted'] = Signature
+            overrides['_doc_id'] = doc_id
+
         log.debug('create_engine: overrides %s', overrides)
 
         self._first_doc_id = None
@@ -302,10 +310,6 @@ class RenderContext:
         result = result or '[empty]'
         if errors := ctx.errors:
             result += f'\n\n---\n\n' + '\n'.join(errors)
-
-        if Syscall._secret in result:
-            log.error('dangerous output: %s', result.replace(Syscall._secret, '****'))
-            raise ValueError('dangerous output')
 
         first_doc_id = self._first_doc_id or self._default_doc_id
 

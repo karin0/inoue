@@ -49,7 +49,6 @@ from render import (
     handle_render_group,
     handle_render_inline_query,
     ALL_CALLBACK_SIGNS,
-    Syscall,
 )
 
 
@@ -287,7 +286,6 @@ async def post_init(app: Application) -> None:
     bot: Bot = app.bot
     init_util(bot)
     db.connect(DB_FILE)
-    await Syscall._init()
     await bot.set_my_commands(tuple((s, s) for s, _ in commands))
     if not log.isEnabledFor(logging.DEBUG):
         await do_notify(*stats(f'{ME} initiated'))

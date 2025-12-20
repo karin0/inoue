@@ -8,9 +8,11 @@ from context import is_guest, ME_LOWER
 log = logging.getLogger(ME_LOWER + '.db')
 
 
-ALLOWED_GUEST_DOC_PREFIXES = tuple(r for s in os.environ.get(
-    'ALLOWED_GUEST_DOC_PREFIXES', ''
-).split(',') if (r := s.strip()))
+ALLOWED_GUEST_DOC_PREFIXES = tuple(
+    r
+    for s in os.environ.get('ALLOWED_GUEST_DOC_PREFIXES', '').split(',')
+    if (r := s.strip())
+)
 
 
 class DataStore:
@@ -70,13 +72,6 @@ class DataStore:
 
         cursor = self.conn.execute('SELECT id, text FROM Doc WHERE name = ?', (name,))
         return cursor.fetchone()
-
-    def get_doc_by_id(self, id: int) -> str | None:
-        '''
-        Note that this does not check guest context!
-        '''
-        cursor = self.conn.execute('SELECT text FROM Doc WHERE id = ?', (id,))
-        return cursor.fetchone()[0]
 
     # Works like INSERT OR REPLACE, but returns the replaced records.
     def save_doc(

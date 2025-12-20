@@ -2,46 +2,56 @@
 import os
 import sys
 
-import secrets
-import logging
-import functools
 import subprocess
 from typing import Callable, Concatenate
-from render_core import Box
+from render_core import Box, Context
 
-from util import do_notify, log, escape, html_escape
+from util import escape, html_escape, log
+
+
+class _Signature(Box):
+    def __repr__(self) -> str:
+        return '<Signature>'
+
+
+Signature = _Signature()
 
 
 class _Syscall(Box):
+    def __repr__(self) -> str:
+        return '<Syscall>'
+
     # Underscore to avoid being injected into rendering engine.
-    async def _init(self) -> None:
-        if secret := os.environ.get('INOUE_SYSCALL_SECRET_UNSAFE'):
-            self._secret = secret
-        else:
-            self._secret = secrets.token_urlsafe(16)
-
-        if log.isEnabledFor(logging.DEBUG):
-            log.debug('Syscall: %s', self._secret)
-        else:
-            await do_notify('Syscall: ' + self._secret)
-
-    def auth(self, magic: str) -> bool:
-        return secrets.compare_digest(self._secret, magic)
-
     @staticmethod
     def _auth[**P, T](
-        func: Callable[Concatenate['_Syscall', P], T],
-    ) -> Callable[Concatenate['_Syscall', str, P], T]:
-        @functools.wraps(func)
-        def wrapper(self: _Syscall, magic: str, *args: P.args, **kwargs: P.kwargs) -> T:
-            if not self.auth(magic):
-                raise ValueError('invalid magic')
-            return func(self, *args, **kwargs)
+        func: Callable[P, T],
+    ) -> Callable[Concatenate[Context, P], T]:
+
+        # Not using `wraps()` to keep opaque.
+        def wrapper(ctx: Context, *args: P.args, **kwargs: P.kwargs) -> T:
+            # See `RenderContext.__init__`.
+            if ctx.get('_trusted') is Signature and isinstance(
+                doc_id := ctx.get('_doc_id'), int
+            ):
+                log.debug(
+                    '_Syscall: authorized doc %d for %s\n  ctx = %s',
+                    doc_id,
+                    func.__name__,
+                    ctx,
+                )
+                return func(*args, **kwargs)
+            log.warning(
+                '_Syscall: unauthorized access to %s\n  ctx = %s',
+                func.__name__,
+                ctx,
+            )
+            raise PermissionError('unauthorized')
 
         return wrapper
 
+    @staticmethod
     @_auth
-    def system(self, cmd: str) -> str:
+    def system(cmd: str) -> str:
         result = subprocess.check_output(
             cmd,
             shell=True,
@@ -52,8 +62,9 @@ class _Syscall(Box):
         )
         return result.strip()
 
+    @staticmethod
     @_auth
-    def eval(self, expr: str):
+    def eval(expr: str):
         return eval(expr)
 
     @staticmethod
