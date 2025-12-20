@@ -285,12 +285,8 @@ class RenderContext:
 
         # Access to attributes with underscores should be forbidden in `simpleeval`,
         # so `os` is safe.
-        self.engine = Engine(
-            {'os': Syscall},
-            overrides=overrides,
-            doc_loader=doc_loader,
-            funcs=ENGINE_FUNCS,
-        )
+        data = {'os': Syscall, 'sys': Syscall}
+        self.engine = Engine(data, overrides, doc_loader, funcs=ENGINE_FUNCS)
 
     def render(
         self,

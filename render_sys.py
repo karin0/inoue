@@ -68,9 +68,15 @@ class _Syscall(Box):
         return eval(expr)
 
     @staticmethod
+    @_auth
     def uname() -> str:
         r = os.uname()
         return f'{r.sysname} {r.nodename} {r.release} {r.version} {r.machine}'
+
+    @staticmethod
+    @_auth
+    def version() -> str:
+        return sys.version
 
     @staticmethod
     def escape(text) -> str:
