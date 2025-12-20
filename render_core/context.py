@@ -7,11 +7,11 @@ import functools
 
 from datetime import datetime
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Literal, Type, TypeGuard, Mapping, overload
+from typing import Any, Callable, Iterable, Literal, TypeGuard, Mapping, overload
 from collections import UserDict, OrderedDict
 from collections.abc import ItemsView, MutableMapping
 
-from simpleeval import SimpleEval, DEFAULT_FUNCTIONS
+from simpleeval import SimpleEval, DEFAULT_FUNCTIONS, DISALLOW_FUNCTIONS
 
 from .tco import Tco, TCO
 
@@ -77,6 +77,12 @@ def try_to_value(val: Any) -> Value:
     if val is None:
         return ''
     if is_value_type(val):
+        return val
+    return fix_to_str(val)
+
+
+def try_to_value_or_none(val: Any) -> Value | None:
+    if val is None or is_value_type(val):
         return val
     return fix_to_str(val)
 
@@ -186,12 +192,21 @@ class OverriddenDict(UserDict):
     def setdefault_override(self, key: str, value: Value) -> Value:
         return self.overrides.setdefault(key, value)
 
-    def items(self) -> Items:
+    def _compact(self):
+        self.data.update(self.overrides)
+        return self.data
+
+    def __iter__(self):
         # Keys from the underlying dict are yielded first, in their natural order.
         # Technically the side effects of this method shouldn't affect our behavior,
         # since existing overrides can never be removed or modified.
-        self.data.update(self.overrides)
-        return self.data.items()
+        return iter(self._compact())
+
+    def __len__(self) -> int:
+        return len(self._compact())
+
+    def items(self) -> Items:
+        return self._compact().items()
 
     def debug(self):
         for k, v in self.items():
@@ -229,60 +244,34 @@ class ScopeProxy:
 type Context = MutableMapping[str, Value]
 
 
-class EvalFunctions(UserDict):
-    def __init__(self, funcs: dict[str, Callable], scope: 'ScopedContext'):
-        super().__init__(DEFAULT_FUNCTIONS, **EVAL_FUNCS, **funcs)
-        self._scope = scope
+def call_with_context(
+    func: Callable, ctx: Context, args: Iterable, kwargs: dict[str, Any]
+) -> Any:
+    try:
+        sig = inspect.signature(func)
+    except ValueError as e:
+        # int, str
+        trace('eval: no sig: %s: %s', func, e)
+        return func(*args, **kwargs)
 
-    def __getitem__(self, name: str) -> Callable:
-        trace('eval: funcs: %s', name)
-        self._scope._cb._consume_gas()
+    for name, param in sig.parameters.items():
+        if param.annotation is Context:
+            break
+    else:
+        trace('eval: plain: %s %s', func, sig)
+        return func(*args, **kwargs)
 
-        val = self._scope.get(name, allow_undef=True)
-        if isinstance(val, Box):
+    trace('eval: inject: %s: %s (%s)', func, sig, name)
 
-            def wrapper(*args, **kwargs):
-                return self._scope._cb._call_box(val, *args, **kwargs)
-
-            return wrapper
-
-        func = self.data[name]
-        try:
-            sig = inspect.signature(func)
-        except ValueError as e:
-            # int, str
-            trace('eval: no sig: %s: %s', func, e)
-            return func
-
-        for name, param in sig.parameters.items():
-            type_ = param.annotation
-            if type_ is Context:
-                trace('eval: inject: %s %s', func, sig)
-                params = []
-                for p in sig.parameters.values():
-                    if p is not param:
-                        params.append(p)
-                new_sig = sig.replace(parameters=params)
-                break
-        else:
-            trace('eval: plain: %s %s', func, sig)
-            return func
-
-        def ctx_wrapper(*args, **kwargs):
-            bound = new_sig.bind_partial(*args, **kwargs)
-            bound.apply_defaults()
-            arguments = bound.arguments
-            arguments[name] = self._scope._data
-            real = sig.bind_partial()
-            real.arguments = bound.arguments
-            trace('eval: bound: %s -> %s', bound, real)
-            return func(*real.args, **real.kwargs)
-
-        return ctx_wrapper
-
-    # Called by `simpleeval` internally, without `stat` invocation.
-    def values(self):
-        return self.data.values()
+    params = tuple(p for p in sig.parameters.values() if p is not param)
+    bound = inspect.Signature(params).bind_partial(*args, **kwargs)
+    bound.apply_defaults()
+    arguments = bound.arguments
+    arguments[name] = ctx
+    real = sig.bind_partial()
+    real.arguments = arguments
+    trace('eval: bound: %s', real)
+    return func(*real.args, **real.kwargs)
 
 
 class ContextCallbacks(ABC):
@@ -315,14 +304,15 @@ class ScopedContext:
         self._prefixes = {}
         self._data = ctx
         self._cb = callbacks
-        funcs.setdefault('prefix', self._prefix_func)
-        funcs_ = EvalFunctions(funcs, self)
-        self._eval = SimpleEval(functions=funcs_, names=self)
+        self._funcs = dict(
+            DEFAULT_FUNCTIONS, **EVAL_FUNCS, prefix=self._prefix_func, **funcs
+        )
+        self._eval = SimpleEval(names=self)
         self._eval_str = self._eval.eval
         self._eval_node = self._eval._eval
         assert self._eval.nodes
+        self._eval.nodes[ast.Call] = self._eval_call
         self._eval.nodes[ast.Subscript] = self._eval_subscript
-        self._funcs = funcs_.data
 
     def push(self, name: str):
         new = self._scopes[-1] + name + '.'
@@ -396,12 +386,13 @@ class ScopedContext:
 
     # For `simpleeval` usage.
     def __getitem__(self, name: str) -> Value | ScopeProxy | None:
-        if (r := self._eval_get_name(name)) is Tco:
+        trace('eval: get: %s', name)
+        self._cb._consume_gas()
+        if (r := self._get_eval_name(name)) is Tco:
             raise KeyError(name)
         return r
 
-    def _eval_get_name(self, name: str) -> Value | ScopeProxy | None | TCO:
-        self._cb._consume_gas()
+    def _get_eval_name(self, name: str) -> Value | ScopeProxy | None | TCO:
         key, val = self.resolve_raw(name)
         trace('eval: item: %s -> %r', key, val)
 
@@ -421,12 +412,58 @@ class ScopedContext:
 
         return Tco
 
+    def _eval_call(self, node: ast.Call):
+        if is_tracing:
+            trace('_eval_call: %s', ast.dump(node))
+        self._cb._consume_gas()
+        args = (self._eval_node(a) for a in node.args)
+        kwargs = dict(self._eval_node(k) for k in node.keywords)
+
+        func_node = node.func
+        if isinstance(func_node, ast.Attribute):
+            func = self._eval_node(func_node)
+        elif isinstance(func_node, ast.Name):
+            name = func_node.id
+            func = self.get(name, allow_undef=True)
+            if isinstance(func, Box):
+                return self._cb._call_box(func, *args, **kwargs)
+            func = self._funcs[name]
+        else:
+            raise NotImplementedError('unsupported call: ' + str(type(func_node)))
+
+        if func in DISALLOW_FUNCTIONS:
+            raise PermissionError('disallowed function')
+
+        r = call_with_context(func, self._data, args, kwargs)
+        if is_tracing:
+            trace('_eval_call: %s -> %r', ast.dump(node), r)
+
+        if r is None or is_value_type(r):
+            return r
+
+        if isinstance(r, list):  # str.split()
+            for i, v in enumerate(r):
+                r[i] = try_to_value_or_none(v)
+            return r
+
+        if isinstance(r, tuple):
+            return tuple(try_to_value_or_none(v) for v in r)
+
+        if isinstance(r, dict):
+            return {
+                try_to_value_or_none(k): try_to_value_or_none(v) for k, v in r.items()
+            }
+
+        return fix_to_str(r)
+
     def _eval_subscript(self, node: ast.Subscript):
         if is_tracing:
             trace('_eval_subscript: %s', ast.dump(node))
+        self._cb._consume_gas()
+
         container_node = node.value
         if isinstance(container_node, ast.Name):
-            container = self._eval_get_name(container_node.id)
+            container = self._get_eval_name(container_node.id)
             if container is Tco:
                 slice = self._eval_node(node.slice)
                 key = container_node.id + '.' + str(slice)
@@ -454,10 +491,12 @@ class ScopedContext:
     def eval(
         self, expr: str, *, allow_tco: bool = False
     ) -> Value | tuple[Box, tuple, dict]:
-        node = parse_ast(expr)
+        self._cb._consume_gas()
+        tree = parse_ast(expr)
 
         # Manual TCO.
         if allow_tco:
+            node = tree
             if isinstance(node, ast.Expr):
                 node = node.value
             if isinstance(node, ast.Call) and isinstance(func := node.func, ast.Name):
@@ -477,8 +516,8 @@ class ScopedContext:
                     return val, args, kwargs
 
         if is_tracing:
-            trace('eval: ast: %s -> %s', expr, ast.dump(node))
+            trace('eval: ast: %s -> %s', expr, ast.dump(tree))
 
-        val = self._eval_str(expr, node)
+        val = self._eval_str(expr, tree)
         trace('eval: %s -> %s', expr, val)
         return try_to_value(val)

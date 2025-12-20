@@ -5,11 +5,8 @@ import math
 import logging
 import warnings
 import unittest
-
 from typing import Callable
 from unittest.mock import MagicMock
-
-log_instance = MagicMock()
 
 log = logging.getLogger('render_core')
 
@@ -296,7 +293,7 @@ class TestRender(unittest.TestCase):
             'vars',
         ):
             self.render_it(f'a="{s}";', e='not defined')
-            self.render_it(f'a="{s}()";', e='not defined')
+            self.render_it(f'a="{s}()";', e='KeyError')
         for p in (
             '__class__',
             '__bases__',
@@ -994,11 +991,11 @@ f = @ { ↦ a=$0; b=$1; "a + b" };
 wile = while = {cond, body ↦
   *cond ? *body *while
 };
+far = {cond, step, body ↦
+  *cond ? *body *step *far
+};
 fur = for = {init, cond, step, body ↦
-  *init ;
-  _body = $body;
-  body = { ↦ *_body *step };
-  *while
+  *init *far
 };
 '''
 
@@ -1116,14 +1113,17 @@ a[k] = 11;
 
     def test_context_injection(self):
         def foo(a: int, ctx: Context, b: str):
-            return f'{a} {b} {ctx["a"]}'
+            return f'{a} {b} {' '.join(ctx)} {' '.join(str(s) for s in ctx.values())}'
 
         ctx = Engine(funcs={'foo': foo})
         text = r'''
-a=233;
+a=3;
+d:=6;
+c=4;
+b=5;
 "foo(42, 'Test')";
 '''
-        self.render_it(text, ctx, eq='42 Test 233')
+        self.render_it(text, ctx, eq='42 Test a c b d 3 4 5 6')
 
 
 if __name__ == '__main__':

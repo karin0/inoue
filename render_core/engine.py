@@ -151,6 +151,7 @@ class Engine(Interpreter, ContextCallbacks):
         if funcs:
             eval_funcs.update(funcs)
         self._scope = ScopedContext(self._ctx, self, eval_funcs)
+        trace('Engine initialized: %s', self._ctx)
 
     @override
     def _consume_gas(self):
