@@ -2,29 +2,27 @@ import os
 import sys
 import time
 import math
-from typing import Callable
+import logging
 import warnings
 import unittest
-from unittest.mock import MagicMock, patch
 
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from render_core import Value, Engine
-from render_core.context import persisted
-
+from typing import Callable
+from unittest.mock import MagicMock
 
 log_instance = MagicMock()
 
+log = logging.getLogger('render_core')
+
 if os.environ.get('TEST_TRACE') == '1':
-    out = open('test.log', 'w', encoding='utf-8')
-    log_effect = lambda m, *a: print(m % a if a else m, file=out)
-    log_instance.debug.side_effect = log_effect
-    log_instance.info.side_effect = log_effect
-    log_instance.warning.side_effect = log_effect
-    log_instance.error.side_effect = log_effect
+    log.setLevel(logging.DEBUG)
+    log.addHandler(logging.FileHandler('test_render.log', 'w', encoding='utf-8'))
 else:
-    log_effect = lambda *_: None
+    log.setLevel(logging.CRITICAL)
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from render_core import Value, Engine, Context
+from render_core.context import Context, persisted, trace
 
 
 test_text = """
@@ -73,8 +71,6 @@ def mock_db(func: Callable[[str], str | None]) -> Callable[[str], str | None]:
     return func
 
 
-@patch('render_core.context.log', log_instance)
-@patch('render_core.engine.log', log_instance)
 class TestRender(unittest.TestCase):
     def setUp(self):
         db_instance.reset_mock()
@@ -87,15 +83,17 @@ class TestRender(unittest.TestCase):
     def render_it(
         self,
         text: str,
-        ctx_: dict[str, Value] | None = None,
+        ctx: Engine | dict[str, Value] | None = None,
         *,
         e: str | tuple[str, ...] = '',
         eq: str | None = None,
     ) -> str:
-        ctx = self.start(ctx_)
+        if not isinstance(ctx, Engine):
+            ctx = self.start(ctx)
+
         r = ctx.render(text)
         dump = f'Render: {text}\nResult:{r}\nerrors: {ctx.errors}\nctx: {ctx.items()}'
-        log_effect('Gas used: %s', ctx._gas)
+        trace('Gas used: %s', ctx._gas)
 
         if e:
             if isinstance(e, str):
@@ -166,22 +164,19 @@ class TestRender(unittest.TestCase):
         text = '''
 .a = "3";
 .b = "2";
-* @ { a, b ↦
+@ {
     "a+b"
 };
-* @ { named ↦
+@ {
     "a*b"
 }; .a; .b;
-named ? ERR;
-* @ { ↦
+@ {
     "a*b-a";
     a;
     b;
 };
 '''
         self.render_it(text, eq='5\n632\n332')
-        self.render_it('+{};', e='non-ref')
-        self.render_it('*{};', e='non-sub-doc')
 
     def test_compare(self):
         ctx = {'status': '200'}
@@ -1118,6 +1113,17 @@ a[k] = 11;
 "a[i] + a[j] + int(a[k][1])";
 '''
         self.render_it(text, eq='7\n7\n42\n7\n50')
+
+    def test_context_injection(self):
+        def foo(a: int, ctx: Context, b: str):
+            return f'{a} {b} {ctx["a"]}'
+
+        ctx = Engine(funcs={'foo': foo})
+        text = r'''
+a=233;
+"foo(42, 'Test')";
+'''
+        self.render_it(text, ctx, eq='42 Test 233')
 
 
 if __name__ == '__main__':

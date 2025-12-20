@@ -68,7 +68,7 @@ ASSIGN_OP: "=" | ":=" | "?="
 // Not arithmetic operators!
 UNARY_OP: "+" | "-" | "*" | "$" | "::"
 
-!unary: UNARY_OP (lvalue | code_block)
+!unary: UNARY_OP lvalue
 !unary_chain: unary+
 
 // Even more equality! Expressions cannot be empty here either.

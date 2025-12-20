@@ -1124,27 +1124,6 @@ class Engine(Interpreter, ContextCallbacks):
         op = narrow(tree.children[0], Token).value
         name = tree.children[1]
 
-        if isinstance(name, Tree) and name.data == 'code_block':
-            if op != '*':
-                self._error('block after non-ref operator: ' + op)
-                return ''
-
-            inner, sub_doc_token = self._scan_code_block(name)
-            if sub_doc_token is None:
-                self._error('non-sub-doc block after * operator')
-                return ''
-
-            # Render the immediate sub-doc and capture the result, like in
-            # `self._doc_ref()`, but without name resolution.
-            # A captured sub-doc definition should not cause any side-effects
-            # (storing into scope), so we skip the `self._sub_doc()` call.
-            if allow_tco:
-                return self._set_tco(inner)
-
-            with self._push():
-                self._run_block(inner)
-                return self._gather_output(self._output, trim=True, as_str=as_str)
-
         # `allow_undef` does not affect nested expressions in dynamic identifiers.
         key = self._lvalue(name)
         trace('_unary: op=%r key=%r', op, key)
