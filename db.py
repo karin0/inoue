@@ -1,6 +1,7 @@
 import os
 import atexit
 import logging
+from typing import Iterable
 from sqlite3 import connect, Connection
 
 from context import is_guest, ME_LOWER
@@ -125,6 +126,19 @@ class DataStore:
     def __delitem__(self, key: str):
         with self.conn:
             self.conn.execute('DELETE FROM KV WHERE key = ?;', (key,))
+
+    def iter_prefix(self, prefix: str) -> Iterable[str]:
+        cursor = self.conn.execute(
+            'SELECT key FROM KV WHERE key LIKE ? ORDER BY key;', (prefix + '%',)
+        )
+        for row in cursor:
+            yield row[0]
+
+    def count_prefix(self, prefix: str) -> int:
+        cursor = self.conn.execute(
+            'SELECT COUNT(*) FROM KV WHERE key LIKE ?;', (prefix + '%',)
+        )
+        return cursor.fetchone()[0]
 
 
 db = DataStore()

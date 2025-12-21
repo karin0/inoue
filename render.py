@@ -1,6 +1,7 @@
 import re
 import asyncio
-from typing import Mapping
+from typing import Iterator, Mapping
+from collections.abc import MutableMapping
 
 from telegram import (
     InlineQuery,
@@ -32,8 +33,8 @@ from util import (
     encode_chat_id,
 )
 from db import db
-from render_core import Engine, Value
-from render_sys import Syscall, Signature
+from render_core import Engine, Value, register_pm
+from render_bridge import Bridge, Signature
 
 # '/' is kept for compatibility, which was used for '-'.
 CALLBACK_SIGNS = '-+/'
@@ -232,9 +233,30 @@ reg_cleanup = re.compile(r'\n{3,}')
 
 ENGINE_FUNCS = {
     k: v
-    for k in dir(Syscall)
-    if not k.startswith('_') and callable(v := getattr(Syscall, k))
+    for k in dir(Bridge)
+    if not k.startswith('_') and callable(v := getattr(Bridge, k))
 }
+
+
+class PersistentStorage(MutableMapping[str, Value]):
+    def __getitem__(self, key: str) -> Value:
+        r = db['pm-' + key]
+        return decode_type(r[1:], r[0])
+
+    def __setitem__(self, key: str, value: Value) -> None:
+        db['pm-' + key] = encode_type(value)
+
+    def __delitem__(self, key: str) -> None:
+        del db['pm-' + key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(k[3:] for k in db.iter_prefix('pm-'))
+
+    def __len__(self) -> int:
+        return db.count_prefix('pm-')
+
+
+register_pm(PersistentStorage())
 
 
 class RenderContext:
@@ -285,7 +307,7 @@ class RenderContext:
 
         # Access to attributes with underscores should be forbidden in `simpleeval`,
         # so `os` is safe.
-        data = {'os': Syscall, 'sys': Syscall}
+        data = {'os': Bridge, 'sys': Bridge}
         self.engine = Engine(data, overrides, doc_loader, funcs=ENGINE_FUNCS)
 
     def render(

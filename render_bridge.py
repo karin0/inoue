@@ -7,6 +7,7 @@ from typing import Callable, Concatenate
 from render_core import Box, Context
 
 from util import escape, html_escape, log
+from motto import hitokoto
 
 
 class _Signature(Box):
@@ -17,9 +18,9 @@ class _Signature(Box):
 Signature = _Signature()
 
 
-class _Syscall(Box):
+class _Bridge(Box):
     def __repr__(self) -> str:
-        return '<Syscall>'
+        return '<Bridge>'
 
     # Underscore to avoid being injected into rendering engine.
     @staticmethod
@@ -86,5 +87,9 @@ class _Syscall(Box):
     def html_escape(text) -> str:
         return html_escape(str(text))
 
+    @staticmethod
+    def hitokoto():
+        return hitokoto()
 
-Syscall = _Syscall()
+
+Bridge = _Bridge()
