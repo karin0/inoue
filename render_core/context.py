@@ -16,7 +16,7 @@ from simpleeval import SimpleEval, DEFAULT_FUNCTIONS, DISALLOW_FUNCTIONS
 from .tco import Tco, TCO
 
 log = logging.getLogger(__name__)
-is_tracing = os.environ.get('TRACE') == '1' and log.isEnabledFor(logging.DEBUG)
+is_tracing = os.environ.get('TRACE') == '1'
 is_not_quiet = os.environ.get('TRACE_QUIET') != '1'
 trace = log.debug if is_tracing else lambda *_: None
 

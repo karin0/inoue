@@ -3,6 +3,13 @@ import sys
 import time
 import argparse
 
+if 'TRACE' in os.environ:
+    import logging
+
+    log = logging.getLogger()
+    log.setLevel(logging.DEBUG)
+    log.addHandler(logging.FileHandler('render_core_cli.log', 'w', 'utf-8'))
+
 from . import engine
 from .engine import Engine
 
