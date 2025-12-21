@@ -38,7 +38,7 @@ from util import (
     escape,
 )
 from db import db
-from motto import greeting
+from motto import greeting, hitokoto
 from inoue import render_receipt
 from run import handle_run, handle_cmd, handle_update
 from rg import handle_rg, handle_rg_callback, handle_rg_start
@@ -231,10 +231,18 @@ async def handle_inline_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await handle_render_inline_query(update, query, data)
 
 
-def stats(header=ME) -> tuple[str]:
+def stats(header=ME) -> tuple[str, str]:
     info = f'{header}: {db.summary()}'
-    log.info('%s', info)
-    text = f'{escape(greeting())}\n```\n{escape(info)}\n```'
+    kv = []
+    tot = 0
+    for prefix in ('r', 'pm', 'u', 'c', 'G%'):
+        cnt = db.count_prefix(prefix + '-')
+        kv.append(f'{prefix}: {cnt}')
+        tot += cnt
+    kv.append(f'tot: {tot}')
+    kv = ', '.join(kv)
+    log.info('%s (%s)', info, kv)
+    text = f'{escape(greeting())}\n{escape(hitokoto())}\n```\n{escape(info)}\n{escape(kv)}\n```'
     return text, 'MarkdownV2'
 
 

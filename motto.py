@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import random
 from typing import Iterable
 
@@ -44,3 +45,59 @@ def cnt():
 
 def top(n=None):
     return ''.join(s for s, c in cnt().most_common(n) if c > 2)
+
+
+SENTENCES_BUNDLE_DIR = os.environ.get('SENTENCES_BUNDLE_DIR', '')
+
+
+def hitokoto_sentences(sentences_dir: str):
+    HITOKOTO_TYPES = os.environ.get('HITOKOTO_TYPES', '').strip()
+    HITOKOTO_BANNED = os.environ.get('HITOKOTO_BANNED', '').strip()
+    if HITOKOTO_BANNED:
+        HITOKOTO_BANNED = tuple(
+            s for w in HITOKOTO_BANNED.split(',') if (s := w.strip())
+        )
+    else:
+        HITOKOTO_BANNED = ()
+
+    for kind in HITOKOTO_TYPES:
+        fn = os.path.join(sentences_dir, kind + '.json')
+        with open(fn, encoding='utf-8') as fp:
+            for d in json.load(fp):
+                assert d['type'] == kind
+                s = d['hitokoto'].strip()
+                t = d['from'].strip()
+                c = [s, t]
+                if d_from_who := d['from_who']:
+                    t = d_from_who.strip()
+                    c.append(t)
+                c = ''.join(c)
+                if any(w in c for w in HITOKOTO_BANNED):
+                    continue
+                if t:
+                    s += '—— ' + t
+                s = (
+                    s.replace('······', '……')
+                    .replace('......', '……')
+                    .replace('...', '…')
+                )
+                if '。' in s:
+                    s = (
+                        s.replace(',', '，')
+                        .replace(':', '：')
+                        .replace(';', '；')
+                        .replace('?', '？')
+                        .replace('!', '！')
+                    )
+                yield s
+
+
+if SENTENCES_BUNDLE_DIR:
+    HITOKOTO_SENTENCES = tuple(hitokoto_sentences(SENTENCES_BUNDLE_DIR))
+    log.info('Loaded %d hitokoto sentences', len(HITOKOTO_SENTENCES))
+
+
+def hitokoto() -> str:
+    s = random.choice(HITOKOTO_SENTENCES)
+    log.info('hitokoto: %s', s)
+    return s
