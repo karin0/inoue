@@ -129,6 +129,11 @@ persisted = LRUDict()
 PM_PREFIX = 'pm.'
 
 
+def register_pm(storage: MutableMapping[str, Value]) -> None:
+    global persisted
+    persisted = storage
+
+
 def get_pm_key(key: str) -> str | None:
     if len(pm_key := key.removeprefix(PM_PREFIX)) != len(key):
         return pm_key
