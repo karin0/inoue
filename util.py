@@ -23,6 +23,9 @@ BOT_NAME = os.environ['BOT_NAME']
 GUEST_USER_IDS = frozenset(
     int(x.strip()) for x in os.environ['GUEST_USER_IDS'].split(',')
 )
+IGNORE_CHAT_IDS = frozenset(
+    int(x.strip()) for x in os.environ['IGNORE_CHAT_IDS'].split(',')
+)
 
 DB_FILE = os.environ.get('DB_FILE', ME_LOWER + '.db')
 

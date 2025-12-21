@@ -27,6 +27,7 @@ from util import (
     CHAN_ID,
     GROUP_ID,
     GUEST_USER_IDS,
+    IGNORE_CHAT_IDS,
     DB_FILE,
     ME,
     init_util,
@@ -76,6 +77,10 @@ def auth(
                 src = f'{sender_name} [{sender.type} {sender_id}]'
 
         if chat := update.effective_chat:
+            if chat.id in IGNORE_CHAT_IDS:
+                log.debug('Ignoring chat %s: %s', chat.id, update)
+                return
+
             if chat.id != sender_id:
                 src2 = f'{chat.title} {{{chat.type} {chat.id}}}'
                 src = f'{src} @ {src2}' if src else src2
