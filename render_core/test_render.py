@@ -618,6 +618,9 @@ Write the following sentence twice, the second time within quotes.
         self.render_it(r"""'a\nb\rc';""", eq='a\nb\rc')
         self.render_it(r"""a=`a\nb\rc'\n';a;""", eq=r"a\nb\rc'\n'")
 
+        text = 'Line1\nLine2 with \"quote\" and \u2665 and 🥮🥮月饼🥮🥮 and \\t tab.\rLine3'
+        self.render_it(repr(text) + ';', eq=text)
+
     def test_unclosed(self):
         text = r"""{ text = `Raw backslash: \ and quote: '`; text }"""
         result = self.render_it(text, e='Unclosed')
