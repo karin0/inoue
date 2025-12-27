@@ -10,12 +10,12 @@ from util import escape, html_escape, log
 from motto import hitokoto
 
 
-class _Signature(Box):
+class Signature(Box):
+    def __init__(self, token: int):
+        self.token = token
+
     def __repr__(self) -> str:
-        return '<Signature>'
-
-
-Signature = _Signature()
+        return f'<Signature: {self.token}>'
 
 
 class _Bridge(Box):
@@ -31,12 +31,10 @@ class _Bridge(Box):
         # Not using `wraps()` to keep opaque.
         def wrapper(ctx: Context, *args: P.args, **kwargs: P.kwargs) -> T:
             # See `RenderContext.__init__`.
-            if ctx.get('_trusted') is Signature and isinstance(
-                doc_id := ctx.get('_doc_id'), int
-            ):
+            if isinstance(signature := ctx.get('_trusted'), Signature):
                 log.debug(
-                    '_Syscall: authorized doc %d for %s\n  ctx = %s',
-                    doc_id,
+                    '_Syscall: authorized %s for %s\n  ctx = %s',
+                    signature.token,
                     func.__name__,
                     ctx,
                 )

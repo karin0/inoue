@@ -18,6 +18,7 @@ from telegram.constants import ReactionEmoji
 
 from util import (
     MAX_TEXT_LENGTH,
+    USER_ID,
     log,
     get_msg_arg,
     get_msg_url,
@@ -273,11 +274,16 @@ class RenderContext:
         overrides: dict[str, Value] = dict(flags) if flags is not None else {}
         source = None
 
+        # We assume content from saved docs and USER_ID is trusted.
+        trusted = doc_id
+
         # Existing `overrides` are frozen and immutable in `Engine`, so this is safe.
         if user := update.effective_user:
             overrides['_user_id'] = str(user.id)
             overrides['_user_name'] = source = user.full_name
         if chat := update.effective_chat:
+            if trusted is None and chat.id == USER_ID:
+                trusted = USER_ID
             overrides['_chat_id'] = str(chat.id)
             if title := chat.title:
                 overrides['_chat_title'] = title
@@ -287,12 +293,10 @@ class RenderContext:
         if msg := update.effective_message:
             overrides['_msg_id'] = str(msg.message_id)
 
-        if doc_id is not None:
-            # We assume content from saved docs is trusted.
-            overrides['_trusted'] = Signature
-            overrides['_doc_id'] = doc_id
+        if trusted is not None:
+            overrides['_trusted'] = Signature(trusted)
 
-        log.debug('create_engine: overrides %s', overrides)
+        log.info('create_engine: %s', overrides)
 
         self._first_doc_id = None
         self._default_doc_id = doc_id
