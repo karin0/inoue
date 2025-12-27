@@ -2,7 +2,7 @@ import os
 import asyncio
 import logging
 import functools
-from typing import Callable, Coroutine, Iterable
+from typing import Callable, Coroutine
 
 from telegram import Message, User, Update, Bot, MessageOriginChannel
 from telegram.ext import (
@@ -39,8 +39,9 @@ from util import (
     escape,
 )
 from db import db
-from motto import greeting, hitokoto
 from inoue import render_receipt
+from motto import greeting, hitokoto
+from misc import handle_sort, handle_fetch
 from run import handle_run, handle_cmd, handle_update
 from rg import handle_rg, handle_rg_callback, handle_rg_start
 from render import (
@@ -263,33 +264,16 @@ async def handle_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return await reply_text(msg, *stats())
 
 
-def parse_sort(arg: str) -> Iterable[int]:
-    last = None
-    for x in arg.split():
-        if last and len(x) < len(last):
-            # last = 10086, x = 89 -> out = 10089
-            x = last[: len(last) - len(x)] + x
-        last = x
-        yield int(x)
-
-
-async def handle_sort(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    msg, arg = get_msg_arg(update)
-    if not arg:
-        return await msg.reply_text('Usage: /sort 114 514 1919 810 ...')
-    res = '\n'.join(str(x) for x in sorted(parse_sort(arg)))
-    await reply_text(msg, *pre_block(res))
-
-
 commands = tuple(
     (f.__name__[f.__name__.index('_') + 1 :], f)
     for f in [
+        handle_update,
+        handle_render,
+        handle_rg,
+        handle_run,
+        handle_fetch,
         handle_start,
         handle_greet,
-        handle_run,
-        handle_update,
-        handle_rg,
-        handle_render,
         handle_sort,
     ]
 )

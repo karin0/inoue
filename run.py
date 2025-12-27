@@ -1,4 +1,5 @@
 import os
+import re
 import asyncio
 import codecs
 import subprocess
@@ -10,7 +11,9 @@ from telegram import Message, Update
 from telegram.ext import ContextTypes
 from telegram.constants import ChatAction
 
-from util import get_msg, get_msg_arg, pre_block, reply_text, MAX_TEXT_LENGTH
+from util import log, get_msg, get_msg_arg, pre_block, reply_text, MAX_TEXT_LENGTH
+from misc import reply_file
+from context import ME
 
 UPDATE_CWD = os.environ['UPDATE_CWD']
 
@@ -75,11 +78,15 @@ async def producer(q: asyncio.Queue, pipe: asyncio.StreamReader):
         q.put_nowait(chunk)
 
 
+reg_file = re.compile(r'^' + re.escape(ME.upper()) + r'_SEND_FILE=(.+)$', re.M)
+
 T = TypeVar('T')
 
 
 async def consumer(
-    q: asyncio.Queue, send: Callable[[str, T], Awaitable[Message]], arg: T
+    q: asyncio.Queue,
+    send: Callable[[tuple[str, str | None], T], Awaitable[Message]],
+    arg: T,
 ):
     msg: Message | None = None
     text = ''
@@ -128,6 +135,9 @@ async def consumer(
             else:
                 msg = await send(content, arg)
 
+            if m := reg_file.search(text):
+                await send((m[1], 'file'), arg)
+
         if eof:
             break
 
@@ -141,13 +151,28 @@ async def __handle_cmd(msg: Message, child: Process, evt: asyncio.Event):
 
     async def send(content, do_quote):
         nonlocal evt
-        r = await msg.reply_text(*content, do_quote=do_quote)
+        text, parse_mode = content
+        if parse_mode == 'file':
+            try:
+                r = await reply_file(msg, text)
+            except Exception as e:
+                r = await msg.reply_text(
+                    f'Failed to send file {text}: {type(e).__name__}: {e}',
+                    do_quote=True,
+                )
+        else:
+            r = await msg.reply_text(text, parse_mode, do_quote=do_quote)
         if evt:
             evt.set()
             evt = None
         return r
 
-    await asyncio.gather(consumer(q, send, True), consumer(q_err, send, False))
+    try:
+        await asyncio.gather(consumer(q, send, True), consumer(q_err, send, False))
+    except Exception:
+        log.exception('__handle_cmd: consumer failed')
+        child.terminate()
+
     r = await child.wait()
     if r or evt:
         await msg.reply_text(f'{child.pid} exited with {r}', do_quote=True)
