@@ -60,9 +60,9 @@ MEMORY_KEY = 'mem'
 MEMORY_KEY_RAW = '_mem'
 
 
-def encode_type(val: Value) -> str:
+def encode_value(val: Value) -> str:
     if isinstance(val, bool):
-        return 'b' + '01'[val]
+        return 'b' if val else 'B'
     if isinstance(val, int):
         return ('i' + str(val)) if val >= 0 else ('I' + str(-val))
     if isinstance(val, float):
@@ -70,10 +70,13 @@ def encode_type(val: Value) -> str:
     return 's' + str(val)
 
 
-def decode_type(val: str, typ: str) -> Value:
-    match typ:
+def decode_value(s: str) -> Value:
+    val = s[1:]
+    match s[0]:
         case 'b':
-            return val == '1'
+            return True
+        case 'B':
+            return False
         case 'i':
             return int(val)
         case 'I':
@@ -82,7 +85,10 @@ def decode_type(val: str, typ: str) -> Value:
             return float(val)
         case 'F':
             return -float(val)
-    return val
+        case 's':
+            return val
+        case _:
+            raise ValueError('bad encoded value: ' + s)
 
 
 def get_ctx(
@@ -126,7 +132,7 @@ def make_markup(
 
     memory = ''
     if (val := get_ctx(ctx, MEMORY_KEY)) is not None and is_safe_key(
-        payload := encode_type(val)
+        payload := encode_value(val)
     ):
         delta = len(payload.encode('utf-8')) + 1
         if size + delta <= InlineKeyboardButton.MAX_CALLBACK_DATA:
@@ -241,11 +247,10 @@ ENGINE_FUNCS = {
 
 class PersistentStorage(MutableMapping[str, Value]):
     def __getitem__(self, key: str) -> Value:
-        r = db['pm-' + key]
-        return decode_type(r[1:], r[0])
+        return decode_value(db['pm-' + key])
 
     def __setitem__(self, key: str, value: Value) -> None:
-        db['pm-' + key] = encode_type(value)
+        db['pm-' + key] = encode_value(value)
 
     def __delitem__(self, key: str) -> None:
         del db['pm-' + key]
@@ -514,7 +519,7 @@ async def handle_render_callback(
 
     ctx = RenderContext(update, flags, doc_id=doc_id)
     if memory is not None:
-        ctx.engine[MEMORY_KEY_RAW] = decode_type(memory[1:], memory[0])
+        ctx.engine[MEMORY_KEY_RAW] = decode_value(memory)
     ctx.engine['_state'] = data
     result, parse_mode, markup = ctx.render(text, path)
 
