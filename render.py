@@ -301,18 +301,18 @@ class RenderContext:
         self._first_doc_id = None
         self._default_doc_id = doc_id
 
-        def doc_loader(name: str) -> str | None:
-            row = db.get_doc(name)
-            if row is None:
-                return None
-            if self._first_doc_id is None:
-                self._first_doc_id = row[0]
-            return row[1]
-
         # Access to attributes with underscores should be forbidden in `simpleeval`,
         # so `os` is safe.
         data = {'os': Bridge, 'sys': Bridge}
-        self.engine = Engine(data, overrides, doc_loader, funcs=ENGINE_FUNCS)
+        self.engine = Engine(data, overrides, self._doc_loader, funcs=ENGINE_FUNCS)
+
+    def _doc_loader(self, name: str) -> str | None:
+        row = db.get_doc(name)
+        if row is None:
+            return None
+        if self._first_doc_id is None:
+            self._first_doc_id = row[0]
+        return row[1]
 
     def render(
         self,
