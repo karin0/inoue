@@ -29,6 +29,12 @@ IGNORE_CHAT_IDS = frozenset(
 
 DB_FILE = os.environ.get('DB_FILE', ME_LOWER + '.db')
 
+if DOC_SEARCH_PATH := os.environ.get('DOC_SEARCH_PATH'):
+    DOC_SEARCH_PATH = tuple(d.strip() for d in DOC_SEARCH_PATH.split(':'))
+
+RENDER_REDIRECT_FILE = os.environ.get('RENDER_REDIRECT_FILE')
+RENDER_REDIRECT_HOOK = os.environ.get('RENDER_REDIRECT_HOOK')
+
 MAX_TEXT_LENGTH = MessageLimit.MAX_TEXT_LENGTH
 
 msg: ContextVar[Message | None] = ContextVar('msg')

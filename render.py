@@ -1,3 +1,4 @@
+import os
 import re
 import asyncio
 from typing import Iterator, Mapping
@@ -19,6 +20,9 @@ from telegram.constants import ReactionEmoji
 from util import (
     MAX_TEXT_LENGTH,
     USER_ID,
+    DOC_SEARCH_PATH,
+    RENDER_REDIRECT_FILE,
+    RENDER_REDIRECT_HOOK,
     log,
     get_msg_arg,
     get_msg_url,
@@ -236,6 +240,11 @@ def make_markup(
 
 
 reg_cleanup = re.compile(r'\n{3,}')
+reg_cleanup_pre = re.compile(r'^```\n+(.+?)\n+```$', re.DOTALL | re.MULTILINE)
+
+
+def repl_cleanup_pre(m: re.Match) -> str:
+    return '```\n' + m.group(1).strip() + '\n```'
 
 
 ENGINE_FUNCS = {
@@ -305,6 +314,7 @@ class RenderContext:
 
         self._first_doc_id = None
         self._default_doc_id = doc_id
+        self._trusted = trusted
 
         # Access to attributes with underscores should be forbidden in `simpleeval`,
         # so `os` is safe.
@@ -314,44 +324,97 @@ class RenderContext:
     def _doc_loader(self, name: str) -> str | None:
         row = db.get_doc(name)
         if row is None:
+            if self._trusted and DOC_SEARCH_PATH:
+                for d in DOC_SEARCH_PATH:
+                    if os.path.isfile(
+                        file := os.path.join(d, name + '.m')
+                    ) or os.path.isfile(file := os.path.join(d, name + '.txt')):
+                        with open(file, encoding='utf-8') as fp:
+                            return fp.read()
             return None
         if self._first_doc_id is None:
             self._first_doc_id = row[0]
         return row[1]
 
-    def render(
+    async def render(
         self,
         text: str,
         path: str | None,
     ) -> tuple[str, str | None, InlineKeyboardMarkup | None]:
         result = self.engine.render(text)
         log.info('rendered %d -> %d', len(text), len(result))
-        return self.to_response(path, result)
+        return await self.to_response(path, result)
 
-    def to_response(
+    async def to_response(
         self,
         path: str | None,
         result: str,
     ) -> tuple[str, str | None, InlineKeyboardMarkup | None]:
         ctx = self.engine
         result = result or '[empty]'
-        if errors := ctx.errors:
-            result += f'\n\n---\n\n' + '\n'.join(errors)
 
         first_doc_id = self._first_doc_id or self._default_doc_id
 
+        if get_ctx_flag(ctx, 'cleanup', True):
+            result = reg_cleanup.sub('\n\n', result)
+            result = reg_cleanup_pre.sub(repl_cleanup_pre, result)
+
+        if self._trusted and get_ctx_flag(ctx, 'redirect'):
+            res = []
+
+            if RENDER_REDIRECT_FILE:
+                log.info(
+                    'Redirecting %d chars to %s', len(result), RENDER_REDIRECT_FILE
+                )
+                with open(RENDER_REDIRECT_FILE, 'w', encoding='utf-8') as fp:
+                    fp.write(result)
+                res.append(
+                    f'Redirected {len(result)} chars to `{escape(RENDER_REDIRECT_FILE)}`'
+                )
+
+            if RENDER_REDIRECT_HOOK:
+                log.info(
+                    'Redirecting %d chars to hook %s', len(result), RENDER_REDIRECT_HOOK
+                )
+                proc = await asyncio.create_subprocess_shell(
+                    RENDER_REDIRECT_HOOK,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(result.encode('utf-8')), timeout=10
+                )
+                res.append(
+                    f'Redirected {len(result)} chars to hook `{escape(RENDER_REDIRECT_HOOK)}`, status {proc.returncode}'
+                )
+                if stdout := stdout and stdout.decode("utf-8", "replace").strip():
+                    res.append(f'stdout:\n```\n{stdout}\n```')
+                if stderr := stderr and stderr.decode("utf-8", "replace").strip():
+                    res.append(f'stderr:\n```\n{stderr}\n```')
+
+            if res:
+                result = '\n'.join(res)
+                as_md = True
+            else:
+                result = f'Redirecting {len(result)} chars, but neither RENDER_REDIRECT_FILE nor RENDER_REDIRECT_HOOK is set.'
+                as_md = False
+        else:
+            as_md = get_ctx_flag(ctx, 'md')
+
+        if errors := ctx.errors:
+            result += f'\n\n---\n\n' + '\n'.join(errors)
+
         result = truncate_text(result)
-        parse_mode = None
+
         if ret := make_markup(path, self.engine, self.flags, first_doc_id):
             markup, current_state = ret
         else:
             markup = current_state = None
 
-        if get_ctx_flag(ctx, 'cleanup', True):
-            result = reg_cleanup.sub('\n\n', result)
-
+        parse_mode = None
         if not errors:
-            if get_ctx_flag(ctx, 'md'):
+            if as_md:
                 parse_mode = 'MarkdownV2'
                 do_escape = escape
             elif get_ctx_flag(ctx, 'html'):
@@ -414,7 +477,7 @@ async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
         doc_id = None
 
     ctx = RenderContext(update, doc_id=doc_id)
-    res = ctx.render(text, path)
+    res = await ctx.render(text, path)
     return await reply_text(msg, *res, allow_not_modified=True)
 
 
@@ -428,14 +491,14 @@ def is_doc_ref(text: str) -> tuple[str, tuple[int, str]] | tuple[None, str] | No
         return ':' + doc_name, row
 
 
-preview_cache = {}
+preview_cache: dict[int, tuple[RenderContext, str, str]] = {}
 
 
 async def handle_render_group(msg: Message, origin_id: int):
     if cache := preview_cache.pop(origin_id, None):
         ctx, doc_name, result = cache
         log.info('Doc in group: %s -> %s %s', msg.id, origin_id, doc_name)
-        args = ctx.to_response(':' + doc_name, result)
+        args = await ctx.to_response(':' + doc_name, result)
         await reply_text(msg, *args, allow_not_modified=True)
 
     if left := tuple((id, name) for id, (name, *_) in preview_cache.items()):
@@ -461,7 +524,7 @@ async def handle_render_inline_query(update: Update, query: InlineQuery, text: s
         doc_id = path = None
 
     ctx = RenderContext(update, doc_id=doc_id)
-    result, parse_mode, markup = ctx.render(text, path)
+    result, parse_mode, markup = await ctx.render(text, path)
     r = InlineQueryResultArticle(
         id='1',
         title=f'Render: {len(result)}',
@@ -521,7 +584,7 @@ async def handle_render_callback(
     if memory is not None:
         ctx.engine[MEMORY_KEY_RAW] = decode_value(memory)
     ctx.engine['_state'] = data
-    result, parse_mode, markup = ctx.render(text, path)
+    result, parse_mode, markup = await ctx.render(text, path)
 
     query = update.callback_query
     assert query is not None
