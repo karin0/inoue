@@ -231,6 +231,7 @@ EVAL_FUNCS = {
     'time': time.time,
     'date': date_func,
     'today': today_func,
+    'len': len,
 }
 
 
