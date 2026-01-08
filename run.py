@@ -82,6 +82,8 @@ reg_file = re.compile(r'^' + re.escape(ME.upper()) + r'_SEND_FILE=(.+)$', re.M)
 
 T = TypeVar('T')
 
+SEND_LIMIT = 5
+
 
 async def consumer(
     q: asyncio.Queue,
@@ -92,6 +94,7 @@ async def consumer(
     text = ''
     dec = codecs.getincrementaldecoder('utf-8')('replace')
     left = None
+    send_cnt: int | None = 0
 
     while True:
         eof = False
@@ -132,14 +135,23 @@ async def consumer(
             content = pre_block(text, do_truncate=False)
             if msg:
                 await msg.edit_text(*content)
-            else:
+            elif send_cnt < SEND_LIMIT:
                 msg = await send(content, arg)
+                send_cnt += 1
+            else:
+                send_cnt = SEND_LIMIT + 1  # Indicate limit reached
 
             if m := reg_file.search(text):
                 await send((m[1], 'file'), arg)
 
         if eof:
             break
+
+    if send_cnt > SEND_LIMIT:
+        await send((f'Output limit of {SEND_LIMIT} messages reached.', None), arg)
+        if text:
+            content = pre_block(text, do_truncate=False)
+            await send(content, arg)
 
 
 async def __handle_cmd(msg: Message, child: Process, evt: asyncio.Event):
