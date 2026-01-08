@@ -254,8 +254,6 @@ class Engine(Interpreter, ContextCallbacks):
         return s
 
     def _render_tree(self, tree: Tree, fragment: str, root: bool):
-        assert tree.data == 'block_inner', tree
-
         # Entry of the syntax: '{ ... }', or '...;' in a single line.
         # Works like a simpler `_code_block` without scope modifier.
         sub_doc_token = self._scan_block(tree, root=root)
@@ -277,6 +275,9 @@ class Engine(Interpreter, ContextCallbacks):
             raise
 
     def _render(self, text: str, *, root: bool = False):
+        clause_depth = 0
+        clause_falses = 0
+
         for is_block, fragment in lex(text):
             if lex_errors:
                 self.errors.extend(lex_errors)
@@ -285,7 +286,40 @@ class Engine(Interpreter, ContextCallbacks):
             if is_block:
                 assert fragment is not None
                 if is_not_quiet:
-                    trace('Rendering block: %r', fragment)
+                    trace(
+                        '[%s %s] Rendering block: %r',
+                        clause_depth,
+                        clause_falses,
+                        fragment
+                    )
+
+                fragment = fragment.strip()
+                if clause_depth:
+                    if fragment == ':':
+                        trace('Else matched: %s %s', clause_depth, clause_falses)
+                        if clause_falses < 2:
+                            clause_falses = 1 - clause_falses
+                        continue
+
+                    if fragment == '!':
+                        trace('End-if matched: %s %s', clause_depth, clause_falses)
+                        clause_depth -= 1
+                        if clause_falses:
+                            clause_falses -= 1
+                        continue
+
+                if is_if := fragment.endswith('?'):
+                    # Push the stack before skipping parsing.
+                    # Actual condition evaluation is deferred.
+                    trace(
+                        'If matched: %s, %s %s', fragment, clause_depth, clause_falses
+                    )
+                    clause_depth += 1
+                    if clause_falses:
+                        clause_falses += 1
+
+                if clause_falses:
+                    continue
 
                 misses = parse_fragment.cache_info().misses
                 try:
@@ -294,17 +328,37 @@ class Engine(Interpreter, ContextCallbacks):
                     self._error(f'parse: {fragment}: {type(e).__name__}: {e}')
                     continue
 
-                new_misses = parse_fragment.cache_info().misses
-
                 if is_tracing:
+                    new_misses = parse_fragment.cache_info().misses
                     if new_misses > misses:
                         trace('Parsed tree (%s): %s', len(fragment), tree.pretty())
-                        # trace('Parsed tree (%s)', len(fragment))
                     else:
                         trace('Cached tree (%s)', len(fragment))
 
-                self._render_tree(tree, fragment, root)
-            else:
+                assert tree.data == 'block_inner', tree
+                if is_if:
+                    if (
+                        len(chs := tree.children) == 2
+                        and chs[0] is None
+                        and (br := narrow(chs[1], Tree)).data == 'branch'
+                        and len(br_chs := br.children) == 2
+                        and self._is_empty_stmt(narrow(br_chs[1], Tree))
+                    ):
+                        expr = narrow(br_chs[0], Tree)
+                        test = self._condition(expr)
+                        if is_tracing:
+                            trace(
+                                'If clause evaluated: %s %s',
+                                self.debug_node(expr),
+                                test,
+                            )
+                        if not test:
+                            clause_falses = 1
+                    else:
+                        self._error('invalid if clause')
+                else:
+                    self._render_tree(tree, fragment, root)
+            elif not clause_falses:
                 if is_not_quiet:
                     trace('Appending text fragment: %r', fragment)
                 if fragment is None:
@@ -315,6 +369,8 @@ class Engine(Interpreter, ContextCallbacks):
                 else:
                     self._put(fragment)
 
+        if clause_depth:
+            self._error('unclosed if clause')
         trace('Rendered result: %r', self._output)
 
     def render(self, text: str) -> str:
@@ -713,6 +769,10 @@ class Engine(Interpreter, ContextCallbacks):
     def _is_empty_stmt(tree: Tree) -> bool:
         return tree.data == 'stmt_list' and not tree.children
 
+    def _condition(self, expr: Tree) -> bool:
+        val = self._expr(expr, permissive=True, allow_undef=True)
+        return bool(val and val != '0')
+
     # Conditional branch: {<cond> ? true-directive : false-directive} (false part optional)
     def branch(self, tree: Tree, *, allow_tco: bool = False) -> MaybeTCO:
         cond = narrow(tree.children[0], Tree)
@@ -720,8 +780,7 @@ class Engine(Interpreter, ContextCallbacks):
         # Allow undefined vars as falsy in conditions.
         # This only applies to the direct 'unary_chain', AOE and 'naked_lit' as
         # the condition expression.
-        val = self._expr(cond, permissive=True, allow_undef=True)
-        test = val and val != '0'
+        test = self._condition(cond)
 
         chs = tree.children
         left = chs[1]
@@ -768,9 +827,8 @@ class Engine(Interpreter, ContextCallbacks):
 
         if is_tracing:
             trace(
-                'branch: test=%s val=%r tco=%s\nleft=%s\nright=%s\nrest=%s',
+                'branch: test=%s tco=%s\nleft=%s\nright=%s\nrest=%s',
                 test,
-                val,
                 allow_tco,
                 self.debug_node(left),
                 self.debug_node(right),

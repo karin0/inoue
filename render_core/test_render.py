@@ -432,7 +432,7 @@ Write the following sentence twice, the second time within quotes.
         )
         self.assertEqual(result, 'Highrest')
 
-        result = self.render_it('{ x="100" ? }\na')
+        result = self.render_it('{ x="100" ? \'\' }\na')
         self.assertEqual(result, 'a')
 
         result = self.render_it('{ x="100" ?: }\na')
@@ -1127,6 +1127,46 @@ b=5;
 "foo(42, 'Test')";
 '''
         self.render_it(text, ctx, eq='42 Test a c b d 3 4 5 6')
+
+    def test_if_clause(self):
+        text = r'''
+a = "10";
+{a?}
+OK
+{:}
+ERR
+{!}
+REST
+'''
+        self.render_it(text, eq='OK\n\nREST')
+
+        text = r'''
+a = "0";
+{a?}
+ERR
+{:}
+OK
+{!}
+REST
+'''
+        self.render_it(text, eq='OK\n\nREST')
+
+    def test_if_clause_2(self):
+        text = r'''
+safe = 1;
+{0?}
+    Unsafe
+    {safe?}
+        Unsafe 2
+    {!}
+    { "1 / 0" }
+    { undef }
+    { ? : ! }
+{:}
+    Alive
+{!}
+'''
+        self.render_it(text, eq='Alive')
 
 
 if __name__ == '__main__':
