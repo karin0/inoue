@@ -198,8 +198,7 @@ class OverriddenDict(UserDict):
         return self.overrides.setdefault(key, value)
 
     def _compact(self):
-        self.data.update(self.overrides)
-        return self.data
+        return dict(self.data, **self.overrides)
 
     def __iter__(self):
         # Keys from the underlying dict are yielded first, in their natural order.
