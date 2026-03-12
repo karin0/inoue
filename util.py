@@ -390,8 +390,11 @@ def escape(s: str) -> str:
     return escape_markdown(s, version=2)
 
 
+type Content = tuple[str, str | None]
+
+
 # This truncates the text by default, trimming any leading and trailing spaces.
-def pre_block(s: str, *, do_truncate: bool = True) -> tuple[str, str | None]:
+def pre_block(s: str, *, do_truncate: bool = True) -> Content:
     if len(s) + 8 <= MAX_TEXT_LENGTH:
         text = '```\n' + escape(s) + '\n```'
         if len(text) <= MAX_TEXT_LENGTH:
@@ -402,7 +405,7 @@ def pre_block(s: str, *, do_truncate: bool = True) -> tuple[str, str | None]:
     return s, None
 
 
-def blockquote_block(s: str) -> tuple[str, str | None]:
+def blockquote_block(s: str) -> Content:
     if len(s) + 36 <= MAX_TEXT_LENGTH:
         text = '<blockquote expandable>' + html_escape(s) + '</blockquote>'
         if len(text) <= MAX_TEXT_LENGTH:
