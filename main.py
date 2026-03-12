@@ -194,6 +194,15 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await msg.reply_text(*pre_block(str(origin)), do_quote=True)
 
     if not ((text := msg.text) and text.strip()):
+        if (
+            msg.forum_topic_created
+            or msg.forum_topic_edited
+            or msg.forum_topic_closed
+            or msg.forum_topic_reopened
+        ):
+            log.debug('Ignoring forum_topic: %s', msg)
+            return
+
         with open('out.ogg', 'rb') as f:
             return await msg.reply_voice(f, do_quote=True)
 
