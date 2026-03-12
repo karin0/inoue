@@ -451,14 +451,10 @@ REG_DOC_REF = re.compile(r'[*:]\s*(\w+)\s*;')
 async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
     msg, arg = get_msg_arg(update)
     target = msg.reply_to_message
+    text = target and (target.text or target.caption or '').strip()
 
-    if target:
-        text = (target.text or target.caption or '').strip()
-        if not text:
-            return await reply_text(msg, 'No text to render.')
-
+    if text:
         if arg:
-            # Include context set by arg
             text = arg + '\n' + text
     elif arg:
         text = arg
