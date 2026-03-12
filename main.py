@@ -246,7 +246,7 @@ async def handle_inline_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await handle_render_inline_query(update, query, data)
 
 
-def stats(header=ME) -> tuple[str, str]:
+def stats(me: User, header: str = ME) -> tuple[str, str]:
     info = f'{header}: {db.summary()}'
     kv = []
     tot = 0
@@ -257,12 +257,12 @@ def stats(header=ME) -> tuple[str, str]:
     kv.append(f'tot: {tot}')
     kv = ', '.join(kv)
     log.info('%s (%s)', info, kv)
-    text = f'{escape(greeting())}\n{escape(hitokoto())}\n```\n{escape(info)}\n{escape(kv)}\n```'
+    text = f'{escape(greeting())}\n{escape(hitokoto())}\n```\n{escape(info)}\n{escape(kv)}\n```\n```\n{escape(str(me))}\n```'
     return text, 'MarkdownV2'
 
 
 async def handle_greet(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await reply_text(update, *stats())
+    await reply_text(update, *stats(await ctx.bot.get_me()))
 
 
 async def handle_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -270,7 +270,7 @@ async def handle_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if arg and arg.startswith('rg_'):
         return await handle_rg_start(msg, arg)
 
-    return await reply_text(msg, *stats())
+    return await reply_text(msg, *stats(await ctx.bot.get_me()))
 
 
 commands = tuple(
@@ -294,7 +294,7 @@ async def post_init(app: Application) -> None:
     db.connect(DB_FILE)
     await bot.set_my_commands(tuple((s, s) for s, _ in commands))
     if not log.isEnabledFor(logging.DEBUG):
-        await do_notify(*stats(f'{ME} initiated'))
+        await do_notify(*stats(await bot.get_me(), f'{ME} initiated'))
 
 
 async def post_stop(_: Application) -> None:
