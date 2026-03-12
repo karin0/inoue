@@ -435,7 +435,7 @@ Write the following sentence twice, the second time within quotes.
         result = self.render_it('{ x="100" ? \'\' }\na')
         self.assertEqual(result, 'a')
 
-        result = self.render_it('{ x="100" ?: }\na')
+        result = self.render_it('{ x="100" ?: \'\' }\na')
         self.assertEqual(result, 'a')
 
     def test_nested_blocks_and_branches(self):
@@ -1153,8 +1153,9 @@ REST
 
     def test_if_clause_2(self):
         text = r'''
+v = "0";
 safe = 1;
-{0?}
+{v?}
     Unsafe
     {safe?}
         Unsafe 2
@@ -1167,6 +1168,7 @@ safe = 1;
 {!}
 '''
         self.render_it(text, eq='Alive')
+        self.render_it(text.replace('v?', '"v+1" ?:'), eq='Alive')
 
 
 if __name__ == '__main__':

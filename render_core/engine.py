@@ -298,7 +298,7 @@ class Engine(Interpreter, ContextCallbacks):
                     if fragment == ':':
                         trace('Else matched: %s %s', clause_depth, clause_falses)
                         if clause_falses < 2:
-                            clause_falses = 1 - clause_falses
+                            clause_falses ^= 1
                         continue
 
                     if fragment == '!':
@@ -308,7 +308,16 @@ class Engine(Interpreter, ContextCallbacks):
                             clause_falses -= 1
                         continue
 
-                if is_if := fragment.endswith('?'):
+                if fragment.endswith('?'):
+                    # { cond ? }
+                    if_kind = False
+                    # { cond ?: } means { "not cond" ? }
+                elif fragment.endswith(':') and fragment[:-1].strip().endswith('?'):
+                    if_kind = True
+                else:
+                    if_kind = None
+
+                if if_kind is not None:
                     # Push the stack before skipping parsing.
                     # Actual condition evaluation is deferred.
                     trace(
@@ -336,16 +345,23 @@ class Engine(Interpreter, ContextCallbacks):
                         trace('Cached tree (%s)', len(fragment))
 
                 assert tree.data == 'block_inner', tree
-                if is_if:
+                if if_kind is not None:
                     if (
                         len(chs := tree.children) == 2
                         and chs[0] is None
                         and (br := narrow(chs[1], Tree)).data == 'branch'
-                        and len(br_chs := br.children) == 2
+                        and (
+                            (len(br_chs := br.children) == 2)
+                            if not if_kind
+                            else (
+                                len(br_chs := br.children) == 3
+                                and self._is_empty_stmt(narrow(br_chs[2], Tree))
+                            )
+                        )
                         and self._is_empty_stmt(narrow(br_chs[1], Tree))
                     ):
                         expr = narrow(br_chs[0], Tree)
-                        test = self._condition(expr)
+                        test = self._condition(expr) ^ if_kind
                         if is_tracing:
                             trace(
                                 'If clause evaluated: %s %s',
