@@ -1345,6 +1345,9 @@ class Engine(Interpreter, ContextCallbacks):
         if is_tracing:
             trace('Assign: keys=%s op=%r expr=%s', keys, op, self.debug_node(expr))
 
+        self._do_assign(keys, op, expr)
+
+    def _do_assign(self, keys: Sequence[str], op: str, expr: Tree | None):
         match op:
             case '=':
                 # Context set: {key=value}
@@ -1403,7 +1406,7 @@ class Engine(Interpreter, ContextCallbacks):
                 return
 
             case _:
-                raise ValueError(f'Bad assign op: {tree.pretty()}')
+                raise ValueError(f'Bad assign op: {op}')
 
         val = self._expr(expr) if expr else ''
         for key in keys:
@@ -1412,12 +1415,16 @@ class Engine(Interpreter, ContextCallbacks):
             self._scope.set(key, val, f)
 
     # Equality test: {key1=key2=...=<expr>}, but not as expression statements.
-    def _equal(self, tree: Tree, allow_undef: bool = False) -> str:
+    # For other operations (`?=` or `:=`), this works the same as assignment,
+    # but returns the final value of the first key.
+    def _equal(self, tree: Tree, allow_undef: bool = False) -> Value:
         keys, op, expr = self._resolve_aoe_chain(tree)
         if is_tracing:
             trace('Equal: keys=%s op=%r expr=%s', keys, op, self.debug_node(expr))
+
         if op != '=':
-            self._error('bad assign op in equality test: ' + op)
+            self._do_assign(keys, op, expr)
+            return self._scope.get(keys[0], allow_undef=allow_undef)
 
         final_val = self._expr(expr, as_str=True) if expr else ''
         for key in keys:

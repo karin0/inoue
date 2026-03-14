@@ -215,10 +215,13 @@ class TestRender(unittest.TestCase):
             self.render_it(
                 '{c=d=e=200; f=100; x=(c=d=f); y=(c=d=e); z=(c?=d=e); w=(c:=d=$e); "x+y+z+w" }',
                 ctx,
-                e='bad assign op',
             ),
-            "0001",
+            "00200200",
         )
+        self.assertEqual(
+            self.render_it('a=1; a; x=(a:=2); x; a; y=(a?=3); y; a;'), '12222'
+        )
+        self.assertEqual(self.render_it('a?=1 ? OK : ERR;', ctx), 'OK')
 
         # Lazy evaluation is only for `?=`.
         self.assertEqual(self.render_it('a=1; b=1; a={b=2; \'3\'}; a; b;'), '32')
