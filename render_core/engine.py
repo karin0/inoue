@@ -290,7 +290,7 @@ class Engine(Interpreter, ContextCallbacks):
                         '[%s %s] Rendering block: %r',
                         clause_depth,
                         clause_falses,
-                        fragment
+                        fragment,
                     )
 
                 fragment = fragment.strip()
@@ -1063,6 +1063,8 @@ class Engine(Interpreter, ContextCallbacks):
         key = token.value.strip()
         if permissive and self._check_iden(key):
             return self._scope.get(key, as_str=as_str, allow_undef=allow_undef)
+        if not as_str and key.isdecimal() and (key[0] != '0' or key == '0'):
+            return int(key)
         return key
 
     @overload

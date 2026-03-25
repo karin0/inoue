@@ -213,7 +213,7 @@ class TestRender(unittest.TestCase):
         )
         self.assertEqual(
             self.render_it(
-                '{c=d=e=200; f=100; x=(c=d=f); y=(c=d=e); z=(c?=d=e); w=(c:=d=$e); "x+y+z+w" }',
+                '{c=d=e=\'200\'; f=\'100\'; x=(c=d=f); y=(c=d=e); z=(c?=d=e); w=(c:=d=$e); "x+y+z+w" }',
                 ctx,
             ),
             "00200200",
@@ -372,8 +372,8 @@ n ? *bomb : Boom!;
     def test_swap(self):
         result, ctx = self.render_it_all("{x=1; y=2; x^y; x; y}")
         self.assertEqual(result, "21")
-        self.assertEqual(ctx.get('x'), '2')
-        self.assertEqual(ctx.get('y'), '1')
+        self.assertEqual(ctx.get('x'), 2)
+        self.assertEqual(ctx.get('y'), 1)
 
         result = self.render_it("{a=hello; a^b; a}", e='undefined')
         self.assertEqual(result, '')
@@ -416,7 +416,7 @@ Write the following sentence twice, the second time within quotes.
         self.assertEqual(result, '235')
 
     def test_nested_blocks(self):
-        text = '{ a=1; { b=2; { c=3; "a + b + c" }; "a + b" }; a }'
+        text = '{ a=\'1\'; { b=\'2\'; { c=\'3\'; "a + b + c" }; "a + b" }; a }'
         result = self.render_it(text)
         self.assertEqual(result, '123121')
 
@@ -1106,13 +1106,13 @@ i = "1";
 a[i] = "7";
 a[i];
 a.1;
-j = 6;
-a[j] = "42";
+j = '6';
+a[j] = 42;
 a[j] ^ a[i];
 a[i];
 a[j];
 k = "7";
-a[k] = 11;
+a[k] = '11';
 "a[i] + a[j] + int(a[k][1])";
 '''
         self.render_it(text, eq='7\n7\n42\n7\n50')
