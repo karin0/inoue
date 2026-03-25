@@ -129,7 +129,6 @@ def auth(
 
         if chat := update.effective_chat:
             if chat.id in IGNORE_CHAT_IDS:
-                log.debug('Ignoring chat %s: %s', chat.id, update)
                 return
 
             if chat.id != sender_id:

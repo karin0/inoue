@@ -35,6 +35,7 @@ async def handle_cmd(msg: Message, cmd: str):
 
 
 async def _handle_cmd(msg: Message, bin: str, *args, **kwargs):
+    log.debug(f'Spawning: {bin} {args}')
     child = await asyncio.create_subprocess_exec(
         bin,
         *args,

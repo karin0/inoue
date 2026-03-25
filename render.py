@@ -497,7 +497,7 @@ async def handle_render_group(msg: Message, origin_id: int):
         args = await ctx.to_response(':' + doc_name, result)
         await reply_text(msg, *args, allow_not_modified=True)
 
-    if left := tuple((id, name) for id, (name, *_) in preview_cache.items()):
+    if left := tuple((id, name) for id, (_, name, *_) in preview_cache.items()):
         log.warning('Preview cache not empty: %s', left)
 
 
