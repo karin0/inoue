@@ -38,6 +38,7 @@ RENDER_REDIRECT_HOOK = os.environ.get('RENDER_REDIRECT_HOOK')
 MAX_TEXT_LENGTH = MessageLimit.MAX_TEXT_LENGTH
 
 msg: ContextVar[Message | None] = ContextVar('msg')
+text_override: ContextVar[str | None] = ContextVar('text_override', default=None)
 bot: Bot | None = None
 
 
@@ -128,6 +129,15 @@ def use_msg(m: Message | None):
         yield m
     finally:
         msg.reset(token)
+
+
+@contextmanager
+def use_text_override(text: str):
+    token = text_override.set(text)
+    try:
+        yield
+    finally:
+        text_override.reset(token)
 
 
 @contextmanager
@@ -231,7 +241,7 @@ def get_msg(update: MessageSource) -> Message:
 
 def get_msg_arg(update: MessageSource) -> tuple[Message, str]:
     m = get_msg(update)
-    s = m.text
+    s = text_override.get() or m.text
 
     if not s.startswith('/'):
         return m, s.strip()

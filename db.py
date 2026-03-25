@@ -46,6 +46,12 @@ class DataStore:
                         SELECT id FROM KV ORDER BY id DESC LIMIT -1 OFFSET 1000
                     );
                 END;
+
+                CREATE TABLE IF NOT EXISTS Command (
+                    id    INTEGER PRIMARY KEY NOT NULL,
+                    name  TEXT    UNIQUE NOT NULL,
+                    cmd   TEXT    NOT NULL
+                );
                 '''
             )
         log.debug('Connected to db: %s', file)
@@ -59,7 +65,8 @@ class DataStore:
     def summary(self) -> str:
         n = self.conn.execute('SELECT COUNT(*) FROM Doc').fetchone()[0]
         m = self.conn.execute('SELECT COUNT(*) FROM KV').fetchone()[0]
-        return f'{n} docs, {m} keys'
+        c = self.conn.execute('SELECT COUNT(*) FROM Command').fetchone()[0]
+        return f'{n} docs, {m} keys, {c} commands'
 
     def get_doc(self, name: str) -> tuple[int, str] | None:
         if is_guest():
@@ -139,6 +146,28 @@ class DataStore:
             'SELECT COUNT(*) FROM KV WHERE key LIKE ?;', (prefix + '%',)
         )
         return cursor.fetchone()[0]
+
+    def get_command(self, name: str) -> str | None:
+        cursor = self.conn.execute('SELECT cmd FROM Command WHERE name = ?;', (name,))
+        if row := cursor.fetchone():
+            return row[0]
+        return None
+
+    def set_command(self, name: str, cmd: str):
+        with self.conn:
+            if cmd:
+                self.conn.execute(
+                    '''INSERT INTO Command (name, cmd) VALUES (?, ?)
+                    ON CONFLICT(name) DO UPDATE SET cmd = excluded.cmd;''',
+                    (name, cmd),
+                )
+            else:
+                self.conn.execute('DELETE FROM Command WHERE name = ?;', (name,))
+
+    def iter_commands(self) -> Iterable[str]:
+        cursor = self.conn.execute('SELECT name FROM Command ORDER BY name;')
+        for row in cursor:
+            yield row[0]
 
 
 db = DataStore()

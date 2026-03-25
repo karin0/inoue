@@ -1,4 +1,6 @@
 import os
+import re
+import shlex
 import asyncio
 import logging
 import functools
@@ -33,6 +35,7 @@ from util import (
     init_util,
     use_msg,
     use_is_guest,
+    use_text_override,
     get_msg,
     get_msg_arg,
     do_notify,
@@ -52,6 +55,53 @@ from render import (
     handle_render_inline_query,
     ALL_CALLBACK_SIGNS,
 )
+
+
+REG_TEMPLATE_ARG = re.compile(r'\$(\*|\d+)')
+
+commands: dict[str, Callable]
+
+
+def expand_template(template: str, args_str: str) -> str:
+    args = shlex.split(args_str) if args_str else []
+
+    def replacer(m):
+        token = m.group(1)
+        if token == '*':
+            return args_str
+        idx = int(token) - 1
+        return args[idx] if 0 <= idx < len(args) else ''
+
+    return REG_TEMPLATE_ARG.sub(replacer, template)
+
+
+# Provided `text` must start with '/'.
+async def dispatch_cmd(
+    update: Update,
+    ctx: ContextTypes.DEFAULT_TYPE,
+    msg: Message,
+    text: str,
+    depth: int = 0,
+):
+    if depth > 10:
+        return await reply_text(msg, 'Too many levels of command expansion.')
+
+    content = text[1:].strip()
+    parts = content.split(None, 1)
+    cmd_name = parts[0].split('@')[0]
+    cmd_args = parts[1] if len(parts) > 1 else ''
+
+    if template := db.get_command(cmd_name):
+        expanded = expand_template(template, cmd_args)
+        if expanded.startswith('/'):
+            return await dispatch_cmd(update, ctx, msg, expanded, depth + 1)
+        return await handle_cmd(msg, expanded)
+
+    if handler := commands.get(cmd_name):
+        with use_text_override(text):
+            return await handler(update, ctx)
+
+    return await handle_cmd(msg, content)
 
 
 def auth(
@@ -207,7 +257,7 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return await msg.reply_voice(f, do_quote=True)
 
     if text.startswith('/'):
-        return await handle_cmd(msg, text[1:].strip())
+        return await dispatch_cmd(update, ctx, msg, text)
 
     if '\n' not in text:
         return await handle_rg(update, ctx)
@@ -265,6 +315,34 @@ async def handle_greet(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await reply_text(update, *stats(await ctx.bot.get_me()))
 
 
+async def handle_def(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg, arg = get_msg_arg(update)
+    if not arg:
+        cmds = []
+        for name in db.iter_commands():
+            cmd = db.get_command(name)
+            cmds.append(f'/{name} \u2192 {cmd}')
+        if not cmds:
+            return await reply_text(msg, 'No custom commands defined.')
+        return await reply_text(msg, *pre_block('\n'.join(cmds)))
+
+    parts = arg.split(None, 1)
+    name = parts[0]
+    template = parts[1] if len(parts) > 1 else ''
+
+    if template:
+        db.set_command(name, template)
+        await set_commands(ctx.bot)
+        await reply_text(msg, *pre_block(f'/{name} \u2192 {template}'))
+    else:
+        if db.get_command(name):
+            db.set_command(name, '')
+            await set_commands(ctx.bot)
+            await reply_text(msg, f'Deleted /{name}')
+        else:
+            await reply_text(msg, f'/{name} not found')
+
+
 async def handle_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg, arg = get_msg_arg(update)
     if arg and arg.startswith('rg_'):
@@ -273,26 +351,33 @@ async def handle_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return await reply_text(msg, *stats(await ctx.bot.get_me()))
 
 
-commands = tuple(
-    (f.__name__[f.__name__.index('_') + 1 :], f)
-    for f in [
-        handle_update,
-        handle_render,
-        handle_rg,
-        handle_run,
-        handle_fetch,
-        handle_start,
-        handle_greet,
-        handle_sort,
-    ]
+handlers = (
+    handle_update,
+    handle_render,
+    handle_rg,
+    handle_run,
+    handle_fetch,
+    handle_start,
+    handle_greet,
+    handle_sort,
+    handle_def,
 )
+
+commands = {f.__name__[f.__name__.index('_') + 1 :]: f for f in handlers}
+
+
+async def set_commands(bot: Bot):
+    cmds = [(name, name) for name in commands]
+    for name in db.iter_commands():
+        cmds.append((name, name))
+    await bot.set_my_commands(cmds)
 
 
 async def post_init(app: Application) -> None:
     bot: Bot = app.bot
     init_util(bot)
     db.connect(DB_FILE)
-    await bot.set_my_commands(tuple((s, s) for s, _ in commands))
+    await set_commands(bot)
     if not log.isEnabledFor(logging.DEBUG):
         await do_notify(*stats(await bot.get_me(), f'{ME} initiated'))
 
@@ -325,14 +410,14 @@ def main():
     )
     app.add_error_handler(handle_error)
 
-    for name, func in commands:
+    rg = None
+    for name, func in commands.items():
+        f = auth(func, permissive=name == 'render')
         if name == 'rg':
-            f = rg = auth(func)
-        elif name == 'render':
-            f = auth(func, permissive=True)
-        else:
-            f = auth(func)
+            rg = f
         app.add_handler(CommandHandler(name, f))
+
+    assert rg, 'handle_rg not found'
 
     for off in range(5):
         app.add_handler(CommandHandler(f'rg{off}', rg))
