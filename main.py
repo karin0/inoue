@@ -47,6 +47,7 @@ from motto import greeting, hitokoto
 from misc import handle_sort, handle_fetch
 from run import handle_run, handle_cmd, handle_update
 from rg import handle_rg, handle_rg_callback, handle_rg_start
+from voice import handle_voice
 from render import (
     handle_render,
     handle_render_doc,
@@ -241,6 +242,10 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # ID Bot
     if origin:
         return await msg.reply_text(*pre_block(str(origin)), do_quote=True)
+
+    if attachment := msg.document or msg.audio:
+        await handle_voice(msg, ctx.bot, attachment)
+        return
 
     if not ((text := msg.text) and text.strip()):
         if (
