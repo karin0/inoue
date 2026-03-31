@@ -40,6 +40,7 @@ from util import (
 )
 from db import db
 from render_core import Engine, Value, register_pm
+from render_core.context import LRUDict
 from render_bridge import Bridge, Signature
 
 # '/' is kept for compatibility, which was used for '-'.
@@ -307,14 +308,24 @@ async def _collect_redirect_hook_result(hook: str, text: str, res: list[str]) ->
 
 
 class PersistentStorage(MutableMapping[str, Value]):
+    def __init__(self) -> None:
+        super().__init__()
+        self._cache = LRUDict()
+
     def __getitem__(self, key: str) -> Value:
-        return decode_value(db['pm-' + key])
+        if key in self._cache:
+            return self._cache[key]
+        value = decode_value(db['pm-' + key])
+        self._cache[key] = value
+        return value
 
     def __setitem__(self, key: str, value: Value) -> None:
         db['pm-' + key] = encode_value(value)
+        self._cache[key] = value
 
     def __delitem__(self, key: str) -> None:
         del db['pm-' + key]
+        del self._cache[key]
 
     def __iter__(self) -> Iterator[str]:
         return iter(k[3:] for k in db.iter_prefix('pm-'))
