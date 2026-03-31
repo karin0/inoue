@@ -614,9 +614,13 @@ async def handle_render_group(msg: Message, origin_id: int):
             update_callback=edit_reply_message,
         )
         await edit_reply_message(spec)
+    else:
+        log.info('No preview cache in group: %s -> %s', msg.id, origin_id)
 
-    if left := tuple((id, name) for id, (_, name, *_) in preview_cache.items()):
+    if preview_cache:
+        left = tuple((id, name) for id, (_, name, _) in preview_cache.items())
         log.warning('Preview cache not empty: %s', left)
+        preview_cache.clear()
 
 
 async def handle_render_inline_query(update: Update, query: InlineQuery, text: str):
