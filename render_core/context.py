@@ -249,23 +249,30 @@ class ScopeProxy:
 type Context = MutableMapping[str, Value]
 
 
+@functools.lru_cache
+def inspect_func(
+    func: Callable,
+) -> tuple[inspect.Signature, str, inspect.Parameter] | None:
+    if isinstance(func, type):
+        trace('inspect: type: %s', func)
+        return None
+
+    sig = inspect.signature(func)
+    for name, param in sig.parameters.items():
+        if param.annotation is Context:
+            return sig, name, param
+
+    trace('inspect: plain: %s %s', func, sig)
+    return None
+
+
 def call_with_context(
     func: Callable, ctx: Context, args: Iterable, kwargs: dict[str, Any]
 ) -> Any:
-    try:
-        sig = inspect.signature(func)
-    except ValueError as e:
-        # int, str
-        trace('eval: no sig: %s: %s', func, e)
+    if (info := inspect_func(func)) is None:
         return func(*args, **kwargs)
 
-    for name, param in sig.parameters.items():
-        if param.annotation is Context:
-            break
-    else:
-        trace('eval: plain: %s %s', func, sig)
-        return func(*args, **kwargs)
-
+    sig, name, param = info
     trace('eval: inject: %s: %s (%s)', func, sig, name)
 
     params = tuple(p for p in sig.parameters.values() if p is not param)
