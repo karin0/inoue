@@ -825,21 +825,18 @@ class Engine(Interpreter, ContextCallbacks):
         # `(a ? b : c); d;`.
         # You can still explicitly specify the captured parts with braces or a
         # final marker, like in `a ? b : {c ; d}` or `a ? b : c ; d !`.
-        rest = None
+        rest = ()
         if final_marker is None:
             split_left = right is None
             to_split = left if split_left else right
             if to_split is not None:
                 to_split = narrow(to_split, Tree)
                 if to_split.data == 'stmt_list' and (chs := to_split.children):
-                    if len(chs) > 1:
-                        rest = narrow(chs[1], Tree)
-                        if self._is_empty_stmt(rest):
-                            rest = None
+                    # chs[1:] will be executed unconditionally after the branch.
                     if split_left:
-                        left = chs[0]
+                        left, *rest = chs
                     else:
-                        right = chs[0]
+                        right, *rest = chs
 
         if is_tracing:
             trace(
@@ -848,18 +845,22 @@ class Engine(Interpreter, ContextCallbacks):
                 allow_tco,
                 self.debug_node(left),
                 self.debug_node(right),
-                self.debug_node(rest),
+                ' | '.join(self.debug_node(stmt) for stmt in rest),
             )
 
         to = left if test else right
-        if rest is None:
+        if not rest:
             if to is None:
                 return
             return self.visit(narrow(to, Tree), direct_branch=True, allow_tco=allow_tco)
 
         if to is not None:
             self.visit(narrow(to, Tree), direct_branch=True)
-        return self.visit(rest, allow_tco=allow_tco)
+
+        if rest:
+            for stmt in rest[:-1]:
+                self.visit(stmt)
+            return self.visit(rest[-1], allow_tco=allow_tco)
 
     def _trace(
         self, tree: Tree, *, direct_branch: bool = False, allow_tco: bool = False
