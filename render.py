@@ -1,7 +1,8 @@
 import os
 import re
+import time
 import asyncio
-from typing import Iterator, Mapping
+from typing import Iterator, Mapping, Callable, Awaitable
 from collections.abc import MutableMapping
 
 from telegram import (
@@ -253,6 +254,60 @@ ENGINE_FUNCS = {
     if not k.startswith('_') and callable(v := getattr(Bridge, k))
 }
 
+type MessageSpec = tuple[str, str | None, InlineKeyboardMarkup | None]
+type UpdateCallback = Callable[[MessageSpec], Awaitable[None]]
+
+
+async def _collect_redirect_hook_result(hook: str, text: str, res: list[str]) -> str:
+    t0 = time.monotonic()
+    proc = await asyncio.create_subprocess_shell(
+        hook,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    timeout = None
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(text.encode('utf-8')), timeout=10
+        )
+    except asyncio.TimeoutError:
+        timeout = 'timed out'
+        proc.terminate()
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=5)
+        except asyncio.TimeoutError:
+            timeout = 'timed out to terminate and was killed'
+            proc.kill()
+            stdout, stderr = await proc.communicate()
+
+    dt = time.monotonic() - t0
+    elapsed = escape(f'{dt:.2f}s' if dt >= 1 else f'{int(dt * 1000)}ms')
+    status = escape(str(proc.returncode))
+    res = ['\n'.join(res)]
+
+    if timeout:
+        res.append(
+            f'\nRedirection `{escape(hook)}` {timeout} in {elapsed}, status {status}'
+        )
+    else:
+        res.append(
+            f'\nRedirected {len(text)} chars to hook `{escape(hook)}` in {elapsed}'
+        )
+        if status:
+            res.append(f', status {status}')
+
+    if out := stdout.decode('utf-8', 'replace').strip():
+        res.append(f'\nstdout:\n```\n{escape(out)}\n```')
+
+    if err := stderr.decode('utf-8', 'replace').strip():
+        if not out:
+            res.append('\n')
+        res.append(f'stderr:\n```\n{escape(err)}\n```')
+
+    return ''.join(res)
+
 
 class PersistentStorage(MutableMapping[str, Value]):
     def __getitem__(self, key: str) -> Value:
@@ -340,16 +395,25 @@ class RenderContext:
         self,
         text: str,
         path: str | None,
-    ) -> tuple[str, str | None, InlineKeyboardMarkup | None]:
-        result = self.engine.render(text)
-        log.info('rendered %d -> %d', len(text), len(result))
-        return await self.to_response(path, result)
+        update_callback: UpdateCallback | None = None,
+    ) -> MessageSpec:
+        rendered = self.engine.render(text)
+        log.info('rendered %d -> %d', len(text), len(rendered))
+        result = await self.to_response(
+            path,
+            rendered,
+            update_callback,
+        )
+        if update_callback:
+            await update_callback(result)
+        return result
 
     async def to_response(
         self,
         path: str | None,
         result: str,
-    ) -> tuple[str, str | None, InlineKeyboardMarkup | None]:
+        update_callback: UpdateCallback | None = None,
+    ) -> MessageSpec:
         ctx = self.engine
         result = result or '[empty]'
 
@@ -376,22 +440,26 @@ class RenderContext:
                 log.info(
                     'Redirecting %d chars to hook %s', len(result), RENDER_REDIRECT_HOOK
                 )
-                proc = await asyncio.create_subprocess_shell(
-                    RENDER_REDIRECT_HOOK,
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(result.encode('utf-8')), timeout=10
-                )
-                res.append(
-                    f'Redirected {len(result)} chars to hook `{escape(RENDER_REDIRECT_HOOK)}`, status {proc.returncode}'
-                )
-                if stdout := stdout and stdout.decode("utf-8", "replace").strip():
-                    res.append(f'stdout:\n```\n{stdout}\n```')
-                if stderr := stderr and stderr.decode("utf-8", "replace").strip():
-                    res.append(f'stderr:\n```\n{stderr}\n```')
+                if update_callback is None:
+                    result = await _collect_redirect_hook_result(
+                        RENDER_REDIRECT_HOOK,
+                        result,
+                        res,
+                    )
+                else:
+                    base_res = list(res)
+                    res.append(
+                        rf'Redirecting {len(result)} chars to hook `{escape(RENDER_REDIRECT_HOOK)}` \.\.\.'
+                    )
+                    asyncio.create_task(
+                        self._update_redirect_hook_result(
+                            path,
+                            result,
+                            base_res,
+                            first_doc_id,
+                            update_callback,
+                        )
+                    )
 
             if res:
                 result = '\n'.join(res)
@@ -400,9 +468,24 @@ class RenderContext:
                 result = f'Redirecting {len(result)} chars, but neither RENDER_REDIRECT_FILE nor RENDER_REDIRECT_HOOK is set.'
                 as_md = False
         else:
-            as_md = get_ctx_flag(ctx, 'md')
+            as_md = bool(get_ctx_flag(ctx, 'md'))
 
-        if errors := ctx.errors:
+        return self._format_response(
+            path, result, as_md=as_md, first_doc_id=first_doc_id
+        )
+
+    def _format_response(
+        self,
+        path: str | None,
+        result: str,
+        *,
+        as_md: bool,
+        first_doc_id: int | None,
+    ) -> MessageSpec:
+        ctx = self.engine
+        errors = ctx.errors
+
+        if errors:
             result += f'\n\n---\n\n' + '\n'.join(errors)
 
         result = truncate_text(result)
@@ -432,6 +515,8 @@ class RenderContext:
             if parse_mode:
                 if current_state:
                     suffix = do_escape(current_state)
+                    if not (result.endswith('>') or result.endswith('```')):
+                        suffix = '\n' + suffix
                     if len(result) + len(suffix) <= MAX_TEXT_LENGTH:
                         result += suffix
 
@@ -443,6 +528,31 @@ class RenderContext:
                         result += suffix
 
         return result, parse_mode, markup
+
+    async def _update_redirect_hook_result(
+        self,
+        path: str | None,
+        text: str,
+        base_res: list[str],
+        first_doc_id: int | None,
+        update_callback: UpdateCallback,
+    ) -> None:
+        try:
+            assert RENDER_REDIRECT_HOOK is not None
+            final_text = await _collect_redirect_hook_result(
+                RENDER_REDIRECT_HOOK,
+                text,
+                base_res,
+            )
+            spec = self._format_response(
+                path,
+                final_text,
+                as_md=True,
+                first_doc_id=first_doc_id,
+            )
+            await update_callback(spec)
+        except Exception:
+            log.exception('_update_redirect_hook_result failed')
 
 
 REG_DOC_REF = re.compile(r'[*:]\s*(\w+)\s*;')
@@ -472,9 +582,11 @@ async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
         db['r-' + path] = text
         doc_id = None
 
+    async def edit_reply_message(spec: MessageSpec) -> None:
+        await reply_text(msg, *spec, allow_not_modified=True)
+
     ctx = RenderContext(update, doc_id=doc_id)
-    res = await ctx.render(text, path)
-    return await reply_text(msg, *res, allow_not_modified=True)
+    await ctx.render(text, path, update_callback=edit_reply_message)
 
 
 def is_doc_ref(text: str) -> tuple[str, tuple[int, str]] | tuple[None, str] | None:
@@ -494,8 +606,16 @@ async def handle_render_group(msg: Message, origin_id: int):
     if cache := preview_cache.pop(origin_id, None):
         ctx, doc_name, result = cache
         log.info('Doc in group: %s -> %s %s', msg.id, origin_id, doc_name)
-        args = await ctx.to_response(':' + doc_name, result)
-        await reply_text(msg, *args, allow_not_modified=True)
+
+        async def edit_reply_message(spec: MessageSpec) -> None:
+            await reply_text(msg, *spec, allow_not_modified=True)
+
+        spec = await ctx.to_response(
+            ':' + doc_name,
+            result,
+            update_callback=edit_reply_message,
+        )
+        await edit_reply_message(spec)
 
     if left := tuple((id, name) for id, (_, name, *_) in preview_cache.items()):
         log.warning('Preview cache not empty: %s', left)
@@ -580,32 +700,37 @@ async def handle_render_callback(
     if memory is not None:
         ctx.engine[MEMORY_KEY_RAW] = decode_value(memory)
     ctx.engine['_state'] = data
-    result, parse_mode, markup = await ctx.render(text, path)
 
     query = update.callback_query
     assert query is not None
 
-    try:
-        if query.inline_message_id:
-            await try_send_text(
-                ctx_.bot.edit_message_text,
-                result,
-                inline_message_id=query.inline_message_id,
-                reply_markup=markup,
-                parse_mode=parse_mode,
-            )
-        else:
-            await try_send_text(
-                ctx_.bot.edit_message_text,
-                result,
-                chat_id=update.effective_chat.id,
-                message_id=query.message.message_id,
-                reply_markup=markup,
-                parse_mode=parse_mode,
-            )
-    except BadRequest as e:
-        if 'Message is not modified' not in str(e):
-            raise
+    async def edit_callback_message(spec: MessageSpec) -> None:
+        text, parse_mode, markup = spec
+        try:
+            if query.inline_message_id:
+                await try_send_text(
+                    ctx_.bot.edit_message_text,
+                    text,
+                    inline_message_id=query.inline_message_id,
+                    reply_markup=markup,
+                    parse_mode=parse_mode,
+                )
+            else:
+                assert update.effective_chat is not None
+                assert query.message is not None
+                await try_send_text(
+                    ctx_.bot.edit_message_text,
+                    text,
+                    chat_id=update.effective_chat.id,
+                    message_id=query.message.message_id,
+                    reply_markup=markup,
+                    parse_mode=parse_mode,
+                )
+        except BadRequest as e:
+            if 'Message is not modified' not in str(e):
+                raise
+
+    await ctx.render(text, path, update_callback=edit_callback_message)
 
 
 def _report(
