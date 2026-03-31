@@ -230,7 +230,10 @@ def make_markup(
 
     row_limit_ = get_ctx(ctx, 'btns_per_row', 5)
     try:
-        row_limit = int(row_limit_)
+        if isinstance(row_limit_, (str, int, float)):
+            row_limit = int(row_limit_)
+        else:
+            row_limit = 5
     except (ValueError, TypeError):
         row_limit = 5
 
@@ -247,12 +250,6 @@ reg_cleanup_pre = re.compile(r'^```\n+(.+?)\n+```$', re.DOTALL | re.MULTILINE)
 def repl_cleanup_pre(m: re.Match) -> str:
     return '```\n' + m.group(1).strip() + '\n```'
 
-
-ENGINE_FUNCS = {
-    k: v
-    for k in dir(Bridge)
-    if not k.startswith('_') and callable(v := getattr(Bridge, k))
-}
 
 type MessageSpec = tuple[str, str | None, InlineKeyboardMarkup | None]
 type UpdateCallback = Callable[[MessageSpec], Awaitable[None]]
@@ -374,7 +371,7 @@ class RenderContext:
         # Access to attributes with underscores should be forbidden in `simpleeval`,
         # so `os` is safe.
         data = {'os': Bridge, 'sys': Bridge}
-        self.engine = Engine(data, overrides, self._doc_loader, funcs=ENGINE_FUNCS)
+        self.engine = Engine(data, overrides, self._doc_loader, funcs=Bridge.funcs)
 
     def _doc_loader(self, name: str) -> str | None:
         row = db.get_doc(name)
@@ -575,6 +572,7 @@ async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
         path, row = doc_ref
         if path is None:
             return await reply_text(msg, f'No doc: {text}')
+        assert isinstance(row, tuple)
         doc_id, text = row
     else:
         chat_prefix = encode_chat_id(msg, '')
@@ -625,6 +623,7 @@ async def handle_render_inline_query(update: Update, query: InlineQuery, text: s
     if doc_ref := is_doc_ref(text):
         path, row = doc_ref
         if path is None:
+            assert isinstance(row, str)
             msg = 'No doc: ' + row
             r = InlineQueryResultArticle(
                 id='0',
@@ -632,6 +631,7 @@ async def handle_render_inline_query(update: Update, query: InlineQuery, text: s
                 input_message_content=InputTextMessageContent(msg),
             )
             return await query.answer((r,))
+        assert isinstance(row, tuple)
         doc_id, text = row
     elif len(text) + 2 < InlineKeyboardButton.MAX_CALLBACK_DATA:
         path = '`' + text
@@ -655,6 +655,8 @@ async def handle_render_callback(
 ):
     flags = {}
     j = 0
+    i = 0
+    sign = ''
     true = CALLBACK_SIGNS[True]
     while (i := j) < len(data) and (sign := data[i]) in CALLBACK_SIGNS:
         j = i = i + 1
@@ -792,15 +794,15 @@ async def handle_render_doc(update: Update, msg: Message):
             action = '->'
 
         _report(info, action, id, name, text)
-        reaction = (ReactionEmoji.RED_HEART, True)
+        set_reaction = msg.set_reaction(ReactionEmoji.RED_HEART, True)
     elif old_row := db.delete_doc(id):
         _report(info, 'deleted doc:', id, *old_row)
-        reaction = ()
+        set_reaction = msg.set_reaction()
     else:
         return
 
     res = truncate_text(('\n' if len(info) > 2 else ' ').join(info))
     await asyncio.gather(
         do_notify(res, 'MarkdownV2', quiet=True),
-        msg.set_reaction(*reaction),
+        set_reaction,
     )
