@@ -2,7 +2,7 @@ import os
 import re
 import time
 import asyncio
-from typing import Iterator, Mapping, Callable, Awaitable
+from typing import Container, Iterator, Mapping, Callable, Awaitable
 from collections.abc import MutableMapping
 
 from telegram import (
@@ -45,9 +45,10 @@ from render_bridge import Bridge, Signature
 
 # '/' is kept for compatibility, which was used for '-'.
 BUTTON_SIGN = '!'
+CALLBACK_SIGNS = '-+/' + BUTTON_SIGN
 MEMORY_SIGN = '@'
-CALLBACK_SIGNS = '-+/' + BUTTON_SIGN + MEMORY_SIGN
-CALLBACK_SPECIAL = frozenset(CALLBACK_SIGNS + ':#`')
+PATH_SIGNS = ':#`'
+CALLBACK_SPECIAL = frozenset(CALLBACK_SIGNS + MEMORY_SIGN + PATH_SIGNS)
 
 SPECIAL_FLAG_ICONS = {
     '_pre': '📋',
@@ -57,6 +58,10 @@ SPECIAL_FLAG_ICONS = {
 
 def is_safe_key(key: str | None) -> bool:
     return bool(key) and all(c not in CALLBACK_SPECIAL for c in key)
+
+
+def is_safe_mem(mem: str | None) -> bool:
+    return bool(mem) and all(c not in PATH_SIGNS for c in mem)
 
 
 def encode_flags(flags: dict[str, bool]) -> str:
@@ -145,7 +150,7 @@ def make_markup(
         return None
 
     memory = ''
-    if (val := ctx.get(MEMORY_KEY)) is not None and is_safe_key(
+    if (val := ctx.get(MEMORY_KEY)) is not None and is_safe_mem(
         payload := encode_value(val)
     ):
         delta = len(payload.encode('utf-8')) + 1
@@ -714,29 +719,35 @@ async def handle_render_callback(
     update: Update, ctx_: ContextTypes.DEFAULT_TYPE, data: str
 ):
     flags = {}
-    memory = None
     clicked_button = None
 
     j = 0
-    i = 0
     sign = ''
+
+    def take_until(i: int, delims: Container[str]) -> str:
+        nonlocal j
+        j = i + 1
+        while j < len(data) and data[j] not in delims:
+            j += 1
+        return data[i + 1 : j]
+
     true = CALLBACK_SIGNS[True]
     while (i := j) < len(data) and (sign := data[i]) in CALLBACK_SIGNS:
-        j = i = i + 1
-        while j < len(data) and data[j] not in CALLBACK_SPECIAL:
-            j += 1
-
-        key = data[i:j]
-        if sign == MEMORY_SIGN:
-            log.debug('handle_render_callback: memory %r', memory)
-            memory = key
-        elif sign == BUTTON_SIGN:
+        key = take_until(i, CALLBACK_SPECIAL)
+        if sign == BUTTON_SIGN:
             log.debug('handle_render_callback: button %r', clicked_button)
             if clicked_button is not None:
                 raise ValueError('handle_render_callback: multiple buttons: ' + data)
             clicked_button = key
         else:
             flags[key] = sign == true
+
+    if sign == MEMORY_SIGN:
+        memory = take_until(i, PATH_SIGNS)
+        i = j
+        log.debug('handle_render_callback: memory %r', memory)
+    else:
+        memory = None
 
     if len(path := data[i:]) <= 2:
         raise ValueError('bad path in render callback: ' + data)
