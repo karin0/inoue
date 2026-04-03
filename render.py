@@ -64,9 +64,7 @@ def encode_flags(flags: dict[str, bool]) -> str:
 
 
 ENV_PREFIX = '_env.'
-CTX_ENV_PREFIX = '_env.'
-MEMORY_KEY = 'mem'
-MEMORY_KEY_RAW = '_mem'
+MEMORY_KEY = '_mem'
 BUTTON_KEY = '_btn'
 SPECIAL_KEYS = (MEMORY_KEY, BUTTON_KEY)
 BUTTON_PREFIX = ENV_PREFIX + 'btn' + '.'
@@ -147,7 +145,7 @@ def make_markup(
         return None
 
     memory = ''
-    if (val := get_ctx(ctx, MEMORY_KEY)) is not None and is_safe_key(
+    if (val := ctx.get(MEMORY_KEY)) is not None and is_safe_key(
         payload := encode_value(val)
     ):
         delta = len(payload.encode('utf-8')) + 1
