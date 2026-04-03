@@ -375,10 +375,12 @@ class RenderContext:
         update: Update,
         flags: dict[str, bool] | None = None,
         doc_id: int | None = None,
+        footer: str | None = None,
     ):
         if flags is None:
             flags = {}
         self.flags = flags
+        self._footer = footer
 
         overrides: dict[str, Value] = dict(flags) if flags is not None else {}
         source = None
@@ -553,19 +555,30 @@ class RenderContext:
                 do_escape = lambda x: x[1 / 0]
 
             if parse_mode:
+                footers = []
                 if current_state:
-                    suffix = do_escape(current_state)
-                    if not (result.endswith('>') or result.endswith('```')):
-                        suffix = '\n' + suffix
-                    if len(result) + len(suffix) <= MAX_TEXT_LENGTH:
-                        result += suffix
+                    footers.append(current_state)
 
                 if footer := get_ctx(ctx, 'footer'):
-                    suffix = do_escape(str(footer))
-                    if current_state:
-                        suffix = ' ' + suffix
-                    if len(result) + len(suffix) <= MAX_TEXT_LENGTH:
-                        result += suffix
+                    footers.append(str(footer))
+
+                if self._footer:
+                    footers.append(self._footer)
+
+                if footers:
+                    is_first = True
+                    for part in footers:
+                        part = do_escape(part)
+                        if not (
+                            is_first
+                            and (result.endswith('>') or result.endswith('```'))
+                        ):
+                            part = '\n' + part
+                        if len(result) + len(part) <= MAX_TEXT_LENGTH:
+                            result += part
+                        else:
+                            break
+                        is_first = False
 
         return result, parse_mode, markup
 
@@ -750,7 +763,7 @@ async def handle_render_callback(
         case _:
             raise ValueError('bad render callback: ' + data)
 
-    ctx = RenderContext(update, flags, doc_id=doc_id)
+    ctx = RenderContext(update, flags, doc_id=doc_id, footer=data)
     if clicked_button is not None:
         ctx.engine[BUTTON_KEY] = clicked_button
     if memory is not None:
