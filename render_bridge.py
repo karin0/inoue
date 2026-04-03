@@ -111,3 +111,8 @@ def _html_escape(text) -> str:
 @Bridge.public
 def _hitokoto():
     return hitokoto()
+
+
+@Bridge.public
+def dbg(ctx: Context):
+    return '\n'.join(f'{k}={v!r}' for k, v in ctx.items())
