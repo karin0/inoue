@@ -498,14 +498,15 @@ class Engine(Interpreter, ContextCallbacks):
         # Recursion is allowed up to a limit.
         old_output = self._output
         old_dirty = self._dirty
-        sys_depth = stack_size2a()
-        trace(
-            '[%s] Push @ %s: %s (%s)',
-            self._depth,
-            self._scope.current(),
-            old_output,
-            sys_depth,
-        )
+        if is_tracing:
+            sys_depth = stack_size2a()
+            trace(
+                '[%s] Push @ %s: %s (%s)',
+                self._depth,
+                self._scope.current(),
+                old_output,
+                sys_depth,
+            )
 
         if self._depth >= MAX_DEPTH:
             self._error('stack overflow')
