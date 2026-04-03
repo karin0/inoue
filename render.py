@@ -414,6 +414,7 @@ class RenderContext:
 
         log.info('create_engine: %s', overrides)
 
+        self._source_text = None
         self._first_doc_id = None
         self._default_doc_id = doc_id
         self._trusted = trusted
@@ -444,6 +445,7 @@ class RenderContext:
         path: str | None,
         update_callback: UpdateCallback | None = None,
     ) -> MessageSpec:
+        self._source_text = text
         rendered = self.engine.render(text)
         log.info('rendered %d -> %d', len(text), len(rendered))
         result = await self.to_response(
@@ -562,18 +564,24 @@ class RenderContext:
             if parse_mode:
                 footers = []
                 if current_state:
-                    footers.append(current_state)
+                    footers.append(do_escape(current_state))
 
                 if footer := get_env(ctx, 'footer'):
-                    footers.append(str(footer))
+                    footers.append(do_escape(str(footer)))
 
                 if self._footer:
-                    footers.append(self._footer)
+                    footers.append(do_escape(self._footer))
+
+                if (
+                    get_env_flag(ctx, 'show_source')
+                    and do_escape is escape
+                    and self._source_text
+                ):
+                    footers.append(f'```c\n{escape(self._source_text)}\n```')
 
                 if footers:
                     is_first = True
                     for part in footers:
-                        part = do_escape(part)
                         if not (
                             is_first
                             and (result.endswith('>') or result.endswith('```'))
