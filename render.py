@@ -44,8 +44,10 @@ from render_core.context import LRUDict
 from render_bridge import Bridge, Signature
 
 # '/' is kept for compatibility, which was used for '-'.
-CALLBACK_SIGNS = '-+/'
-ALL_CALLBACK_SIGNS = frozenset('-+/:#`@')
+BUTTON_SIGN = '!'
+MEMORY_SIGN = '@'
+CALLBACK_SIGNS = '-+/' + BUTTON_SIGN + MEMORY_SIGN
+CALLBACK_SPECIAL = frozenset(CALLBACK_SIGNS + ':#`')
 
 SPECIAL_FLAG_ICONS = {
     '_pre': '📋',
@@ -53,17 +55,21 @@ SPECIAL_FLAG_ICONS = {
 }
 
 
-def is_safe_key(key: str) -> bool:
-    return all(c not in ALL_CALLBACK_SIGNS for c in key)
+def is_safe_key(key: str | None) -> bool:
+    return bool(key) and all(c not in CALLBACK_SPECIAL for c in key)
 
 
 def encode_flags(flags: dict[str, bool]) -> str:
     return ''.join((CALLBACK_SIGNS[v] + k) for k, v in flags.items())
 
 
+ENV_PREFIX = '_env.'
 CTX_ENV_PREFIX = '_env.'
 MEMORY_KEY = 'mem'
 MEMORY_KEY_RAW = '_mem'
+BUTTON_KEY = '_btn'
+SPECIAL_KEYS = (MEMORY_KEY, BUTTON_KEY)
+BUTTON_PREFIX = ENV_PREFIX + 'btn' + '.'
 
 
 def encode_value(val: Value) -> str:
@@ -100,7 +106,7 @@ def decode_value(s: str) -> Value:
 def get_ctx(
     ctx: Engine | Mapping[str, Value], key: str, default: Value | None = None
 ) -> Value | None:
-    v = ctx.get(CTX_ENV_PREFIX + key)
+    v = ctx.get(ENV_PREFIX + key)
     if v is None:
         v = ctx.get('_' + key)
         if v is None:
@@ -126,7 +132,11 @@ def make_markup(
     if not path:
         return None
 
-    # query data: ('-'|'+' <flag-key>)* ['@' <memory>] <path-header: ':'|'#'|'`'> <path-body>
+    # query data:
+    #   ('-'|'+' <flag-key>)*
+    #   ['!' <btn-key>]
+    #   ['@' <memory>]
+    #   <path-header: ':'|'#'|'`'> <path-body>
     # where '-' means 0, '+' means 1
 
     size = len(path.encode('utf-8'))
@@ -146,8 +156,21 @@ def make_markup(
             size += delta
 
     flags = {}
+    buttons = []
     for k, v in ctx.items():
-        if k.startswith(CTX_ENV_PREFIX) or k == MEMORY_KEY_RAW or not is_safe_key(k):
+        if len(btn_key := k.removeprefix(BUTTON_PREFIX)) != len(k):
+            if (
+                is_safe_key(btn_key)
+                and (v and v != '0')
+                and (
+                    size + len(btn_key.encode('utf-8')) + 1
+                    <= InlineKeyboardButton.MAX_CALLBACK_DATA
+                )
+            ):
+                buttons.append(btn_key)
+            continue
+
+        if k.startswith(ENV_PREFIX) or k in SPECIAL_KEYS or not is_safe_key(k):
             continue
 
         if v == '0' or v == 0:  # This covers `False` as well.
@@ -167,7 +190,7 @@ def make_markup(
         flags.update(state)
 
     has_state = state or memory
-    may_have_state = has_state or flags
+    may_have_state = has_state or flags or buttons
 
     if doc_id is not None and not get_ctx_flag(ctx, 'ref', True):
         doc_id = None
@@ -186,8 +209,12 @@ def make_markup(
         if state is None:
             state = {}
 
-        def push_button(name: str):
+        def push_flag(name: str):
             data = encode_flags(state) + memory + path
+            row.append(InlineKeyboardButton(name, callback_data=data))
+
+        def push_button(name: str, key: str):
+            data = encode_flags(state) + BUTTON_SIGN + key + memory + path
             row.append(InlineKeyboardButton(name, callback_data=data))
 
         hide_flags = get_ctx_flag(ctx, 'hide_flags')
@@ -208,11 +235,11 @@ def make_markup(
             state[k] = not v
 
             if icon := get_ctx(ctx, 'icon.' + k):
-                icon = str(icon)
-                push_button(icon + (':=' if old else '=') + '01'[v])
+                label = str(icon)
+                push_flag(label + (':=' if old else '=') + '01'[v])
             elif not hide_flags:
-                icon = SPECIAL_FLAG_ICONS.get(k, k)
-                push_button(icon + (':=' if old else '=') + '01'[v])
+                label = SPECIAL_FLAG_ICONS.get(k, k)
+                push_flag(label + (':=' if old else '=') + '01'[v])
             else:
                 log.debug('make_markup: hiding flag %s', k)
 
@@ -220,6 +247,13 @@ def make_markup(
                 state[k] = v
             else:
                 del state[k]
+
+        for k in buttons:
+            if icon := get_ctx(ctx, 'icon.' + k):
+                label = str(icon)
+            else:
+                label = k
+            push_button(label, k)
 
         log.debug('make_markup: final state %s', state)
         if has_state:
@@ -669,30 +703,35 @@ async def handle_render_callback(
     update: Update, ctx_: ContextTypes.DEFAULT_TYPE, data: str
 ):
     flags = {}
+    memory = None
+    clicked_button = None
+
     j = 0
     i = 0
     sign = ''
     true = CALLBACK_SIGNS[True]
     while (i := j) < len(data) and (sign := data[i]) in CALLBACK_SIGNS:
         j = i = i + 1
-        while j < len(data) and data[j] not in ALL_CALLBACK_SIGNS:
+        while j < len(data) and data[j] not in CALLBACK_SPECIAL:
             j += 1
-        flags[data[i:j]] = sign == true
 
-    if sign == '@':
-        j = i = i + 1
-        while i < len(data) and data[i] not in ALL_CALLBACK_SIGNS:
-            i += 1
-        memory = data[j:i]
-        log.debug('handle_render_callback: memory %r', memory)
-    else:
-        memory = None
+        key = data[i:j]
+        if sign == MEMORY_SIGN:
+            log.debug('handle_render_callback: memory %r', memory)
+            memory = key
+        elif sign == BUTTON_SIGN:
+            log.debug('handle_render_callback: button %r', clicked_button)
+            if clicked_button is not None:
+                raise ValueError('handle_render_callback: multiple buttons: ' + data)
+            clicked_button = key
+        else:
+            flags[key] = sign == true
 
     if len(path := data[i:]) <= 2:
         raise ValueError('bad path in render callback: ' + data)
 
     # Compatibility with old format
-    if path[0] == ':' and path[1] in ALL_CALLBACK_SIGNS:
+    if path[0] == ':' and path[1] in CALLBACK_SPECIAL:
         path = path[1:]
 
     doc_id = None
@@ -714,8 +753,10 @@ async def handle_render_callback(
             raise ValueError('bad render callback: ' + data)
 
     ctx = RenderContext(update, flags, doc_id=doc_id)
+    if clicked_button is not None:
+        ctx.engine[BUTTON_KEY] = clicked_button
     if memory is not None:
-        ctx.engine[MEMORY_KEY_RAW] = decode_value(memory)
+        ctx.engine[MEMORY_KEY] = decode_value(memory)
     ctx.engine['_state'] = data
 
     query = update.callback_query
