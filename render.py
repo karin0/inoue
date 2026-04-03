@@ -101,7 +101,7 @@ def decode_value(s: str) -> Value:
             raise ValueError('bad encoded value: ' + s)
 
 
-def get_ctx(
+def get_env(
     ctx: Engine | Mapping[str, Value], key: str, default: Value | None = None
 ) -> Value | None:
     v = ctx.get(ENV_PREFIX + key)
@@ -112,10 +112,10 @@ def get_ctx(
     return v
 
 
-def get_ctx_flag(
+def get_env_flag(
     ctx: Engine | Mapping[str, Value], key: str, default: bool = False
 ) -> bool | Value:
-    v = get_ctx(ctx, key)
+    v = get_env(ctx, key)
     if v is None:
         return default
     return v and v != '0'
@@ -190,7 +190,7 @@ def make_markup(
     has_state = state or memory
     may_have_state = has_state or flags or buttons
 
-    if doc_id is not None and not get_ctx_flag(ctx, 'ref', True):
+    if doc_id is not None and not get_env_flag(ctx, 'ref', True):
         doc_id = None
 
     if doc_id is None and not may_have_state:
@@ -215,15 +215,15 @@ def make_markup(
             data = encode_flags(state) + BUTTON_SIGN + key + memory + path
             row.append(InlineKeyboardButton(name, callback_data=data))
 
-        hide_flags = get_ctx_flag(ctx, 'hide_flags')
+        hide_flags = get_env_flag(ctx, 'hide_flags')
         for k, v in flags.items():
             if not v:
                 # Hide conflicting options.
                 if (
                     k == '_pre'
-                    and get_ctx_flag(ctx, 'fold')
+                    and get_env_flag(ctx, 'fold')
                     or k == '_fold'
-                    and get_ctx_flag(ctx, 'pre', True)
+                    and get_env_flag(ctx, 'pre', True)
                 ):
                     log.debug('make_markup: hiding conflicting flag %s', k)
                     continue
@@ -232,7 +232,7 @@ def make_markup(
             log.debug('make_markup: flag %s in=%s new=%s s=%s', k, old, v, state)
             state[k] = not v
 
-            if icon := get_ctx(ctx, 'icon.' + k):
+            if icon := get_env(ctx, 'icon.' + k):
                 label = str(icon)
                 push_flag(label + (':=' if old else '=') + '01'[v])
             elif not hide_flags:
@@ -247,7 +247,7 @@ def make_markup(
                 del state[k]
 
         for k in buttons:
-            if icon := get_ctx(ctx, 'icon.' + k):
+            if icon := get_env(ctx, 'icon.' + k):
                 label = str(icon)
             else:
                 label = k
@@ -261,7 +261,7 @@ def make_markup(
     if doc_id:
         row.append(InlineKeyboardButton('🔗', get_msg_url(doc_id)))
 
-    row_limit_ = get_ctx(ctx, 'btns_per_row', 5)
+    row_limit_ = get_env(ctx, 'btns_per_row', 5)
     try:
         if isinstance(row_limit_, (str, int, float)):
             row_limit = int(row_limit_)
@@ -461,11 +461,11 @@ class RenderContext:
 
         first_doc_id = self._first_doc_id or self._default_doc_id
 
-        if get_ctx_flag(ctx, 'cleanup', True):
+        if get_env_flag(ctx, 'cleanup', True):
             result = reg_cleanup.sub('\n\n', result)
             result = reg_cleanup_pre.sub(repl_cleanup_pre, result)
 
-        if self._trusted and get_ctx_flag(ctx, 'redirect'):
+        if self._trusted and get_env_flag(ctx, 'redirect'):
             res = []
 
             if RENDER_REDIRECT_FILE:
@@ -510,7 +510,7 @@ class RenderContext:
                 result = f'Redirecting {len(result)} chars, but neither RENDER_REDIRECT_FILE nor RENDER_REDIRECT_HOOK is set.'
                 as_md = False
         else:
-            as_md = bool(get_ctx_flag(ctx, 'md'))
+            as_md = bool(get_env_flag(ctx, 'md'))
 
         return self._format_response(
             path, result, as_md=as_md, first_doc_id=first_doc_id
@@ -542,13 +542,13 @@ class RenderContext:
             if as_md:
                 parse_mode = 'MarkdownV2'
                 do_escape = escape
-            elif get_ctx_flag(ctx, 'html'):
+            elif get_env_flag(ctx, 'html'):
                 parse_mode = 'HTML'
                 do_escape = html_escape
-            elif get_ctx_flag(ctx, 'fold'):
+            elif get_env_flag(ctx, 'fold'):
                 result, parse_mode = blockquote_block(result)
                 do_escape = html_escape
-            elif get_ctx_flag(ctx, 'pre', True):
+            elif get_env_flag(ctx, 'pre', True):
                 result, parse_mode = pre_block(result)
                 do_escape = escape
             else:
@@ -559,7 +559,7 @@ class RenderContext:
                 if current_state:
                     footers.append(current_state)
 
-                if footer := get_ctx(ctx, 'footer'):
+                if footer := get_env(ctx, 'footer'):
                     footers.append(str(footer))
 
                 if self._footer:
