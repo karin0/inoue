@@ -441,6 +441,9 @@ Write the following sentence twice, the second time within quotes.
         result = self.render_it('{ x="100" ?: \'\' }\na')
         self.assertEqual(result, 'a')
 
+        self.render_it('a=1; a=2 ? ERR; \'OK\';', eq='OK')
+        self.render_it('a=b=1; a=2 ? b=2 ? \'ERR\'; \'OK\';', eq='OK')
+
     def test_nested_blocks_and_branches(self):
         text = '{ a="1"; "a==1"? { b="2"; "a+b==3"? { c="3"; "a+b+c" } : "Wrong" } : "Wrong" }'
         result = self.render_it(text)

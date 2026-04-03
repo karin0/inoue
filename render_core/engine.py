@@ -17,7 +17,7 @@ from typing import (
 )
 
 from lark import Lark, Token, Tree
-from lark.visitors import Interpreter
+from lark.visitors import Interpreter, Transformer
 from lark.exceptions import LarkError
 
 from .lex import lex, lex_errors
@@ -70,7 +70,7 @@ parser = Lark.open(
 
 @functools.lru_cache
 def parse_fragment(text: str) -> Tree:
-    return parser.parse(text)
+    return BranchNormalizer().transform(parser.parse(text))
 
 
 T = TypeVar('T', bound=Tree | Token)
@@ -801,66 +801,24 @@ class Engine(Interpreter, ContextCallbacks):
         chs = tree.children
         left = chs[1]
         match len(chs):
-            case 4:
-                right = chs[2]
-                final_marker = chs[3]
             case 3:
                 right = chs[2]
-                if isinstance(right, Token):
-                    final_marker = right
-                    right = None
-                else:
-                    final_marker = None
             case 2:
-                right = final_marker = None
+                right = None
             case _:
                 raise ValueError(f'Bad branch: {tree.pretty()}')
 
-        # The associativity of `branch` is too greedy and consumes all statements
-        # in a recursive `stmt_list`, like `a ? b ; c; d` being parsed as
-        # `a ? {b ; c ; d}` by Lark.
-        # We keep only the first stmt here and execute the rest unconditionally
-        # to work around and make it more intuitive, behave like a "real" ternary
-        # operator that accepts single expressions, i.e. `a ? b : c; d;` means
-        # `(a ? b : c); d;`.
-        # You can still explicitly specify the captured parts with braces or a
-        # final marker, like in `a ? b : {c ; d}` or `a ? b : c ; d !`.
-        rest = ()
-        if final_marker is None:
-            split_left = right is None
-            to_split = left if split_left else right
-            if to_split is not None:
-                to_split = narrow(to_split, Tree)
-                if to_split.data == 'stmt_list' and (chs := to_split.children):
-                    # chs[1:] will be executed unconditionally after the branch.
-                    if split_left:
-                        left, *rest = chs
-                    else:
-                        right, *rest = chs
-
         if is_tracing:
             trace(
-                'branch: test=%s tco=%s\nleft=%s\nright=%s\nrest=%s',
+                'branch: test=%s tco=%s\nleft=%s\nright=%s',
                 test,
                 allow_tco,
                 self.debug_node(left),
                 self.debug_node(right),
-                ' | '.join(self.debug_node(stmt) for stmt in rest),
             )
 
-        to = left if test else right
-        if not rest:
-            if to is None:
-                return
+        if (to := left if test else right) is not None:
             return self.visit(narrow(to, Tree), direct_branch=True, allow_tco=allow_tco)
-
-        if to is not None:
-            self.visit(narrow(to, Tree), direct_branch=True)
-
-        if rest:
-            for stmt in rest[:-1]:
-                self.visit(stmt)
-            return self.visit(rest[-1], allow_tco=allow_tco)
 
     def _trace(
         self, tree: Tree, *, direct_branch: bool = False, allow_tco: bool = False
@@ -1459,3 +1417,55 @@ class Engine(Interpreter, ContextCallbacks):
 
             # Write back each time.
             self._ctx[key] = val = val.replace(pat, sub)
+
+
+# The associativity of `branch` is too greedy and consumes all statements
+# in a recursive `stmt_list`, like `a ? b ; c; d` being parsed as
+# `a ? {b ; c ; d}` by Lark.
+# We keep only the first stmt here and execute the rest unconditionally
+# to work around and make it more intuitive, behave like a "real" ternary
+# operator that accepts single expressions, i.e. `a ? b : c; d;` means
+# `(a ? b : c); d;`.
+# You can still explicitly specify the captured parts with braces or a
+# final marker, like in `a ? b : {c ; d}` or `a ? b : c ; d !`.
+class BranchNormalizer(Transformer):
+    @staticmethod
+    def _extract_stmt_list(node: Tree | Token | None) -> list[Tree | Token] | None:
+        if isinstance(node, Tree) and node.data == 'stmt_list':
+            return node.children
+
+    def stmt_list(self, children: list[Tree | Token]) -> Tree:
+        flattened = []
+        for child in children:
+            if (chs := self._extract_stmt_list(child)) is not None:
+                flattened.extend(chs)
+            else:
+                flattened.append(child)
+        return Tree('stmt_list', flattened)
+
+    def branch(self, children: list[Tree | Token]) -> Tree:
+        if (
+            children
+            and isinstance(children[-1], Token)
+            and children[-1].type == 'BRANCH_END'
+        ):
+            children.pop()
+        else:
+            cond = children[0]
+            left = children[1]
+            right = children[2] if len(children) > 2 else None
+
+            split_left = right is None
+            to_split = left if split_left else right
+            chs = self._extract_stmt_list(to_split)
+            if chs is not None and len(chs) > 1:
+                first = chs[0]
+                if split_left:
+                    new_children = [cond, first]
+                else:
+                    new_children = [cond, left, first]
+
+                chs[0] = Tree('branch', new_children)
+                return Tree('stmt_list', chs)
+
+        return Tree('branch', children)
