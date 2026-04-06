@@ -155,6 +155,9 @@ class Engine(Interpreter, ContextCallbacks, MutableMapping[str, Value]):
             raise Abort()
         self._gas += 1
 
+    def gas_used(self) -> int:
+        return self._gas
+
     def _put(self, text: str):
         if text:
             if not (self._dirty or text.isspace()):
