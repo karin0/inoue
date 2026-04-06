@@ -406,13 +406,17 @@ type Content = tuple[str, str | None]
 # This truncates the text by default, trimming any leading and trailing spaces.
 def pre_block(s: str, *, do_truncate: bool = True) -> Content:
     if len(s) + 8 <= MAX_TEXT_LENGTH:
-        text = '```\n' + escape(s) + '\n```'
+        text = pre_block_raw(s)
         if len(text) <= MAX_TEXT_LENGTH:
             return text, 'MarkdownV2'
 
     if do_truncate:
         s = truncate_text(s)
     return s, None
+
+
+def pre_block_raw(s: str) -> str:
+    return f'```\n{escape(s)}\n```'
 
 
 def blockquote_block(s: str) -> Content:

@@ -2,7 +2,7 @@ import os
 import re
 import time
 import asyncio
-from typing import Container, Mapping, Callable, Awaitable
+from typing import Container, Mapping, Callable, Awaitable, cast
 
 from telegram import (
     InlineQuery,
@@ -33,6 +33,7 @@ from util import (
     escape,
     html_escape,
     pre_block,
+    pre_block_raw,
     blockquote_block,
     do_notify,
     encode_chat_id,
@@ -63,7 +64,9 @@ def is_safe_mem(mem: str | None) -> bool:
     return bool(mem) and all(c not in PATH_SIGNS for c in mem)
 
 
-def encode_flags(flags: dict[str, bool]) -> str:
+def encode_flags(flags: dict[str, bool] | None) -> str:
+    if not flags:
+        return ''
     return ''.join((CALLBACK_SIGNS[v] + k) for k, v in flags.items())
 
 
@@ -87,18 +90,20 @@ def get_env(
 
 def get_env_flag(
     ctx: Engine | Mapping[str, Value], key: str, default: bool = False
-) -> bool | Value:
+) -> Value:
     v = get_env(ctx, key)
     if v is None:
         return default
-    return v and v != '0'
+    if v == '0':
+        return False
+    if v == '1':
+        return True
+    return v
 
 
 def make_markup(
     path: str | None,
-    ctx: Engine,
-    state: dict[str, bool] | None,
-    doc_id: int | None = None,
+    render_ctx: RenderContext,
 ) -> tuple[InlineKeyboardMarkup, str | None] | None:
     if not path:
         return None
@@ -111,12 +116,13 @@ def make_markup(
     # where '-' means 0, '+' means 1
 
     size = len(path.encode('utf-8'))
-    if state:
+    if state := render_ctx.flags:
         size += sum(len(k.encode('utf-8')) for k in state.keys()) + len(state)
 
     if size > InlineKeyboardButton.MAX_CALLBACK_DATA:
         return None
 
+    ctx = render_ctx.engine
     memory = ''
     if (val := ctx.get(MEMORY_KEY)) is not None and is_safe_mem(
         payload := encode_value(val)
@@ -126,6 +132,8 @@ def make_markup(
             memory = '@' + payload
             size += delta
 
+    # `state`, `memory` and `ctx[BUTTON_KEY]` defines the current state, while
+    # `flags` and `buttons` defines the potential next states.
     flags = {}
     buttons = []
     for k, v in ctx.items():
@@ -160,33 +168,34 @@ def make_markup(
     if state:
         flags.update(state)
 
-    has_state = state or memory
-    may_have_state = has_state or flags or buttons
-
+    doc_id = render_ctx._first_doc_id
     if doc_id is not None and not get_env_flag(ctx, 'ref', True):
         doc_id = None
 
-    if doc_id is None and not may_have_state:
-        return None
+    current_data = render_ctx._callback_data
+    if current_data == path:
+        current_data = None
 
-    row = [
-        InlineKeyboardButton(
-            ('⏪ ' if state else '🔄 ') + shorten(path[1:]), callback_data=path
-        )
-    ]
+    row: list[InlineKeyboardButton | None] = [None]
 
-    ret = None
-    if may_have_state:
+    def push_button(name: str, key: str):
+        data = encode_flags(state) + BUTTON_SIGN + key + memory + path
+        row.append(InlineKeyboardButton(name, callback_data=data))
+
+    def push_flag(name: str):
+        data = encode_flags(state) + memory + path
+        row.append(InlineKeyboardButton(name, callback_data=data))
+
+    for k in buttons:
+        if icon := get_env(ctx, 'icon.' + k):
+            label = str(icon)
+        else:
+            label = k
+        push_button(label, k)
+
+    if flags:
         if state is None:
             state = {}
-
-        def push_flag(name: str):
-            data = encode_flags(state) + memory + path
-            row.append(InlineKeyboardButton(name, callback_data=data))
-
-        def push_button(name: str, key: str):
-            data = encode_flags(state) + BUTTON_SIGN + key + memory + path
-            row.append(InlineKeyboardButton(name, callback_data=data))
 
         hide_flags = get_env_flag(ctx, 'hide_flags')
         for k, v in flags.items():
@@ -219,20 +228,21 @@ def make_markup(
             else:
                 del state[k]
 
-        for k in buttons:
-            if icon := get_env(ctx, 'icon.' + k):
-                label = str(icon)
-            else:
-                label = k
-            push_button(label, k)
+    log.debug('make_markup: final state %s (%s)', state, render_ctx._callback_data)
 
-        log.debug('make_markup: final state %s', state)
-        if has_state:
-            ret = encode_flags(state) + memory
-            row.append(InlineKeyboardButton('🔄', callback_data=ret + path))
+    if current_data:
+        row.append(InlineKeyboardButton('🔄', callback_data=current_data))
 
     if doc_id:
         row.append(InlineKeyboardButton('🔗', get_msg_url(doc_id)))
+
+    if len(row) <= 1:
+        return None
+
+    row[0] = InlineKeyboardButton(
+        ('⏪ ' if current_data else '🔄 ') + shorten(path[1:]), callback_data=path
+    )
+    row_ = cast(list[InlineKeyboardButton], row)
 
     row_limit_ = get_env(ctx, 'btns_per_row', 5)
     try:
@@ -244,9 +254,8 @@ def make_markup(
         row_limit = 5
 
     # Group 5 buttons per row
-    rows = [row[i : i + row_limit] for i in range(0, len(row), row_limit)]
-
-    return InlineKeyboardMarkup(rows), ret
+    rows = [row_[i : i + row_limit] for i in range(0, len(row), row_limit)]
+    return InlineKeyboardMarkup(rows), current_data
 
 
 reg_cleanup = re.compile(r'\n{3,}')
@@ -302,12 +311,12 @@ async def _collect_redirect_hook_result(hook: str, text: str, res: list[str]) ->
             res.append(f', status {status}')
 
     if out := stdout.decode('utf-8', 'replace').strip():
-        res.append(f'\nstdout:\n```\n{escape(out)}\n```')
+        res.append(f'\nstdout:\n{pre_block_raw(out)}')
 
     if err := stderr.decode('utf-8', 'replace').strip():
         if not out:
             res.append('\n')
-        res.append(f'stderr:\n```\n{escape(err)}\n```')
+        res.append(f'stderr:\n{pre_block_raw(err)}')
 
     return ''.join(res)
 
@@ -318,12 +327,12 @@ class RenderContext:
         update: Update,
         flags: dict[str, bool] | None = None,
         doc_id: int | None = None,
-        footer: str | None = None,
+        callback_data: str | None = None,
     ):
         if flags is None:
             flags = {}
         self.flags = flags
-        self._footer = footer
+        self._callback_data = callback_data
 
         overrides: dict[str, Value] = dict(flags) if flags is not None else {}
         source = None
@@ -353,6 +362,7 @@ class RenderContext:
         log.info('create_engine: %s', overrides)
 
         self._first_doc_id = None
+        self._render_time = None
         self._default_doc_id = doc_id
         self._trusted = trusted
 
@@ -385,7 +395,11 @@ class RenderContext:
         update_callback: UpdateCallback | None = None,
     ) -> MessageSpec:
         rendered = render_with(self.engine, text)
-        log.info('rendered %d -> %d', len(text), len(rendered))
+        self._render_time = int(time.time())
+        log.info('rendered %d -> %d (%s)', len(text), len(rendered), self._first_doc_id)
+        if self._first_doc_id is None:
+            self._first_doc_id = self._default_doc_id
+
         result = await self.to_response(
             path,
             rendered,
@@ -404,16 +418,20 @@ class RenderContext:
         ctx = self.engine
         result = result or '[empty]'
 
-        first_doc_id = self._first_doc_id or self._default_doc_id
-
         if get_env_flag(ctx, 'cleanup', True):
             result = reg_cleanup.sub('\n\n', result)
             result = reg_cleanup_pre.sub(repl_cleanup_pre, result)
 
-        if self._trusted and get_env_flag(ctx, 'redirect'):
+        if self._trusted and (spec := get_env_flag(ctx, 'redirect')):
             res = []
 
-            if RENDER_REDIRECT_FILE:
+            if isinstance(spec, str):
+                has_file = 'file' in spec.lower()
+                has_hook = 'hook' in spec.lower()
+            else:
+                has_file = has_hook = True
+
+            if has_file and RENDER_REDIRECT_FILE:
                 log.info(
                     'Redirecting %d chars to %s', len(result), RENDER_REDIRECT_FILE
                 )
@@ -423,7 +441,7 @@ class RenderContext:
                     f'Redirected {len(result)} chars to `{escape(RENDER_REDIRECT_FILE)}`'
                 )
 
-            if RENDER_REDIRECT_HOOK:
+            if has_hook and RENDER_REDIRECT_HOOK:
                 log.info(
                     'Redirecting %d chars to hook %s', len(result), RENDER_REDIRECT_HOOK
                 )
@@ -440,34 +458,31 @@ class RenderContext:
                     )
                     asyncio.create_task(
                         self._update_redirect_hook_result(
-                            path,
-                            result,
-                            base_res,
-                            first_doc_id,
-                            update_callback,
+                            path, result, base_res, update_callback
                         )
                     )
 
+            as_md = True
             if res:
                 result = '\n'.join(res)
-                as_md = True
             else:
-                result = f'Redirecting {len(result)} chars, but neither RENDER_REDIRECT_FILE nor RENDER_REDIRECT_HOOK is set.'
-                as_md = False
+                size = len(result)
+                header = f'Requested redirection for {size} chars without available destination\\.\n'
+                p = 200
+                if size > 2 * p:
+                    result = f'{header}{pre_block_raw(result[:p])}\\[{size - 2 * p} chars\\]\n{pre_block_raw(result[-p:])}'
+                else:
+                    result = header + pre_block_raw(result)
         else:
             as_md = bool(get_env_flag(ctx, 'md'))
 
-        return self._format_response(
-            path, result, as_md=as_md, first_doc_id=first_doc_id
-        )
+        return self._format_response(path, result, as_md=as_md)
 
     def _format_response(
         self,
         path: str | None,
         result: str,
-        *,
         as_md: bool,
-        first_doc_id: int | None,
     ) -> MessageSpec:
         ctx = self.engine
         errors = ctx.errors
@@ -476,8 +491,7 @@ class RenderContext:
             result += f'\n\n---\n\n' + '\n'.join(errors)
 
         result = truncate_text(result)
-
-        if ret := make_markup(path, self.engine, self.flags, first_doc_id):
+        if ret := make_markup(path, self):
             markup, current_state = ret
         else:
             markup = current_state = None
@@ -496,26 +510,31 @@ class RenderContext:
             elif get_env_flag(ctx, 'pre', True):
                 result, parse_mode = pre_block(result)
                 do_escape = escape
+                as_md = True
             else:
                 do_escape = lambda x: x[1 / 0]
 
             if parse_mode:
                 footers = []
-                if current_state:
-                    footers.append(do_escape(current_state))
 
                 if footer := get_env(ctx, 'footer'):
                     footers.append(do_escape(str(footer)))
 
-                if self._footer:
-                    footers.append(do_escape(self._footer))
+                if get_env_flag(ctx, 'show_state', True) and current_state:
+                    footers.append(do_escape(current_state))
 
-                if (
-                    get_env_flag(ctx, 'show_source')
-                    and do_escape is escape
-                    and (source := self.engine.get_doc_text())
-                ):
-                    footers.append(f'```c\n{escape(source)}\n```')
+                if as_md:
+                    if get_env_flag(ctx, 'show_source') and (
+                        source := self.engine.get_doc_text()
+                    ):
+                        footers.append(f'```c\n{escape(source)}\n```')
+
+                    if get_env_flag(ctx, 'show_stats', True) and (
+                        unix := self._render_time
+                    ):
+                        footers.append(
+                            rf'![{unix}](tg://time?unix={unix}&format=wdt) \(![now](tg://time?unix={unix}&format=r)\) \| {ctx.gas_used()}'
+                        )
 
                 if footers:
                     is_first = True
@@ -538,7 +557,6 @@ class RenderContext:
         path: str | None,
         text: str,
         base_res: list[str],
-        first_doc_id: int | None,
         update_callback: UpdateCallback,
     ) -> None:
         try:
@@ -548,12 +566,7 @@ class RenderContext:
                 text,
                 base_res,
             )
-            spec = self._format_response(
-                path,
-                final_text,
-                as_md=True,
-                first_doc_id=first_doc_id,
-            )
+            spec = self._format_response(path, final_text, as_md=True)
             await update_callback(spec)
         except Exception:
             log.exception('_update_redirect_hook_result failed')
@@ -720,7 +733,7 @@ async def handle_render_callback(
         case _:
             raise ValueError('bad render callback: ' + data)
 
-    ctx = RenderContext(update, flags, doc_id=doc_id, footer=data)
+    ctx = RenderContext(update, flags, doc_id=doc_id, callback_data=data)
     if clicked_button is not None:
         ctx.engine[BUTTON_KEY] = clicked_button
     if memory is not None:
