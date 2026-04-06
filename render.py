@@ -385,20 +385,24 @@ class RenderContext:
             self._first_doc_id = row[0]
         return row[1]
 
+    def render_text(self, text: str) -> str:
+        with use_context(self.data):
+            result = self.engine.render(text)
+            self._render_time = int(time.time())
+
+        log.info('rendered %d -> %d (%s)', len(text), len(result), self._first_doc_id)
+        if self._first_doc_id is None:
+            self._first_doc_id = self._default_doc_id
+
+        return result
+
     async def render(
         self,
         text: str,
         path: str | None,
         update_callback: UpdateCallback | None = None,
     ) -> MessageSpec:
-        with use_context(self.data):
-            rendered = self.engine.render(text)
-            self._render_time = int(time.time())
-
-        log.info('rendered %d -> %d (%s)', len(text), len(rendered), self._first_doc_id)
-        if self._first_doc_id is None:
-            self._first_doc_id = self._default_doc_id
-
+        rendered = self.render_text(text)
         result = await self.to_response(
             path,
             rendered,
@@ -803,8 +807,7 @@ async def handle_render_doc(update: Update, msg: Message):
 
     id = msg.message_id
     ctx = RenderContext(update, doc_id=id)
-    with use_context(ctx.data):
-        result = ctx.engine.render(text)
+    result = ctx.render_text(text)
 
     info = []
     if name := ctx.engine.doc_name:
