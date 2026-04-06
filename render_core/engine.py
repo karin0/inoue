@@ -139,7 +139,7 @@ class Engine(Interpreter, ContextCallbacks, MutableMapping[str, Value]):
         self._gas: int = 0
 
         eval_funcs = {
-            '__file__': self._get_doc_func,
+            '__file__': self.get_doc_text,
             'print': self._print_func,
             'exit': self._exit_func,
         }
@@ -1229,10 +1229,8 @@ class Engine(Interpreter, ContextCallbacks, MutableMapping[str, Value]):
         return doc
 
     # Used in dq_lit evaluation as `__file__` function.
-    def _get_doc_func(self, key=None) -> str | None:
-        if isinstance(key, str):
-            return self._get_doc(key)
-        return self._doc_text
+    def get_doc_text(self, key: str | None = None) -> str | None:
+        return self._doc_text if key is None else self._get_doc(key)
 
     def _doc_ref(self, key: str, *, allow_tco: bool = False) -> Value | TCO:
         val = self._scope.get(key, allow_undef=True)

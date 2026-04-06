@@ -352,7 +352,6 @@ class RenderContext:
 
         log.info('create_engine: %s', overrides)
 
-        self._source_text = None
         self._first_doc_id = None
         self._default_doc_id = doc_id
         self._trusted = trusted
@@ -385,7 +384,6 @@ class RenderContext:
         path: str | None,
         update_callback: UpdateCallback | None = None,
     ) -> MessageSpec:
-        self._source_text = text
         rendered = render_with(self.engine, text)
         log.info('rendered %d -> %d', len(text), len(rendered))
         result = await self.to_response(
@@ -515,9 +513,9 @@ class RenderContext:
                 if (
                     get_env_flag(ctx, 'show_source')
                     and do_escape is escape
-                    and self._source_text
+                    and (source := self.engine.get_doc_text())
                 ):
-                    footers.append(f'```c\n{escape(self._source_text)}\n```')
+                    footers.append(f'```c\n{escape(source)}\n```')
 
                 if footers:
                     is_first = True
