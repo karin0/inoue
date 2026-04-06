@@ -3,7 +3,6 @@ import sys
 import functools
 import traceback
 from contextlib import contextmanager
-from collections.abc import MutableMapping
 from typing import (
     Any,
     Callable,
@@ -112,7 +111,7 @@ class SubDoc(Box):
         return f'{{{self.params} ↦ {Engine.debug_node(self.tree)}}}'
 
 
-class Engine(Interpreter, ContextCallbacks, MutableMapping[str, Value]):
+class Engine(Interpreter, ContextCallbacks):
     def __init__(
         self,
         ctx: Context,
@@ -400,52 +399,6 @@ class Engine(Interpreter, ContextCallbacks, MutableMapping[str, Value]):
             for k, v in self._ctx.items():
                 trace('%s = %s', k, v)
         return r.strip()  # type: ignore
-
-    # Flatten view without scopes to act as a MutableMapping. For external use only.
-    @override
-    def __getitem__(self, key: str) -> Value:
-        return self._ctx[key]
-
-    @override
-    def __setitem__(self, key: str, value: Value) -> None:
-        self._ctx[key] = value
-
-    @override
-    def __delitem__(self, key: str) -> None:
-        del self._ctx[key]
-
-    @override
-    def __iter__(self):
-        return iter(self._ctx)
-
-    @override
-    def __len__(self):
-        return len(self._ctx)
-
-    @override
-    def __contains__(self, key) -> bool:
-        return key in self._ctx
-
-    def get_flag(self, key: str, default: bool = False) -> bool:
-        val = self._ctx.get(key, default)
-        return bool(val) and val != '0'
-
-    @overload
-    def get(self, key: str) -> Value | None: ...
-
-    @overload
-    def get(self, key: str, default: Value) -> Value: ...
-
-    @overload
-    def get[T](self, key: str, default: T = None) -> Value | T: ...
-
-    @override
-    def get(self, key: str, default=None):
-        return self._ctx.get(key, default)
-
-    @override
-    def items(self):
-        return self._ctx.items()
 
     MAX_DEBUG_DEPTH = 2 if is_not_quiet else 1
 

@@ -3,10 +3,11 @@ import sys
 
 import subprocess
 from typing import Callable
+from contextlib import contextmanager
 from contextvars import ContextVar
 from collections.abc import Mapping
 
-from render_core import Box, Value, Engine
+from render_core import Box, Value
 
 from util import escape, html_escape, log
 from motto import hitokoto
@@ -24,10 +25,11 @@ class Signature(Box):
 current_ctx: ContextVar[Mapping[str, Value]] = ContextVar('current_ctx')
 
 
-def render_with(ctx: Engine, text: str):
+@contextmanager
+def use_context(ctx: Mapping[str, Value]):
     token = current_ctx.set(ctx)
     try:
-        return ctx.render(text)
+        yield
     finally:
         current_ctx.reset(token)
 

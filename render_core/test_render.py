@@ -5,7 +5,7 @@ import math
 import logging
 import warnings
 import unittest
-from typing import Callable
+from typing import Callable, Mapping
 from unittest.mock import Mock
 
 log = logging.getLogger('render_core')
@@ -85,37 +85,40 @@ class TestRender(unittest.TestCase):
         persisted.clear()
 
     @staticmethod
-    def start(ctx: dict[str, Value] | None = None) -> Engine:
-        return Engine(
-            OverriddenDict({} if ctx is None else ctx, {}), doc_loader=db_instance
-        )
+    def start(ctx: Engine | Mapping[str, Value] | None = None) -> Engine:
+        if isinstance(ctx, Engine):
+            return ctx
+        if ctx is None:
+            ctx = {}
+        return Engine(OverriddenDict(ctx, {}), doc_loader=db_instance)
 
     def render_it(
         self,
         text: str,
-        ctx: Engine | dict[str, Value] | None = None,
+        ctx: Engine | Mapping[str, Value] | None = None,
         *,
         e: str | tuple[str, ...] = '',
         eq: str | None = None,
     ) -> str:
-        if not isinstance(ctx, Engine):
-            ctx = self.start(ctx)
-
-        r = ctx.render(text)
-        dump = f'Render: {text}\nResult:{r}\nerrors: {ctx.errors}\nctx: {ctx.items()}'
-        trace('Gas used: %s', ctx._gas)
+        engine = self.start(ctx)
+        ctx = engine._ctx
+        r = engine.render(text)
+        dump = (
+            f'Render: {text}\nResult:{r}\nerrors: {engine.errors}\nctx: {ctx.items()}'
+        )
+        trace('Gas used: %s', engine.gas_used())
 
         if e:
             if isinstance(e, str):
                 e = (e,)
             for e in e:
                 self.assertTrue(
-                    any(e in str(err) for err in ctx.errors),
+                    any(e in str(err) for err in engine.errors),
                     f'{dump}\nexpected error: {e}',
                 )
         else:
             self.assertFalse(
-                ctx.errors,
+                engine.errors,
                 f'{dump}\nexpected no errors',
             )
         if eq is not None:
@@ -123,12 +126,14 @@ class TestRender(unittest.TestCase):
         return r
 
     def render_it_all(
-        self, text: str, ctx_: dict[str, 'Value'] | None = None
-    ) -> tuple[str, Engine]:
-        ctx = self.start(ctx_)
-        r = ctx.render(text)
-        self.assertFalse(ctx.errors, f'Render: {text} errors: {ctx.errors}')
-        return r, ctx
+        self,
+        text: str,
+        ctx: Engine | Mapping[str, Value] | None = None,
+    ) -> tuple[str, Mapping[str, Value]]:
+        engine = self.start(ctx)
+        r = engine.render(text)
+        self.assertFalse(engine.errors, f'Render: {text} errors: {engine.errors}')
+        return r, engine._ctx
 
     def test_variable_substitution(self):
         ctx = {'name': 'Alice', 'role': 'Robot'}
@@ -146,8 +151,8 @@ class TestRender(unittest.TestCase):
             "{is_visible?Show:Hide}", {'is_visible': '0'}
         )
         self.assertEqual(result, "Hide")
-        self.assertFalse(ctx_off.get_flag('is_visible'))
-        self.assertTrue(ctx_on.get_flag('is_visible'))
+        self.assertEqual(ctx_off.get('is_visible'), '0')
+        self.assertEqual(ctx_on.get('is_visible'), '1')
 
     def test_unary(self):
         self.assertEqual(self.render_it('+a-b+c$a; b; c;'), '101')
@@ -336,7 +341,6 @@ class TestRender(unittest.TestCase):
         result, ctx = self.render_it_all(text)
         self.assertEqual(result, "Hello World!")
         self.assertEqual(ctx.get('target'), 'World')
-
         self.assertEqual(self.render_it("{a=b=c=3;a;b;c}"), "333")
         self.assertEqual(self.render_it("{a=b=c=3;d=e=;a;d;b;e;c}"), "333")
 
@@ -586,10 +590,11 @@ Write the following sentence twice, the second time within quotes.
                 return "This is doc2:\nthis;\n"
             return None
 
-        result, ctx = self.render_it_all(test_text)
+        engine = self.start()
+        result = self.render_it(test_text, engine)
         answer = 'Hello World\n\n\n\n\nDefault: N/A N/A\nUser: Alice\n\n\nAlice\nAlice\nAlice\nN/AAlice\nThis is naked`included!the!b`ac`kti`cks! \n\nb \nthatthisisnaked\nhello\n  the\n    wonderful\n     美丽新   world.\nthat\nis alsonaked\nis alsoddDEF1xThis is naked`included!the!b`ac`kti`cks! \n\nThis is doc1:\nis alsod\nd\n\nThis is doc2:\nthat\n\n\nExpensive'
         self.assertEqual(result, answer)
-        self.assertEqual(ctx.doc_name, 'doc3')
+        self.assertEqual(engine.doc_name, 'doc3')
 
     def test_plain(self):
         text = "This is a plain text without any variables."
@@ -1134,12 +1139,12 @@ a[k] = '11';
         self.render_it(text, eq='7\n7\n42\n7\n50')
 
     def test_context(self):
-        ctx = {}
+        ctx = OverriddenDict({}, {})
 
         def foo(a: int, b: str):
             return f'{a} {b} {' '.join(ctx)} {' '.join(str(s) for s in ctx.values())}'
 
-        ctx = Engine(OverriddenDict(ctx, {}), funcs={'foo': foo})
+        engine = Engine(ctx, funcs={'foo': foo})
         text = r'''
 a=3;
 d:=6;
@@ -1147,7 +1152,7 @@ c=4;
 b=5;
 "foo(42, 'Test')";
 '''
-        self.render_it(text, ctx, eq='42 Test a c b d 3 4 5 6')
+        self.render_it(text, engine, eq='42 Test a c b d 3 4 5 6')
 
     def test_if_clause(self):
         text = r'''

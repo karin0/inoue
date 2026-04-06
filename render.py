@@ -40,7 +40,7 @@ from util import (
 )
 from db import db
 from render_core import Engine, Value
-from render_bridge import Bridge, Signature, render_with
+from render_bridge import Bridge, Signature, use_context
 from render_context import OverriddenDict, encode_value, decode_value
 
 # '/' is kept for compatibility, which was used for '-'.
@@ -78,7 +78,7 @@ BUTTON_PREFIX = ENV_PREFIX + 'btn' + '.'
 
 
 def get_env(
-    ctx: Engine | Mapping[str, Value], key: str, default: Value | None = None
+    ctx: Mapping[str, Value], key: str, default: Value | None = None
 ) -> Value | None:
     v = ctx.get(ENV_PREFIX + key)
     if v is None:
@@ -88,9 +88,7 @@ def get_env(
     return v
 
 
-def get_env_flag(
-    ctx: Engine | Mapping[str, Value], key: str, default: bool = False
-) -> Value:
+def get_env_flag(ctx: Mapping[str, Value], key: str, default: bool = False) -> Value:
     v = get_env(ctx, key)
     if v is None:
         return default
@@ -122,7 +120,7 @@ def make_markup(
     if size > InlineKeyboardButton.MAX_CALLBACK_DATA:
         return None
 
-    ctx = render_ctx.engine
+    ctx = render_ctx.data
     memory = ''
     if (val := ctx.get(MEMORY_KEY)) is not None and is_safe_mem(
         payload := encode_value(val)
@@ -369,9 +367,8 @@ class RenderContext:
         # Access to attributes with underscores should be forbidden in `simpleeval`,
         # so `os` is safe.
         data = {'os': Bridge, 'sys': Bridge}
-        self.engine = Engine(
-            OverriddenDict(data, overrides), self._doc_loader, funcs=Bridge.funcs
-        )
+        self.data = OverriddenDict(data, overrides)
+        self.engine = Engine(self.data, self._doc_loader, funcs=Bridge.funcs)
 
     def _doc_loader(self, name: str) -> str | None:
         row = db.get_doc(name)
@@ -394,8 +391,10 @@ class RenderContext:
         path: str | None,
         update_callback: UpdateCallback | None = None,
     ) -> MessageSpec:
-        rendered = render_with(self.engine, text)
-        self._render_time = int(time.time())
+        with use_context(self.data):
+            rendered = self.engine.render(text)
+            self._render_time = int(time.time())
+
         log.info('rendered %d -> %d (%s)', len(text), len(rendered), self._first_doc_id)
         if self._first_doc_id is None:
             self._first_doc_id = self._default_doc_id
@@ -415,7 +414,7 @@ class RenderContext:
         result: str,
         update_callback: UpdateCallback | None = None,
     ) -> MessageSpec:
-        ctx = self.engine
+        ctx = self.data
         result = result or '[empty]'
 
         if get_env_flag(ctx, 'cleanup', True):
@@ -484,10 +483,9 @@ class RenderContext:
         result: str,
         as_md: bool,
     ) -> MessageSpec:
-        ctx = self.engine
-        errors = ctx.errors
+        ctx = self.data
 
-        if errors:
+        if errors := self.engine.errors:
             result += f'\n\n---\n\n' + '\n'.join(errors)
 
         result = truncate_text(result)
@@ -532,8 +530,9 @@ class RenderContext:
                     if get_env_flag(ctx, 'show_stats', True) and (
                         unix := self._render_time
                     ):
+                        gas = self.engine.gas_used()
                         footers.append(
-                            rf'![{unix}](tg://time?unix={unix}&format=wdt) \(![now](tg://time?unix={unix}&format=r)\) \| {ctx.gas_used()}'
+                            rf'![{unix}](tg://time?unix={unix}&format=wdt) \(![now](tg://time?unix={unix}&format=r)\) \| {gas}'
                         )
 
                 if footers:
@@ -735,10 +734,10 @@ async def handle_render_callback(
 
     ctx = RenderContext(update, flags, doc_id=doc_id, callback_data=data)
     if clicked_button is not None:
-        ctx.engine[BUTTON_KEY] = clicked_button
+        ctx.data[BUTTON_KEY] = clicked_button
     if memory is not None:
-        ctx.engine[MEMORY_KEY] = decode_value(memory)
-    ctx.engine['_state'] = data
+        ctx.data[MEMORY_KEY] = decode_value(memory)
+    ctx.data['_state'] = data
 
     query = update.callback_query
     assert query is not None
@@ -804,7 +803,8 @@ async def handle_render_doc(update: Update, msg: Message):
 
     id = msg.message_id
     ctx = RenderContext(update, doc_id=id)
-    result = render_with(ctx.engine, text)
+    with use_context(ctx.data):
+        result = ctx.engine.render(text)
 
     info = []
     if name := ctx.engine.doc_name:
