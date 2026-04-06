@@ -3,6 +3,7 @@ import sys
 import functools
 import traceback
 from contextlib import contextmanager
+from collections.abc import MutableMapping
 from typing import (
     Any,
     Callable,
@@ -28,11 +29,10 @@ from .context import (
     log,
     Value,
     Box,
-    Items,
     to_str,
     try_to_str,
     try_to_value,
-    OverriddenDict,
+    Context,
     ScopedContext,
     ContextCallbacks,
 )
@@ -112,21 +112,16 @@ class SubDoc(Box):
         return f'{{{self.params} ↦ {Engine.debug_node(self.tree)}}}'
 
 
-class Engine(Interpreter, ContextCallbacks):
+class Engine(Interpreter, ContextCallbacks, MutableMapping[str, Value]):
     def __init__(
         self,
-        ctx: Mapping[str, Value] | None = None,
-        overrides: dict[str, Value] | None = None,
+        ctx: Context,
         doc_loader: Callable[[str], str | None] | None = None,
         *,
         funcs: Mapping[str, Callable[..., Value | None]] | None = None,
     ):
         super().__init__()
-        if ctx is None:
-            ctx = {}
-        if overrides is None:
-            overrides = {}
-        self._ctx = OverriddenDict(ctx, overrides)
+        self._ctx = ctx
         self._doc_src = doc_loader or (lambda _: None)
         self._doc_text = ''
 
@@ -150,8 +145,8 @@ class Engine(Interpreter, ContextCallbacks):
         }
         if funcs:
             eval_funcs.update(funcs)
-        self._scope = ScopedContext(self._ctx, self, eval_funcs)
-        trace('Engine initialized: %s', self._ctx)
+        self._scope = ScopedContext(ctx, self, eval_funcs)
+        trace('Engine initialized: %s', ctx)
 
     @override
     def _consume_gas(self):
@@ -399,28 +394,55 @@ class Engine(Interpreter, ContextCallbacks):
         r = self._gather_output(self._output, as_str=True)
         if is_tracing:
             trace('Final rendered result: %r\nGas cost: %s', r, self._gas)
-            self._ctx.debug()
+            for k, v in self._ctx.items():
+                trace('%s = %s', k, v)
         return r.strip()  # type: ignore
 
     # Flatten view without scopes to act as a MutableMapping. For external use only.
+    @override
     def __getitem__(self, key: str) -> Value:
         return self._ctx[key]
 
+    @override
     def __setitem__(self, key: str, value: Value) -> None:
         self._ctx[key] = value
+
+    @override
+    def __delitem__(self, key: str) -> None:
+        del self._ctx[key]
+
+    @override
+    def __iter__(self):
+        return iter(self._ctx)
+
+    @override
+    def __len__(self):
+        return len(self._ctx)
+
+    @override
+    def __contains__(self, key) -> bool:
+        return key in self._ctx
 
     def get_flag(self, key: str, default: bool = False) -> bool:
         val = self._ctx.get(key, default)
         return bool(val) and val != '0'
 
-    def get(self, key: str, default: Value | None = None) -> Value | None:
+    @overload
+    def get(self, key: str) -> Value | None: ...
+
+    @overload
+    def get(self, key: str, default: Value) -> Value: ...
+
+    @overload
+    def get[T](self, key: str, default: T = None) -> Value | T: ...
+
+    @override
+    def get(self, key: str, default=None):
         return self._ctx.get(key, default)
 
-    def items(self) -> Items:
+    @override
+    def items(self):
         return self._ctx.items()
-
-    def setdefault_override(self, key: str, value: Value) -> Value:
-        return self._ctx.setdefault_override(key, value)
 
     MAX_DEBUG_DEPTH = 2 if is_not_quiet else 1
 
@@ -605,7 +627,7 @@ class Engine(Interpreter, ContextCallbacks):
             sub_doc = SubDoc(tree, None)
             trace('Uncaptured sub-doc: %s %s', key, sub_doc)
             # Side-effect: the box is saved in the current scope.
-            self._scope.set(key, sub_doc, self._ctx.__setitem__)
+            self._scope.set(key, sub_doc)
             return sub_doc
 
         if not captured:
@@ -732,7 +754,7 @@ class Engine(Interpreter, ContextCallbacks):
         trace('_block_inner_set_env: %s', env)
         if env:
             for key, val in env.items():
-                self._scope.set(key, try_to_value(val), self._ctx.__setitem__)
+                self._scope.set(key, try_to_value(val))
 
     # Execute!
     def _block_inner_exec(self, tree: Tree) -> MaybeTCO:
@@ -1168,11 +1190,11 @@ class Engine(Interpreter, ContextCallbacks):
             # Flag set: {+name} or {-name}
             # This means {name:=1} or {name:=0}.
             case '+':
-                self._ctx.setdefault_override(key, '1')
+                self._ctx.setitem_with(key, 1, '+')
                 return ''
 
             case '-':
-                self._ctx.setdefault_override(key, '0')
+                self._ctx.setitem_with(key, 0, '-')
                 return ''
 
             # Variable read: {$name}
@@ -1310,71 +1332,70 @@ class Engine(Interpreter, ContextCallbacks):
         self._do_assign(keys, op, expr)
 
     def _do_assign(self, keys: Sequence[str], op: str, expr: Tree | None):
+        if op == '?=':
+            # Context set if undefined or empty: {name?=value}
+            # {name1?=name2=...=value} assigns the value to the undefined/empty
+            # names only. Only '' (empty string) is considered empty.
+            #
+            # Mote that the evaluation is short-circuit (conditional) here,
+            # like a `OnceCell` initialization.
+            #
+            # Also, be careful that the original value can be resolved from outer
+            # scopes, in which case a key is still created in the current scope
+            # to hold the outer value, even if the provided expression is not
+            # evaluated!
+            #
+            # This is to ensure consistent behavior with other assignment ops
+            # to ensure the var exists in the current scope after the assignment.
+            val = '' if expr is None else None
+            for key in keys:
+                raw_key, old = self._scope.resolve_raw(key)
+                key = self._scope.current_key(key)
+                if old is None or old == '':
+                    if val is None:
+                        val = self._expr(expr)  # type: ignore[assignment]
+                    new = val
+                else:
+                    new = old
+
+                trace(
+                    'Assigning: "?=": key: %s = %r (%s was %r)',
+                    key,
+                    new,
+                    raw_key,
+                    old,
+                )
+
+                # Write back even if unchanged. This has two effects:
+                # 1. Ensures the var in the inner scope with the outer value.
+                # 2. Notifies the underlying `OverriddenDict` to touch the key.
+                #    See `OverriddenDict._setitem__`.
+                self._ctx[key] = new
+
+            if val is None:
+                trace('"?=": Skipped evaluation for %s', keys)
+            return
+
+        val = self._expr(expr) if expr else ''
         match op:
             case '=':
                 # Context set: {key=value}
                 # {key1=key2=...=value} sets all keys to value
-                f = self._ctx.__setitem__
+                for key in keys:
+                    # Cannot assign to outer scopes. No `global` or `nonlocal`.
+                    # However, outer vars can still be "mutated" via `swap` or `repl`.
+                    self._scope.set(key, val)
 
             case ':=':
                 # Context override: {key:=value}
                 # a. Can never be overridden (except by markup buttons)
                 # b. Does not interrupt the natural order of flags detected in markup
                 # {key1:=key2=...=value} affects all keys
-                f = self._ctx.setdefault_override
-
-            case '?=':
-                # Context set if undefined or empty: {name?=value}
-                # {name1?=name2=...=value} assigns the value to the undefined/empty
-                # names only. Only '' (empty string) is considered empty.
-                #
-                # Mote that the evaluation is short-circuit (conditional) here,
-                # like a `OnceCell` initialization.
-                #
-                # Also, be careful that the original value can be resolved from outer
-                # scopes, in which case a key is still created in the current scope
-                # to hold the outer value, even if the provided expression is not
-                # evaluated!
-                #
-                # This is to ensure consistent behavior with other assignment ops
-                # to ensure the var exists in the current scope after the assignment.
-                val = '' if expr is None else None
                 for key in keys:
-                    raw_key, old = self._scope.resolve_raw(key)
-                    key = self._scope.current_key(key)
-                    if old is None or old == '':
-                        if val is None:
-                            val = self._expr(expr)  # type: ignore[assignment]
-                        new = val
-                    else:
-                        new = old
-
-                    trace(
-                        'Assigning: "?=": key: %s = %r (%s was %r)',
-                        key,
-                        new,
-                        raw_key,
-                        old,
-                    )
-
-                    # Write back even if unchanged. This has two effects:
-                    # 1. Ensures the var in the inner scope with the outer value.
-                    # 2. Notifies the underlying `OverriddenDict` to touch the key.
-                    #    See `OverriddenDict._setitem__`.
-                    self._ctx[key] = new
-
-                if val is None:
-                    trace('"?=": Skipped evaluation for %s', keys)
-                return
+                    self._scope.set_with(key, val, ':=')
 
             case _:
                 raise ValueError(f'Bad assign op: {op}')
-
-        val = self._expr(expr) if expr else ''
-        for key in keys:
-            # Cannot assign to outer scopes. No `global` or `nonlocal`.
-            # However, outer vars can still be "mutated" via `swap` or `repl`.
-            self._scope.set(key, val, f)
 
     # Equality test: {key1=key2=...=<expr>}, but not as expression statements.
     # For other operations (`?=` or `:=`), this works the same as assignment,

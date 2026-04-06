@@ -2,8 +2,7 @@ import os
 import re
 import time
 import asyncio
-from typing import Container, Iterator, Mapping, Callable, Awaitable
-from collections.abc import MutableMapping
+from typing import Container, Mapping, Callable, Awaitable
 
 from telegram import (
     InlineQuery,
@@ -39,9 +38,9 @@ from util import (
     encode_chat_id,
 )
 from db import db
-from render_core import Engine, Value, register_pm
-from render_core.context import LRUDict
-from render_bridge import Bridge, Signature
+from render_core import Engine, Value
+from render_bridge import Bridge, Signature, render_with
+from render_context import OverriddenDict, encode_value, decode_value
 
 # '/' is kept for compatibility, which was used for '-'.
 BUTTON_SIGN = '!'
@@ -73,37 +72,6 @@ MEMORY_KEY = '_mem'
 BUTTON_KEY = '_btn'
 SPECIAL_KEYS = (MEMORY_KEY, BUTTON_KEY)
 BUTTON_PREFIX = ENV_PREFIX + 'btn' + '.'
-
-
-def encode_value(val: Value) -> str:
-    if isinstance(val, bool):
-        return 'b' if val else 'B'
-    if isinstance(val, int):
-        return ('i' + str(val)) if val >= 0 else ('I' + str(-val))
-    if isinstance(val, float):
-        return ('f' + str(val)) if val >= 0 else ('F' + str(-val))
-    return 's' + str(val)
-
-
-def decode_value(s: str) -> Value:
-    val = s[1:]
-    match s[0]:
-        case 'b':
-            return True
-        case 'B':
-            return False
-        case 'i':
-            return int(val)
-        case 'I':
-            return -int(val)
-        case 'f':
-            return float(val)
-        case 'F':
-            return -float(val)
-        case 's':
-            return val
-        case _:
-            raise ValueError('bad encoded value: ' + s)
 
 
 def get_env(
@@ -344,36 +312,6 @@ async def _collect_redirect_hook_result(hook: str, text: str, res: list[str]) ->
     return ''.join(res)
 
 
-class PersistentStorage(MutableMapping[str, Value]):
-    def __init__(self) -> None:
-        super().__init__()
-        self._cache = LRUDict()
-
-    def __getitem__(self, key: str) -> Value:
-        if key in self._cache:
-            return self._cache[key]
-        value = decode_value(db['pm-' + key])
-        self._cache[key] = value
-        return value
-
-    def __setitem__(self, key: str, value: Value) -> None:
-        db['pm-' + key] = encode_value(value)
-        self._cache[key] = value
-
-    def __delitem__(self, key: str) -> None:
-        del db['pm-' + key]
-        del self._cache[key]
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(k[3:] for k in db.iter_prefix('pm-'))
-
-    def __len__(self) -> int:
-        return db.count_prefix('pm-')
-
-
-register_pm(PersistentStorage())
-
-
 class RenderContext:
     def __init__(
         self,
@@ -422,7 +360,9 @@ class RenderContext:
         # Access to attributes with underscores should be forbidden in `simpleeval`,
         # so `os` is safe.
         data = {'os': Bridge, 'sys': Bridge}
-        self.engine = Engine(data, overrides, self._doc_loader, funcs=Bridge.funcs)
+        self.engine = Engine(
+            OverriddenDict(data, overrides), self._doc_loader, funcs=Bridge.funcs
+        )
 
     def _doc_loader(self, name: str) -> str | None:
         row = db.get_doc(name)
@@ -446,7 +386,7 @@ class RenderContext:
         update_callback: UpdateCallback | None = None,
     ) -> MessageSpec:
         self._source_text = text
-        rendered = self.engine.render(text)
+        rendered = render_with(self.engine, text)
         log.info('rendered %d -> %d', len(text), len(rendered))
         result = await self.to_response(
             path,
@@ -853,7 +793,7 @@ async def handle_render_doc(update: Update, msg: Message):
 
     id = msg.message_id
     ctx = RenderContext(update, doc_id=id)
-    result = ctx.engine.render(text)
+    result = render_with(ctx.engine, text)
 
     info = []
     if name := ctx.engine.doc_name:

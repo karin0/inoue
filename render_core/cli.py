@@ -10,10 +10,13 @@ if 'TRACE' in os.environ:
     log.setLevel(logging.DEBUG)
     log.addHandler(logging.FileHandler('render_core_cli.log', 'w', 'utf-8'))
 
-from . import engine
-from .engine import Engine
+from . import engine, Engine, Context
 
 engine.MAX_GAS = 1000000
+
+
+class ContextDict(dict, Context):
+    pass
 
 
 def try_to_value(s: str) -> int | float | str:
@@ -50,7 +53,7 @@ def main():
             text = fp.read()
 
     ctx = {str(i): try_to_value(arg) for i, arg in enumerate(args.args)}
-    engine = Engine(ctx)
+    engine = Engine(ContextDict(ctx))
 
     if args.instrument:
         import pyinstrument

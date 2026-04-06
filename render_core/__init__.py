@@ -1,4 +1,4 @@
 from .engine import Engine
-from .context import Value, Box, Context, register_pm
+from .context import Value, Box, Context, is_value_type
 
-__all__ = ['Engine', 'Value', 'Box', 'Context', 'register_pm']
+__all__ = ['Engine', 'Value', 'Box', 'Context', 'is_value_type']

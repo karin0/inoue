@@ -2,14 +2,12 @@ import os
 import ast
 import time
 import logging
-import inspect
 import functools
 
 from datetime import datetime
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Iterable, Literal, TypeGuard, Mapping, overload
-from collections import UserDict, OrderedDict
-from collections.abc import ItemsView, MutableMapping
+from collections.abc import MutableMapping
+from typing import Any, Callable, Literal, TypeGuard, overload
 
 from simpleeval import SimpleEval, DEFAULT_FUNCTIONS, DISALLOW_FUNCTIONS
 
@@ -32,7 +30,6 @@ class Box:
 # Allowed types for context values, as allowed by `simpleeval` by default (except None).
 # Other types should have been disallowed in `simpleeval`.
 type Value = str | int | float | bool | complex | bytes | Box
-type Items = ItemsView[str, Value]
 
 
 def is_value_type(v: Any) -> TypeGuard[Value]:
@@ -87,138 +84,6 @@ def try_to_value_or_none(val: Any) -> Value | None:
     return fix_to_str(val)
 
 
-LRU_CAPACITY = 128
-
-
-class LRUDict(MutableMapping[str, Value]):
-    def __init__(self):
-        self._data = OrderedDict()
-
-    def __contains__(self, key) -> bool:
-        return key in self._data
-
-    def __getitem__(self, key: str) -> Value:
-        self._data.move_to_end(key)
-        return self._data[key]
-
-    def __setitem__(self, key: str, value: Value) -> None:
-        trace('PM set: %s = %r', key, value)
-        self._data[key] = value
-        self._data.move_to_end(key)
-        if len(self._data) > LRU_CAPACITY:
-            self._data.popitem(last=False)
-
-    def __delitem__(self, key: str) -> None:
-        del self._data[key]
-
-    def __iter__(self):
-        return iter(self._data)
-
-    def __len__(self) -> int:
-        return len(self._data)
-
-    def clear(self) -> None:
-        return self._data.clear()
-
-    def items(self):
-        return self._data.items()
-
-
-# Static context variables are persisted across different `RenderInterpreter` instances.
-persisted = LRUDict()
-PM_PREFIX = 'pm.'
-
-
-def register_pm(storage: MutableMapping[str, Value]) -> None:
-    global persisted
-    persisted = storage
-
-
-def get_pm_key(key: str) -> str | None:
-    if len(pm_key := key.removeprefix(PM_PREFIX)) != len(key):
-        return pm_key
-
-
-class OverriddenDict(UserDict):
-    def __init__(self, data: Mapping[str, Value], overrides: dict[str, Value]):
-        for val in data.values():
-            if not is_value_type(val):
-                raise TypeError(f'bad data value type: {type(val)}: {val}')
-        super().__init__(data)
-
-        for val in overrides.values():
-            if not is_value_type(val):
-                raise TypeError(f'bad override value type: {type(val)}: {val}')
-        self.overrides = overrides
-
-    def __getitem__(self, key: str) -> Value:
-        if (v := self.overrides.get(key)) is not None:
-            return v
-        if pm_key := get_pm_key(key):
-            return persisted[pm_key]
-        return self.data[key]
-
-    # For `get` method to work.
-    def __contains__(self, key: str) -> bool:  # type: ignore[override]
-        if key in self.overrides:
-            return True
-        if pm_key := get_pm_key(key):
-            return pm_key in persisted
-        return key in self.data
-
-    # For `set_or_del_raw` to work.
-    def __delitem__(self, key: str):
-        if pm_key := get_pm_key(key):
-            if key not in self.overrides:
-                del persisted[pm_key]
-            return
-
-        if key not in self.overrides:
-            del self.data[key]
-
-    # For `=` operator.
-    def __setitem__(self, key: str, val: Value):
-        if pm_key := get_pm_key(key):
-            if key not in self.overrides:
-                persisted[pm_key] = val
-            return
-
-        # We always set the value in the underlying dict, even if the value
-        # is overridden, so the natural order of keys is preserved as defined by
-        # documents and won't change after markup buttons are activated.
-        self.data[key] = val
-
-    # For `:=` operator.
-    # This only affects the `overrides` dict, which has higher priority than
-    # the underlying dict by their *values*, but are placed after those touched
-    # by `=` and `?=` in the natural order of *keys*.
-    # However, the existing `overrides` keys are frozen and can NEVER be modified
-    # or removed, even by `:=` itself.
-    def setdefault_override(self, key: str, value: Value) -> Value:
-        return self.overrides.setdefault(key, value)
-
-    def _compact(self):
-        return dict(self.data, **self.overrides)
-
-    def __iter__(self):
-        # Keys from the underlying dict are yielded first, in their natural order.
-        # Technically the side effects of this method shouldn't affect our behavior,
-        # since existing overrides can never be removed or modified.
-        return iter(self._compact())
-
-    def __len__(self) -> int:
-        return len(self._compact())
-
-    def items(self) -> Items:
-        return self._compact().items()
-
-    def debug(self):
-        for k, v in self.items():
-            trace('  %s = %r', k, v)
-        for k, v in persisted.items():
-            trace('  (pm) %s = %r', k, v)
-
-
 def date_func() -> str:
     return datetime.today().isoformat()
 
@@ -246,46 +111,6 @@ class ScopeProxy:
         return self._ctx._data[self._prefix + name]
 
 
-type Context = MutableMapping[str, Value]
-
-
-@functools.lru_cache
-def inspect_func(
-    func: Callable,
-) -> tuple[inspect.Signature, str, inspect.Parameter] | None:
-    if isinstance(func, type):
-        trace('inspect: type: %s', func)
-        return None
-
-    sig = inspect.signature(func)
-    for name, param in sig.parameters.items():
-        if param.annotation is Context:
-            return sig, name, param
-
-    trace('inspect: plain: %s %s', func, sig)
-    return None
-
-
-def call_with_context(
-    func: Callable, ctx: Context, args: Iterable, kwargs: dict[str, Any]
-) -> Any:
-    if (info := inspect_func(func)) is None:
-        return func(*args, **kwargs)
-
-    sig, name, param = info
-    trace('eval: inject: %s: %s (%s)', func, sig, name)
-
-    params = tuple(p for p in sig.parameters.values() if p is not param)
-    bound = inspect.Signature(params).bind_partial(*args, **kwargs)
-    bound.apply_defaults()
-    arguments = bound.arguments
-    arguments[name] = ctx
-    real = sig.bind_partial()
-    real.arguments = arguments
-    trace('eval: bound: %s', real)
-    return func(*real.args, **real.kwargs)
-
-
 class ContextCallbacks(ABC):
     @abstractmethod
     def _error(self, msg: str):
@@ -298,6 +123,11 @@ class ContextCallbacks(ABC):
     @abstractmethod
     def _call_box(self, data, *args, **kwargs) -> Value | None:
         pass
+
+
+class Context(MutableMapping[str, Value]):
+    def setitem_with(self, key: str, val: Value, op: str) -> None:
+        self[key] = val
 
 
 @functools.lru_cache
@@ -381,13 +211,18 @@ class ScopedContext:
     def current_key(self, name: str) -> str:
         return self._scopes[-1] + name
 
-    def set(self, name: str, val: Value, setter: Callable[[str, Value], Any]):
+    def set(self, name: str, val: Value):
         # `key, _ = self.resolve_raw(name)` ...?
         # We don't resolve the key here, since we always want to set
         # in the current scope.
         key = self._scopes[-1] + name
-        r = setter(key, val)
-        trace('Assigning: %s = %r -> %r (%s)', key, val, r, setter.__name__)
+        self._data[key] = val
+        trace('set: %s = %r', key, val)
+
+    def set_with(self, name: str, val: Value, op: str):
+        key = self._scopes[-1] + name
+        self._data.setitem_with(key, val, op)
+        trace('set_with: %s %s %r', key, op, val)
 
     def set_or_del_raw(self, key: str, val: Value | None):
         trace('set_or_del_raw: %s = %r', key, val)
@@ -446,7 +281,7 @@ class ScopedContext:
         if func in DISALLOW_FUNCTIONS:
             raise PermissionError('disallowed function')
 
-        r = call_with_context(func, self._data, args, kwargs)
+        r = func(*args, **kwargs)
         if is_tracing:
             trace('_eval_call: %s -> %r', ast.dump(node), r)
 

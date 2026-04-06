@@ -2,8 +2,11 @@ import os
 import sys
 
 import subprocess
-from typing import Callable, Concatenate
-from render_core import Box, Context, Value
+from typing import Callable
+from contextvars import ContextVar
+from collections.abc import Mapping
+
+from render_core import Box, Value, Engine
 
 from util import escape, html_escape, log
 from motto import hitokoto
@@ -16,6 +19,17 @@ class Signature(Box):
 
     def __repr__(self) -> str:
         return f'<Signature: {self.token}>'
+
+
+current_ctx: ContextVar[Mapping[str, Value]] = ContextVar('current_ctx')
+
+
+def render_with(ctx: Engine, text: str):
+    token = current_ctx.set(ctx)
+    try:
+        return ctx.render(text)
+    finally:
+        current_ctx.reset(token)
 
 
 class _Bridge(Box):
@@ -35,13 +49,13 @@ class _Bridge(Box):
         return func
 
     def __call__[**P](
-        self,
-        func: Callable[P, Value | None],
-    ) -> Callable[Concatenate[Context, P], Value | None]:
+        self, func: Callable[P, Value | None]
+    ) -> Callable[P, Value | None]:
         name = func.__name__.strip('_')
 
-        def wrapper(ctx: Context, *args: P.args, **kwargs: P.kwargs) -> Value | None:
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> Value | None:
             # See `RenderContext.__init__`.
+            ctx = current_ctx.get()
             if isinstance(signature := ctx.get('_trusted'), Signature):
                 log.debug(
                     'Bridge: authorized %s for %s\n  ctx = %s',
@@ -114,5 +128,6 @@ def _hitokoto():
 
 
 @Bridge.public
-def dbg(ctx: Context):
+def dbg():
+    ctx = current_ctx.get()
     return '\n'.join(f'{k}={v!r}' for k, v in ctx.items())

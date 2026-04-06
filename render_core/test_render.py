@@ -6,7 +6,7 @@ import logging
 import warnings
 import unittest
 from typing import Callable
-from unittest.mock import MagicMock
+from unittest.mock import Mock
 
 log = logging.getLogger('render_core')
 
@@ -16,10 +16,21 @@ if os.environ.get('TEST_TRACE') == '1':
 else:
     log.setLevel(logging.CRITICAL)
 
+sys.modules['util'] = mock_util = Mock('util')
+mock_util.log = log
+
+sys.modules['db'] = mock_db = Mock('db')
+mock_db.db = None
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from render_core import Value, Engine, Context
-from render_core.context import Context, persisted, trace
+from render_core import Value, Engine
+from render_core.context import trace
+
+import render_context as render_ctx
+from render_context import OverriddenDict
+
+render_ctx.persisted = persisted = {}
 
 
 test_text = """
@@ -60,7 +71,7 @@ d?=D; e?=E; f?=F;
 {"float(price) * (1 + float(tax)) > 105"?Expensive: Cheap}
 """
 
-db_instance = MagicMock()
+db_instance = Mock()
 
 
 def mock_db(func: Callable[[str], str | None]) -> Callable[[str], str | None]:
@@ -75,7 +86,9 @@ class TestRender(unittest.TestCase):
 
     @staticmethod
     def start(ctx: dict[str, Value] | None = None) -> Engine:
-        return Engine(ctx, doc_loader=db_instance)
+        return Engine(
+            OverriddenDict({} if ctx is None else ctx, {}), doc_loader=db_instance
+        )
 
     def render_it(
         self,
@@ -1120,11 +1133,13 @@ a[k] = '11';
 '''
         self.render_it(text, eq='7\n7\n42\n7\n50')
 
-    def test_context_injection(self):
-        def foo(a: int, ctx: Context, b: str):
+    def test_context(self):
+        ctx = {}
+
+        def foo(a: int, b: str):
             return f'{a} {b} {' '.join(ctx)} {' '.join(str(s) for s in ctx.values())}'
 
-        ctx = Engine(funcs={'foo': foo})
+        ctx = Engine(OverriddenDict(ctx, {}), funcs={'foo': foo})
         text = r'''
 a=3;
 d:=6;
