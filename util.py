@@ -118,17 +118,21 @@ def init_util(b: Bot):
 
 
 @contextmanager
-def use_msg(m: Message | None):
+def use_msg(m: Message | None, sender: Sender | None):
     if m and m.chat_id != USER_ID:
         if m.chat_id not in GUEST_USER_IDS and m.chat_id != GROUP_ID:
             log.warning('Bad use_msg: %s', m)
         m = None
 
     token = msg.set(m)
+    if sender is not None:
+        token_sender = current_sender.set(sender)
     try:
         yield m
     finally:
         msg.reset(token)
+        if sender is not None:
+            current_sender.reset(token_sender)  # type: ignore
 
 
 @contextmanager
@@ -138,19 +142,6 @@ def use_text_override(text: str):
         yield
     finally:
         text_override.reset(token)
-
-
-@contextmanager
-def use_is_guest(is_guest: bool):
-    if is_guest:
-        token_guest = ctx_is_guest.set(True)
-    else:
-        token_guest = None
-    try:
-        yield
-    finally:
-        if token_guest is not None:
-            ctx_is_guest.reset(token_guest)
 
 
 NOTIFY_LIMIT_INTERVAL_SEC = 20

@@ -4,7 +4,7 @@ import logging
 from typing import Iterable
 from sqlite3 import connect, Connection
 
-from context import is_guest, ME_LOWER
+from context import is_sender_guest, ME_LOWER
 
 log = logging.getLogger(ME_LOWER + '.db')
 
@@ -69,7 +69,7 @@ class DataStore:
         return f'{n} docs, {m} keys, {c} commands'
 
     def get_doc(self, name: str) -> tuple[int, str] | None:
-        if is_guest():
+        if is_sender_guest():
             for prefix in ALLOWED_GUEST_DOC_PREFIXES:
                 if name.startswith(prefix):
                     log.info('get_doc: allowed guest access to doc: %s', name)

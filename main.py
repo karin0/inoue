@@ -34,7 +34,6 @@ from util import (
     ME,
     init_util,
     use_msg,
-    use_is_guest,
     use_text_override,
     get_msg,
     get_msg_arg,
@@ -42,6 +41,7 @@ from util import (
     escape,
 )
 from db import db
+from context import Sender, get_sender
 from inoue import render_receipt
 from motto import greeting, hitokoto
 from misc import handle_sort, handle_fetch
@@ -56,6 +56,15 @@ from render import (
     handle_render_inline_query,
     CALLBACK_SPECIAL,
 )
+
+try:
+    from env import guest_usage
+except ImportError:
+
+    async def guest_usage(msg: Message, sender: Sender):
+        assert sender and sender.is_guest
+        text = rf'Hello, {escape(sender.name)}\!'
+        await reply_text(msg, text, 'MarkdownV2')
 
 
 REG_TEMPLATE_ARG = re.compile(r'\$(\*|\d+)')
@@ -154,6 +163,11 @@ def auth(
             src = f'{src} (guest)'
             valid = permissive
 
+        if sender_id:
+            sender = Sender(sender_id, sender_name or '', is_guest)
+        else:
+            sender = None
+
         log.debug('Entering %s from %s: %s', func.__name__, src, update)
 
         item = callback = query = None
@@ -187,26 +201,14 @@ def auth(
                 chat,
             )
             if is_guest and msg:
-                await reply_text(
-                    msg,
-                    f'Hello, `{escape(sender_name)}`\\! Send `/render <your template>` to begin\\.',
-                    parse_mode='MarkdownV2',
-                )
+                assert sender is not None
+                await guest_usage(msg, sender)
             return
 
-        if is_guest:
-            if msg and func == handle_msg:
-                log.warning(
-                    '%s said: %s\n  %s',
-                    src,
-                    shorten(msg.text or msg.caption or '', limit=3000),
-                    update,
-                )
-                return
-
+        if is_guest and not msg:
             log.warning('Allowing guest access: %s: %s', sender_id, update)
 
-        with use_msg(msg), use_is_guest(is_guest):
+        with use_msg(msg, sender):
             try:
                 return await func(update, ctx)
             except Exception as e:
@@ -218,7 +220,9 @@ def auth(
 
 
 async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if post := update.edited_channel_post or update.channel_post:
+    sender = get_sender()
+    is_guest = sender and sender.is_guest
+    if not is_guest and (post := update.edited_channel_post or update.channel_post):
         return await handle_render_doc(update, post)
 
     if not (msg := get_msg(update)):
@@ -233,18 +237,23 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ):
         return await handle_render_group(msg, origin.message_id)
 
-    # Privileged operations are only allowed in private chats, even if it's from
-    # USER_ID.
-    if msg.chat_id != USER_ID:
-        log.warning('handle_msg: unauthorized update: %s', update)
-        return
-
     # ID Bot
     if origin:
         return await msg.reply_text(*pre_block(str(origin)), do_quote=True)
 
     if attachment := msg.document or msg.audio:
         await handle_voice(msg, ctx.bot, attachment)
+        return
+
+    if is_guest:
+        assert sender is not None
+        await guest_usage(msg, sender)
+        return
+
+    # Privileged operations are only allowed in private chats, even if it's from
+    # USER_ID.
+    if msg.chat_id != USER_ID:
+        log.warning('handle_msg: unauthorized update: %s', update)
         return
 
     if not ((text := msg.text) and text.strip()):
@@ -295,8 +304,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def handle_inline_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.inline_query
-    data = query.query.strip()
-    if query and data:
+    assert query
+    if data := query.query.strip():
         await handle_render_inline_query(update, query, data)
 
 
