@@ -9,6 +9,7 @@ from util import (
     log,
     escape,
     pre_block,
+    pre_block_raw,
     reply_text,
     use_text_override,
     get_msg_arg,
@@ -114,7 +115,7 @@ def stats(me: User, header: str = ME) -> tuple[str, str]:
     kv.append(f'tot: {tot}')
     kv = ', '.join(kv)
     log.info('%s (%s)', info, kv)
-    text = f'{escape(greeting())}\n{escape(hitokoto())}\n```\n{escape(info)}\n{escape(kv)}\n```\n```\n{escape(str(me))}\n```'
+    text = f'{escape(greeting())}\n{escape(hitokoto())}\n{pre_block_raw(f"{info}\n{kv}")}{pre_block_raw(str(me))}'
     return text, 'MarkdownV2'
 
 

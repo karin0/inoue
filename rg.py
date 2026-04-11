@@ -22,6 +22,7 @@ from util import (
     escape,
     get_msg_arg,
     get_deep_link_url,
+    pre_block_raw,
     truncate_text,
     reply_text,
     log,
@@ -303,12 +304,12 @@ async def do_show(i: str | int, j: str | int, k: str | int | None, alt_off: int 
         header = text[:p].strip()
         body = text[p + 1 :].strip()
 
-        header = escape(header) + '\n```\n'
+        header = escape(header) + '\n'
         p = body.find('\n---\n')
         if p >= 0:  # Two-section body
             body1 = body[:p].strip()
             body2 = body[p + 5 :].strip()
-            new_text = header + escape(body1) + '\n```\n```\n' + escape(body2) + '\n```'
+            new_text = header + pre_block_raw(body1) + pre_block_raw(body2)
             if len(new_text) <= MAX_TEXT_LENGTH:
                 text = new_text
                 parse_mode = 'MarkdownV2'
@@ -316,7 +317,7 @@ async def do_show(i: str | int, j: str | int, k: str | int | None, alt_off: int 
                 p = -1  # Mark as undone
 
         if p < 0:
-            new_text = header + escape(body) + '\n```'
+            new_text = header + pre_block_raw(body)
             if len(new_text) <= MAX_TEXT_LENGTH:
                 text = new_text
                 parse_mode = 'MarkdownV2'

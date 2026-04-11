@@ -389,6 +389,11 @@ def escape(s: str) -> str:
     return escape_markdown(s, version=2)
 
 
+def escape_pre(s: str) -> str:
+    # Equals to `escape_markdown(s, version=2, entity_type=MessageEntity.PRE)`
+    return s.replace('`', '\\`')
+
+
 type Content = tuple[str, str | None]
 
 
@@ -404,8 +409,8 @@ def pre_block(s: str, *, do_truncate: bool = True) -> Content:
     return s, None
 
 
-def pre_block_raw(s: str) -> str:
-    return f'```\n{escape(s)}\n```'
+def pre_block_raw(s: str, *, lang: str = '') -> str:
+    return f'```{lang}\n{escape_pre(s)}\n```'
 
 
 def blockquote_block(s: str) -> Content:
