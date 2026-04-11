@@ -312,8 +312,6 @@ async def reply_text(
     chat_kind = encode_chat_id(m)
     if chat_kind == 'c':
         log.warning('reply_text: channel chat: %s', m)
-    elif chat_kind.startswith('G'):
-        log.warning('reply_text: guest chat: %s\n  %s', m, text)
     key = f'{chat_kind}-{m.message_id}'
 
     # Can only be called when `key` is missing in the cache.

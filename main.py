@@ -205,9 +205,6 @@ def auth(
                 await guest_usage(msg, sender)
             return
 
-        if is_guest and not msg:
-            log.warning('Allowing guest access: %s: %s', sender_id, update)
-
         with use_msg(msg, sender):
             try:
                 return await func(update, ctx)
@@ -280,6 +277,7 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     callback = update.callback_query
+    assert callback
     data = callback.data
     fut = None
     if data:
