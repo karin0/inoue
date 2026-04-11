@@ -39,7 +39,8 @@ BRANCH_END: "!"
 swap: lvalue "^" lvalue
 
 repl: iden ("|" repl_pair)+
-repl_pair: [expr] "/" [expr]
+repl_pair: [expr] "/" [expr]                      -> repl_pair_plain
+         | [expr] "\\" [expr] ("\\" REPL_FLAGS)?  -> repl_pair_regex
 
 // Expressions.
 // 'lvalue' has different semantics inside 'expr'.
@@ -88,6 +89,8 @@ _EQUAL.10: "=="
 LITERAL.-100: /[^\"#$%&'()*+\-\/:;=?!@[\\\]^`{|}~↦]+/
 
 SQ_STRING: /'([^'\\]|\\.)*'/
+
+REPL_FLAGS: /[a-z]+/
 
 %import common.ESCAPED_STRING
 %import common.WS

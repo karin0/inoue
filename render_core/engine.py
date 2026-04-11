@@ -16,6 +16,11 @@ from typing import (
     override,
 )
 
+try:
+    import regex as re
+except ImportError:
+    import re
+
 from lark import Lark, Token, Tree
 from lark.visitors import Interpreter, Transformer
 from lark.exceptions import LarkError
@@ -39,6 +44,15 @@ from .tco import TCO, MaybeTCO, Tco, TCOContext
 
 MAX_DEPTH = 20
 MAX_GAS = 2000
+
+REPL_REGEX_FLAG_MAP = {
+    'a': re.ASCII,
+    'i': re.IGNORECASE,
+    'm': re.MULTILINE,
+    's': re.DOTALL,
+    'u': re.UNICODE,
+    'x': re.VERBOSE,
+}
 
 
 # https://stackoverflow.com/a/47956089
@@ -1381,18 +1395,46 @@ class Engine(Interpreter, ContextCallbacks):
         self._scope.set_or_del_raw(key1, val2)
         self._scope.set_or_del_raw(key2, val1)
 
-    # Context inplace replacement: {key|pat1/rep1|pat2/rep2|...}
+    # Context inplace replacement: {key|pat1/rep1|pat2/rep2|regex3\rep3\flags3|...}
     def repl(self, tree: Tree):
         key = self._iden(tree.children[0])
         key, val = self._scope.resolve_raw(key, '', as_str=True)
         assert isinstance(val, str), val
         for pair in tree.children[1:]:
-            pat, sub = pair.children
-            pat = self._evaluate(pat)
-            sub = self._evaluate(sub)
+            pair = narrow(pair, Tree)
+            chs = pair.children
+            pat = self._evaluate(chs[0])
+            sub = self._evaluate(chs[1])
+            match pair.data:
+                case 'repl_pair_plain':
+                    # Write back each time.
+                    self._ctx[key] = val = val.replace(pat, sub)
 
-            # Write back each time.
-            self._ctx[key] = val = val.replace(pat, sub)
+                case 'repl_pair_regex':
+                    flags = (
+                        self._regex_flags(narrow(chs[2], Token).value)
+                        if len(chs) > 2
+                        else 0
+                    )
+
+                    try:
+                        val = re.sub(pat, sub, val, flags=flags)
+                    except re.error as e:
+                        self._error(f'regex replace: {e}')
+                    else:
+                        self._ctx[key] = val
+
+                case _:
+                    raise ValueError(f'Bad repl pair: {pair.data}')
+
+    def _regex_flags(self, spec: str) -> int:
+        flags = 0
+        for c in spec:
+            if (flag := REPL_REGEX_FLAG_MAP.get(c)) is None:
+                self._error(f'bad regex flag: {c}')
+            else:
+                flags |= flag
+        return flags
 
 
 # The associativity of `branch` is too greedy and consumes all statements

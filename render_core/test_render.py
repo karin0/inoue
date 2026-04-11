@@ -426,6 +426,11 @@ Write the following sentence twice, the second time within quotes.
             ),
             'helloelloeoe',
         )
+        self.assertEqual(self.render_it("s=abc123def; s|'[0-9]+'\\X; s;"), 'abcXdef')
+        self.assertEqual(self.render_it("s=AbC abc; s|'abc'\\x\\i; s;"), 'x x')
+
+        self.render_it("s=abc; s|'a'\\x\\q; s;", e='bad regex flag')
+        self.render_it("s=abc; s|'([a'\\x; s;", e='regex replace')
 
     def test_empty_values(self):
         text = '{;a=} {;b:=;} {c=; d=2345;} {d|4/} {"a+b+c+d"}'
