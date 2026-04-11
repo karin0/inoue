@@ -1,4 +1,5 @@
 import os
+import sys
 import asyncio
 import logging
 import functools
@@ -212,6 +213,16 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         with open('out.ogg', 'rb') as f:
             return await msg.reply_voice(f, do_quote=True)
 
+    # Be more careful, since you won't be able to log in again within 10 minutes.
+    if text == '/Please log out now/':
+        await reply_text(msg, 'See you next time!')
+        if await ctx.bot.log_out():
+            log.info('log_out: success')
+            sys.exit(1)
+        else:
+            log.error('log_out: failed')
+        return
+
     if text.startswith('/'):
         return await dispatch_cmd(update, ctx, msg, text)
 
@@ -280,14 +291,24 @@ async def handle_error(update, context: ContextTypes.DEFAULT_TYPE) -> None:
         log.error('Unknown error in update %s: %s', update, e)
 
 
-def main():
-    app = (
+def build_app():
+    builder = (
         ApplicationBuilder()
         .token(os.environ['TELEGRAM_BOT_TOKEN'])
         .post_init(post_init)
         .post_stop(post_stop)
-        .build()
     )
+
+    # Looks like http://127.0.0.1:8081/
+    if url := os.environ.get('LOCAL_SERVER'):
+        log.info('Using local server: %s', url)
+        builder = (
+            builder.base_url(url + 'bot')
+            .base_file_url(url + 'file/bot')
+            .local_mode(True)
+        )
+
+    app = builder.build()
     app.add_error_handler(handle_error)
 
     rg = None
@@ -306,8 +327,12 @@ def main():
     app.add_handler(InlineQueryHandler(auth(handle_inline_query, permissive=True)))
     app.add_handler(MessageHandler(None, auth(handle_msg, permissive=True)))
 
+    return app
+
+
+def main():
     log.info('Starting %s...', ME)
-    app.run_polling()
+    build_app().run_polling()
     log.info('%s stopped.', ME)
 
 
