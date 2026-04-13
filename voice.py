@@ -239,11 +239,16 @@ async def convert_voice(
     if quality:
         attrs.append('quality')
 
-    info = f'Processing: {file_name} ({", ".join(attrs)})'
-    log.info('%s', info)
+    attrs = ', '.join(attrs)
+    log.info('Processing: %s (%s)', file_name, attrs)
+
+    if file_name:
+        info = rf'Processing: `{escape(file_name)}` \({escape(attrs)}\)'
+    else:
+        info = rf'Processing: _Untitled_ \({escape(attrs)}\)'
 
     status: Message | None = None
-    settings: list[str | None] = [escape(info)]
+    settings: list[str | None] = [info]
     queue = asyncio.Queue()
 
     async def _refresh():
@@ -251,16 +256,14 @@ async def convert_voice(
 
         if settings:
             text = '\n'.join(s for s in settings if s)
-            parse_mode = 'MarkdownV2'
         else:
             text = info
-            parse_mode = None
 
         # This needs to be serialized with a queue.
         if status is None:
-            status = await msg.reply_text(text, parse_mode, do_quote=True)
+            status = await msg.reply_text(text, 'MarkdownV2', do_quote=True)
         else:
-            await status.edit_text(text, parse_mode)
+            await status.edit_text(text, 'MarkdownV2')
 
     async def worker():
         while True:
