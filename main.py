@@ -163,9 +163,30 @@ def auth(
     return wrapper
 
 
+async def maybe_handle_voice(
+    msg: Message, new_msg: Message, bitrate_k: int = 0, is_guest: bool = False
+) -> bool:
+    if media := msg.document:
+        duration = 0
+    elif media := (msg.audio or msg.video):
+        duration = media.duration
+    else:
+        return False
+
+    if not is_guest:
+        quality = True
+    elif text := new_msg.caption or new_msg.text:
+        quality = 'q' in text
+    else:
+        quality = False
+
+    await handle_voice(msg, media, duration, bitrate_k, quality)
+    return True
+
+
 async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     sender = get_sender()
-    is_guest = sender and sender.is_guest
+    is_guest = bool(sender and sender.is_guest)
     if not is_guest and (post := update.edited_channel_post or update.channel_post):
         return await handle_render_doc(update, post)
 
@@ -181,13 +202,21 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ):
         return await handle_render_group(msg, origin.message_id)
 
+    if await maybe_handle_voice(msg, msg, is_guest=is_guest):
+        return
+
+    if (
+        (reply_to := msg.reply_to_message)
+        and (text := msg.text or msg.caption)
+        and (p := (text := text.strip()).find('k')) > 0
+        and text[:p].isdigit()
+        and await maybe_handle_voice(reply_to, msg, int(text[:p]), is_guest=is_guest)
+    ):
+        return
+
     # ID Bot
     if origin:
         return await msg.reply_text(*pre_block(str(origin)), do_quote=True)
-
-    if attachment := msg.document or msg.audio:
-        await handle_voice(msg, ctx.bot, attachment)
-        return
 
     if is_guest:
         assert sender is not None
