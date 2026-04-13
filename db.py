@@ -1,7 +1,7 @@
 import os
 import atexit
 import logging
-from typing import Iterable
+from typing import Iterable, cast
 from sqlite3 import connect, Connection
 
 from context import is_sender_guest, ME_LOWER
@@ -18,10 +18,12 @@ ALLOWED_GUEST_DOC_PREFIXES = tuple(
 
 class DataStore:
     def __init__(self):
-        self.conn: Connection = None
+        self.conn = cast(Connection, None)
 
     def connect(self, file: str):
-        assert self.conn is None
+        if self.conn is not None:
+            raise RuntimeError('Already connected')
+
         self.conn = connect(file, autocommit=False)
         atexit.register(self.conn.close)
 
@@ -66,7 +68,7 @@ class DataStore:
 
     def close(self):
         c = self.conn
-        self.conn = None
+        self.conn = cast(Connection, None)
         (f := c.close)()
         atexit.unregister(f)
 
