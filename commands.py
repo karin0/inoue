@@ -21,6 +21,7 @@ from motto import greeting, hitokoto
 from rg import handle_rg, handle_rg_start
 from misc import handle_sort, handle_fetch
 from run import handle_run, handle_cmd, handle_update
+from media import *
 
 REG_TEMPLATE_ARG = re.compile(r'\$(\*|\d+)')
 
@@ -123,10 +124,53 @@ async def handle_greet(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await reply_text(update, *stats(await ctx.bot.get_me()))
 
 
+def parse_media(arg: str) -> tuple[int, int] | None:
+    parts = arg.split('_', 2)
+    if len(parts) != 3:
+        return None
+
+    try:
+        return int(parts[1]), int(parts[2])
+    except ValueError:
+        return None
+
+
 async def handle_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg, arg = get_msg_arg(update)
-    if arg and arg.startswith('rg_'):
-        return await handle_rg_start(msg, arg)
+    if arg:
+        if arg.startswith('rg_'):
+            return await handle_rg_start(msg, arg)
+
+        elif arg.startswith('play_'):
+            parsed = parse_media(arg)
+            if parsed is None:
+                return await reply_text(msg, 'Bad play link.')
+            chat_id, message_id = parsed
+
+            if not db.has_media(chat_id, message_id):
+                return await reply_text(msg, 'Media not found.')
+
+            return await ctx.bot.forward_message(
+                msg.chat_id,
+                chat_id,
+                message_id,
+                message_thread_id=msg.message_thread_id,
+            )
+
+        elif arg.startswith('unsave_'):
+            parsed = parse_media(arg)
+            if parsed is None:
+                return await reply_text(msg, 'Bad unsave link.')
+            chat_id, message_id = parsed
+
+            title = db.delete_media(chat_id, message_id)
+            if title is not None:
+                title_desc = title or '<Untitled>'
+                return await reply_text(
+                    msg,
+                    f'Unsave success: {chat_id}/{message_id}, title={title_desc}',
+                )
+            return await reply_text(msg, f'Media not found.')
 
     return await reply_text(msg, *stats(await ctx.bot.get_me()))
 
@@ -141,6 +185,9 @@ handlers = (
     handle_greet,
     handle_sort,
     handle_def,
+    handle_save,
+    handle_play,
+    handle_playlist,
 )
 
 commands = {f.__name__[f.__name__.index('_') + 1 :]: f for f in handlers}

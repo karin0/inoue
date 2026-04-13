@@ -232,7 +232,7 @@ def get_msg(update: MessageSource) -> Message:
 
 def get_msg_arg(update: MessageSource) -> tuple[Message, str]:
     m = get_msg(update)
-    s = text_override.get() or m.text
+    s = text_override.get() or m.text or m.caption
 
     if not s.startswith('/'):
         return m, s.strip()

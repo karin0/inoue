@@ -26,8 +26,7 @@ class DataStore:
         atexit.register(self.conn.close)
 
         with self.conn:
-            self.conn.executescript(
-                '''CREATE TABLE IF NOT EXISTS Doc (
+            self.conn.executescript('''CREATE TABLE IF NOT EXISTS Doc (
                     id    INTEGER PRIMARY KEY NOT NULL,
                     name  TEXT    UNIQUE NOT NULL,
                     text  TEXT    NOT NULL
@@ -52,8 +51,16 @@ class DataStore:
                     name  TEXT    UNIQUE NOT NULL,
                     cmd   TEXT    NOT NULL
                 );
-                '''
-            )
+
+                CREATE TABLE IF NOT EXISTS Media (
+                    id         INTEGER PRIMARY KEY NOT NULL,
+                    chat_id    INTEGER NOT NULL,
+                    message_id INTEGER NOT NULL,
+                    title      TEXT    NOT NULL,
+                    saved_at   TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(chat_id, message_id)
+                );
+                ''')
         log.debug('Connected to db: %s', file)
 
     def close(self):
@@ -66,7 +73,8 @@ class DataStore:
         n = self.conn.execute('SELECT COUNT(*) FROM Doc').fetchone()[0]
         m = self.conn.execute('SELECT COUNT(*) FROM KV').fetchone()[0]
         c = self.conn.execute('SELECT COUNT(*) FROM Command').fetchone()[0]
-        return f'{n} docs, {m} keys, {c} commands'
+        s = self.conn.execute('SELECT COUNT(*) FROM Media').fetchone()[0]
+        return f'{n} docs, {m} keys, {c} commands, {s} media'
 
     def get_doc(self, name: str) -> tuple[int, str] | None:
         if is_sender_guest():
@@ -168,6 +176,57 @@ class DataStore:
         cursor = self.conn.execute('SELECT name FROM Command ORDER BY name;')
         for row in cursor:
             yield row[0]
+
+    def save_media(self, chat_id: int, message_id: int, title: str) -> bool:
+        with self.conn:
+            existing = self.conn.execute(
+                'SELECT 1 FROM Media WHERE chat_id = ? AND message_id = ?;',
+                (chat_id, message_id),
+            ).fetchone()
+            self.conn.execute(
+                '''INSERT INTO Media (chat_id, message_id, title)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(chat_id, message_id)
+                   DO UPDATE SET title = excluded.title;''',
+                (chat_id, message_id, title),
+            )
+        return not existing
+
+    def random_media(self) -> tuple[int, int] | None:
+        cursor = self.conn.execute(
+            'SELECT chat_id, message_id FROM Media ORDER BY RANDOM() LIMIT 1;'
+        )
+        if row := cursor.fetchone():
+            return row[0], row[1]
+        return None
+
+    def has_media(self, chat_id: int, message_id: int) -> bool:
+        cursor = self.conn.execute(
+            'SELECT 1 FROM Media WHERE chat_id = ? AND message_id = ?;',
+            (chat_id, message_id),
+        )
+        return cursor.fetchone() is not None
+
+    def iter_media(self) -> Iterable[tuple[int, int, str, str]]:
+        yield from self.conn.execute(
+            'SELECT chat_id, message_id, title, saved_at FROM Media ORDER BY id DESC;'
+        )
+
+    def delete_media(self, chat_id: int, message_id: int) -> str | None:
+        with self.conn:
+            cursor = self.conn.execute(
+                'SELECT title FROM Media WHERE chat_id = ? AND message_id = ?;',
+                (chat_id, message_id),
+            )
+            title_row = cursor.fetchone()
+            if title_row is None:
+                return None
+
+            self.conn.execute(
+                'DELETE FROM Media WHERE chat_id = ? AND message_id = ?;',
+                (chat_id, message_id),
+            )
+        return title_row[0]
 
 
 db = DataStore()

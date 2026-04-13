@@ -342,7 +342,7 @@ def build_app():
 
     rg = None
     for name, func in commands.items():
-        f = auth(func, permissive=name == 'render')
+        f = auth(func, permissive=name == 'render' or name == 'play')
         if name == 'rg':
             rg = f
         app.add_handler(CommandHandler(name, f))
