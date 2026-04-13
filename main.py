@@ -196,7 +196,7 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Privileged operations are only allowed in private chats, even if it's from
     # USER_ID.
     if msg.chat_id != USER_ID:
-        log.warning('handle_msg: unauthorized update: %s', update)
+        log.info('handle_msg: unauthorized update: %s', update)
         return
 
     if not ((text := msg.text) and text.strip()):

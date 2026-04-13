@@ -16,16 +16,20 @@ from telegram.helpers import escape_markdown
 from db import db
 from context import *
 
+
+def load_ids(var_name: str) -> tuple[int, ...]:
+    return tuple(int(x.strip()) for x in os.environ.get(var_name, '').split(','))
+
+
 USER_ID = int(os.environ['USER_ID'])
 CHAN_ID = int(os.environ['CHAN_ID'])
 GROUP_ID = int(os.environ['GROUP_ID'])
 BOT_NAME = os.environ['BOT_NAME']
-GUEST_USER_IDS = frozenset(
-    int(x.strip()) for x in os.environ['GUEST_USER_IDS'].split(',')
-)
-IGNORE_CHAT_IDS = frozenset(
-    int(x.strip()) for x in os.environ['IGNORE_CHAT_IDS'].split(',')
-)
+
+GUEST_USER_IDS = frozenset(load_ids('GUEST_USER_IDS'))
+IGNORE_CHAT_IDS = frozenset(load_ids('IGNORE_CHAT_IDS'))
+
+TRUSTED_IDS = frozenset((USER_ID, CHAN_ID, GROUP_ID, *load_ids('TRUSTED_IDS')))
 
 DB_FILE = os.environ.get('DB_FILE', ME_LOWER + '.db')
 
@@ -119,9 +123,9 @@ def init_util(b: Bot):
 
 @contextmanager
 def use_msg(m: Message | None, sender: Sender | None):
+    # Only messages from USER_ID are allowed to be set in the context, since it's
+    # used for `do_notify` to notify system events.
     if m and m.chat_id != USER_ID:
-        if m.chat_id not in GUEST_USER_IDS and m.chat_id != GROUP_ID:
-            log.warning('Bad use_msg: %s', m)
         m = None
 
     token = msg.set(m)
@@ -232,7 +236,7 @@ def get_msg(update: MessageSource) -> Message:
 
 def get_msg_arg(update: MessageSource) -> tuple[Message, str]:
     m = get_msg(update)
-    s = text_override.get() or m.text or m.caption
+    s = text_override.get() or m.text or m.caption or ''
 
     if not s.startswith('/'):
         return m, s.strip()
@@ -261,13 +265,7 @@ def encode_chat_id(m: Message, default: str = 'u') -> str:
         return 'c'
     if chat_id == GROUP_ID:
         return 'g'
-    if chat_id in GUEST_USER_IDS:
-        return f'G{chat_id}'
-    raise ValueError(f'Bad chat for {m}')
-
-
-def is_id_trusted(sender_id: int) -> bool:
-    return sender_id in (USER_ID, CHAN_ID, GROUP_ID)
+    return f'G{chat_id}'
 
 
 async def try_send_text[**P, R](
