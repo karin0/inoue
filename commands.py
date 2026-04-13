@@ -1,9 +1,18 @@
 import re
 import shlex
-from typing import Callable
+import asyncio
+from typing import Callable, Sequence
 
 from telegram.ext import ContextTypes
-from telegram import Message, User, Update, Bot
+from telegram import (
+    Message,
+    User,
+    Update,
+    Bot,
+    BotCommandScopeDefault,
+    BotCommandScopeChat,
+    BotCommandScopeChatAdministrators,
+)
 
 from util import (
     log,
@@ -14,6 +23,8 @@ from util import (
     use_text_override,
     get_msg_arg,
     ME,
+    CHAN_ID,
+    TRUSTED_IDS,
 )
 from db import db
 from render import handle_render
@@ -26,7 +37,7 @@ from media import *
 
 REG_TEMPLATE_ARG = re.compile(r'\$(\*|\d+)')
 
-commands: dict[str, Callable]
+commands: dict[str, tuple[Callable, bool]]
 
 
 def expand_template(template: str, args_str: str) -> str:
@@ -66,7 +77,7 @@ async def dispatch_cmd(
 
     if handler := commands.get(cmd_name):
         with use_text_override(text):
-            return await handler(update, ctx)
+            return await handler[0](update, ctx)
 
     return await handle_cmd(msg, content)
 
@@ -100,10 +111,31 @@ async def handle_def(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def set_commands(bot: Bot):
-    cmds = [(name, name) for name in commands]
+    cmds = []
+    public_cmds = []
+
+    for name, (func, permissive) in commands.items():
+        cmds.append((name, name))
+        if permissive or func is handle_start:
+            public_cmds.append((name, name))
+
     for name in db.iter_commands():
         cmds.append((name, name))
-    await bot.set_my_commands(cmds)
+
+    await asyncio.gather(
+        bot.set_my_commands(public_cmds, BotCommandScopeDefault()),
+        *(
+            (
+                bot.set_my_commands(cmds, BotCommandScopeChat(chat_id))
+                if chat_id > 0
+                else bot.set_my_commands(
+                    cmds, BotCommandScopeChatAdministrators(chat_id)
+                )
+            )
+            for chat_id in TRUSTED_IDS
+            if chat_id != CHAN_ID
+        ),
+    )
 
 
 def stats(me: User, header: str = ME) -> tuple[str, str]:
@@ -156,19 +188,29 @@ async def handle_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 handlers = (
+    handle_start,
     handle_update,
-    handle_render,
     handle_rg,
     handle_run,
     handle_fetch,
-    handle_start,
     handle_greet,
-    handle_sort,
     handle_def,
     handle_save,
-    handle_play,
     handle_playlist,
-    handle_voice,
 )
 
-commands = {f.__name__[f.__name__.index('_') + 1 :]: f for f in handlers}
+permissive_handlers = (
+    handle_play,
+    handle_render,
+    handle_voice,
+    handle_sort,
+)
+
+
+def to_commands(
+    funcs: Sequence[Callable], permissive: bool
+) -> dict[str, tuple[Callable, bool]]:
+    return {f.__name__[f.__name__.index('_') + 1 :]: (f, permissive) for f in funcs}
+
+
+commands = to_commands(handlers, False) | to_commands(permissive_handlers, True)

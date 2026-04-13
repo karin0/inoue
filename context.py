@@ -21,4 +21,4 @@ def get_sender() -> Sender | None:
 
 def is_sender_guest() -> bool:
     sender = get_sender()
-    return sender.is_guest if sender else False
+    return sender.is_guest if sender else True

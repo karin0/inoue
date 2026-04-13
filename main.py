@@ -311,8 +311,8 @@ def build_app():
     app.add_error_handler(handle_error)
 
     rg = None
-    for name, func in commands.items():
-        f = auth(func, permissive=name == 'render' or name == 'play')
+    for name, (func, permissive) in commands.items():
+        f = auth(func, permissive=permissive)
         if name == 'rg':
             rg = f
         app.add_handler(CommandHandler(name, f))
