@@ -21,6 +21,7 @@ from motto import greeting, hitokoto
 from rg import handle_rg, handle_rg_start
 from misc import handle_sort, handle_fetch
 from run import handle_run, handle_cmd, handle_update
+from voice import handle_voice
 from media import *
 
 REG_TEMPLATE_ARG = re.compile(r'\$(\*|\d+)')
@@ -142,35 +143,14 @@ async def handle_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return await handle_rg_start(msg, arg)
 
         elif arg.startswith('play_'):
-            parsed = parse_media(arg)
-            if parsed is None:
+            if (parsed := parse_media(arg)) is None:
                 return await reply_text(msg, 'Bad play link.')
-            chat_id, message_id = parsed
-
-            if not db.has_media(chat_id, message_id):
-                return await reply_text(msg, 'Media not found.')
-
-            return await ctx.bot.forward_message(
-                msg.chat_id,
-                chat_id,
-                message_id,
-                message_thread_id=msg.message_thread_id,
-            )
+            return await handle_play_media(msg, *parsed)
 
         elif arg.startswith('unsave_'):
-            parsed = parse_media(arg)
-            if parsed is None:
+            if (parsed := parse_media(arg)) is None:
                 return await reply_text(msg, 'Bad unsave link.')
-            chat_id, message_id = parsed
-
-            title = db.delete_media(chat_id, message_id)
-            if title is not None:
-                title_desc = title or '<Untitled>'
-                return await reply_text(
-                    msg,
-                    f'Unsave success: {chat_id}/{message_id}, title={title_desc}',
-                )
-            return await reply_text(msg, f'Media not found.')
+            return await handle_remove_media(msg, *parsed)
 
     return await reply_text(msg, *stats(await ctx.bot.get_me()))
 
@@ -188,6 +168,7 @@ handlers = (
     handle_save,
     handle_play,
     handle_playlist,
+    handle_voice,
 )
 
 commands = {f.__name__[f.__name__.index('_') + 1 :]: f for f in handlers}

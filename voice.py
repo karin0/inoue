@@ -7,10 +7,12 @@ import tempfile
 from datetime import timedelta
 from typing import Callable
 
-from telegram import Message, Document, Audio, Video
+from telegram import Message, Document, Audio, Update, Video
 from telegram.constants import ChatAction
+from telegram.ext import ContextTypes
 
-from util import log, escape
+from context import is_sender_guest
+from util import log, get_msg_arg, escape, reply_text
 
 MAX_VOICE_SIZE = 1 << 20
 MIN_BITRATE_K = 4
@@ -208,11 +210,14 @@ async def encode_voice(
     return raw_result
 
 
+type Media = Document | Audio | Video
+
+
 # https://github.com/yagop/node-telegram-bot-api/issues/544
 # https://openclaw.turtleand.com/topics/telegram-voice-speed-control/
-async def handle_voice(
+async def convert_voice(
     msg: Message,
-    attachment: Document | Audio | Video,
+    attachment: Media,
     raw_duration: timedelta | int,
     bitrate_k: int = 0,
     quality: bool = False,
@@ -317,3 +322,46 @@ async def handle_voice(
         queue.put_nowait(result)
     finally:
         queue.put_nowait(None)
+
+
+def extract_media(
+    msg: Message,
+) -> tuple[Media, int | timedelta] | None:
+    if media := msg.document:
+        return media, 0
+    if media := (msg.audio or msg.video):
+        return media, media.duration
+    return None
+
+
+async def try_handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
+    msg, arg = get_msg_arg(update)
+    info = extract_media(msg) or (
+        msg.reply_to_message and extract_media(msg.reply_to_message)
+    )
+    if not info:
+        return False
+
+    if not is_sender_guest():
+        quality = True
+    elif arg:
+        quality = 'q' in arg
+    else:
+        quality = False
+
+    if (p := arg.find('k')) > 0 and arg[:p].isdigit():
+        bitrate_k = int(arg[:p])
+    else:
+        bitrate_k = 0
+
+    await convert_voice(msg, *info, bitrate_k, quality)
+    return True
+
+
+async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not await try_handle_voice(update, ctx):
+        await reply_text(
+            update,
+            r'Send or reply to a media message with `/voice [q]`\.',
+            'MarkdownV2',
+        )
