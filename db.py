@@ -57,6 +57,7 @@ class DataStore:
                     chat_id    INTEGER NOT NULL,
                     message_id INTEGER NOT NULL,
                     title      TEXT    NOT NULL,
+                    file_id    TEXT    NOT NULL,
                     saved_at   TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(chat_id, message_id)
                 );
@@ -177,18 +178,20 @@ class DataStore:
         for row in cursor:
             yield row[0]
 
-    def save_media(self, chat_id: int, message_id: int, title: str) -> bool:
+    def save_media(
+        self, chat_id: int, message_id: int, title: str, file_id: str
+    ) -> bool:
         with self.conn:
             existing = self.conn.execute(
                 'SELECT 1 FROM Media WHERE chat_id = ? AND message_id = ?;',
                 (chat_id, message_id),
             ).fetchone()
             self.conn.execute(
-                '''INSERT INTO Media (chat_id, message_id, title)
-                   VALUES (?, ?, ?)
+                '''INSERT INTO Media (chat_id, message_id, title, file_id)
+                   VALUES (?, ?, ?, ?)
                    ON CONFLICT(chat_id, message_id)
-                   DO UPDATE SET title = excluded.title;''',
-                (chat_id, message_id, title),
+                   DO UPDATE SET title = excluded.title, file_id = excluded.file_id;''',
+                (chat_id, message_id, title, file_id),
             )
         return not existing
 
@@ -198,6 +201,14 @@ class DataStore:
         )
         if row := cursor.fetchone():
             return row[0], row[1]
+        return None
+
+    def random_media_file_id(self) -> str | None:
+        cursor = self.conn.execute(
+            'SELECT file_id FROM Media ORDER BY RANDOM() LIMIT 1;'
+        )
+        if row := cursor.fetchone():
+            return row[0]
         return None
 
     def has_media(self, chat_id: int, message_id: int) -> bool:

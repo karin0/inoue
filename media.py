@@ -13,7 +13,7 @@ from util import (
 )
 
 
-def extract_media(msg: Message) -> str | None:
+def extract_media(msg: Message) -> tuple[str, str] | None:
     if (
         f := msg.voice
         or msg.document
@@ -23,7 +23,6 @@ def extract_media(msg: Message) -> str | None:
         or msg.sticker
         or (msg.photo[0] if msg.photo else None)
     ):
-        file_size = f.file_size
         file_name = getattr(f, 'file_name', '')
         mime_type = getattr(f, 'mime_type', None)
         log.info(
@@ -32,9 +31,9 @@ def extract_media(msg: Message) -> str | None:
             msg.message_id,
             file_name or '<unnamed>',
             mime_type or '<unknown>',
-            file_size,
+            f.file_size,
         )
-        return file_name
+        return file_name, f.file_id
 
     return None
 
@@ -42,19 +41,18 @@ def extract_media(msg: Message) -> str | None:
 async def handle_save(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg, arg = get_msg_arg(update)
 
-    if (target := msg.reply_to_message) and (
-        file_name := extract_media(target)
-    ) is not None:
+    if (target := msg.reply_to_message) and (info := extract_media(target)) is not None:
         pass
-    elif (file_name := extract_media(msg)) is not None:
+    elif (info := extract_media(msg)) is not None:
         target = msg
     else:
         return await reply_text(
             msg, r'Send or reply to a media message with `/save [title]` to save it\.'
         )
 
+    file_name, file_id = info
     title = arg.strip() or file_name or ''
-    is_new = db.save_media(target.chat_id, target.message_id, title)
+    is_new = db.save_media(target.chat_id, target.message_id, title, file_id)
     media_text = render_media(target.chat_id, target.message_id, title)
     if is_new:
         text = rf'Saved {media_text}'
