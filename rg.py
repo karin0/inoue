@@ -294,7 +294,7 @@ async def do_show(i: str | int, j: str | int, k: str | int | None, alt_off: int 
 
     text = truncate_text(text)
     parse_mode = None
-    if len(text) + 9 <= MAX_TEXT_LENGTH and sect.hit and (p := text.find('\n')) >= 0:
+    if sect.hit and (p := text.find('\n')) >= 0:
         header = text[:p].strip()
         body = text[p + 1 :].strip()
 
@@ -303,18 +303,11 @@ async def do_show(i: str | int, j: str | int, k: str | int | None, alt_off: int 
         if p >= 0:  # Two-section body
             body1 = body[:p].strip()
             body2 = body[p + 5 :].strip()
-            new_text = header + pre_block_raw(body1) + pre_block_raw(body2)
-            if len(new_text) <= MAX_TEXT_LENGTH:
-                text = new_text
-                parse_mode = 'MarkdownV2'
-            else:
-                p = -1  # Mark as undone
-
-        if p < 0:
-            new_text = header + pre_block_raw(body)
-            if len(new_text) <= MAX_TEXT_LENGTH:
-                text = new_text
-                parse_mode = 'MarkdownV2'
+            text = header + pre_block_raw(body1) + pre_block_raw(body2)
+            parse_mode = 'MarkdownV2'
+        else:
+            text = header + pre_block_raw(body)
+            parse_mode = 'MarkdownV2'
 
     row = [
         InlineKeyboardButton(

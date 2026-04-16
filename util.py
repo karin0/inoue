@@ -397,10 +397,8 @@ type Content = tuple[str, str | None]
 
 # This truncates the text by default, trimming any leading and trailing spaces.
 def pre_block(s: str, *, do_truncate: bool = True) -> Content:
-    if len(s) + 8 <= MAX_TEXT_LENGTH:
-        text = pre_block_raw(s)
-        if len(text) <= MAX_TEXT_LENGTH:
-            return text, 'MarkdownV2'
+    if len(s) <= MAX_TEXT_LENGTH:
+        return pre_block_raw(s), 'MarkdownV2'
 
     if do_truncate:
         s = truncate_text(s)
@@ -412,10 +410,8 @@ def pre_block_raw(s: str, *, lang: str = '') -> str:
 
 
 def blockquote_block(s: str) -> Content:
-    if len(s) + 36 <= MAX_TEXT_LENGTH:
-        text = '<blockquote expandable>' + html_escape(s) + '</blockquote>'
-        if len(text) <= MAX_TEXT_LENGTH:
-            return text, 'HTML'
+    if len(s) <= MAX_TEXT_LENGTH:
+        return '<blockquote expandable>' + html_escape(s) + '</blockquote>', 'HTML'
     return truncate_text(s), None
 
 
