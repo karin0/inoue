@@ -1,10 +1,12 @@
 import os
 import math
+import json
 import asyncio
 import logging
 import functools
+import threading
 from io import BytesIO
-from typing import Any, cast
+from typing import Any, cast, TYPE_CHECKING
 from urllib.parse import urlparse
 
 from telegram import (
@@ -27,6 +29,9 @@ from telegram.constants import ChatAction
 
 from util import log, get_msg_arg, reply_text, keep_chat_action
 from render_context import LRUDict
+
+if TYPE_CHECKING:
+    from yt_dlp import YoutubeDL
 
 
 def truncate(s: str, limit: int) -> str:
@@ -57,6 +62,7 @@ YT_STAGING_MESSAGE_THREAD_ID = (
 )
 
 _ytdlp_lock = threading.Lock()
+_instances: list['YoutubeDL | None'] = [None, None]
 
 # For passing inline voice results.
 _voice_cache: LRUDict[str, tuple[str, str]] = LRUDict()
@@ -238,8 +244,12 @@ class Output:
                 )
 
 
-def ytdlp_task(url: str, audio_only: bool) -> Output:
-    import yt_dlp
+def get_ytdlp(audio_only: bool) -> 'YoutubeDL':
+    '''Must be serialized with _ytdlp_lock held.'''
+    from yt_dlp import YoutubeDL
+
+    if (ydl := _instances[audio_only]) is not None:
+        return ydl
 
     os.makedirs(ASSETS_DIR, exist_ok=True)
 
@@ -258,8 +268,26 @@ def ytdlp_task(url: str, audio_only: bool) -> Output:
         'max_filesize': MAX_FILE_SIZE,
     }
 
-    with yt_dlp.YoutubeDL(cast(Any, opts)) as ydl:
-        info = ydl.extract_info(url)
+    _instances[audio_only] = ydl = YoutubeDL(cast(Any, opts))
+    return ydl
+
+
+def ytdlp_task(url: str, audio_only: bool) -> Output:
+    # Serialize to avoid conflicts inside ASSETS_DIR and races on _instances.
+    if not _ytdlp_lock.acquire(blocking=False):
+        log.info('yt-dlp: waiting for lock: %s', url)
+        _ytdlp_lock.acquire()
+
+    log.info('yt-dlp: invoking %s (audio_only=%s)', url, audio_only)
+    try:
+        info = get_ytdlp(audio_only).extract_info(url)
+
+        if log.isEnabledFor(logging.DEBUG) and info:
+            default = lambda o: f'<default: {type(o).__name__}: {o!r}>'
+            with open('last_ytdlp_info.json', 'w', encoding='utf-8') as fp:
+                json.dump(info, fp, ensure_ascii=False, indent=2, default=default)
+    finally:
+        _ytdlp_lock.release()
 
     if not info:
         raise RuntimeError('yt-dlp returned no info')
