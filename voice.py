@@ -31,9 +31,7 @@ QUALITY_THRESHOLD_K = 32
 async def encode_opus(
     src: str,
     bitrate_k: int,
-    report: Callable[[int, str], None],
-    curr_len: int = 0,
-) -> bytes:
+) -> tuple[bytes, str]:
     args = ['-b:a', f'{bitrate_k}k']
     quality = bitrate_k > QUALITY_THRESHOLD_K
 
@@ -48,8 +46,6 @@ async def encode_opus(
     if quality:
         attrs.append('q')
 
-    desc = ' '.join(args)
-    report(1, f'ffmpeg: `{escape(desc)}` @ {curr_len}')
     attrs.append(os.path.basename(src))
 
     settings += f'({",".join(attrs)})'
@@ -84,7 +80,7 @@ async def encode_opus(
         stderr=asyncio.subprocess.PIPE,
     )
 
-    return await finalize(proc, f'ffmpeg with {settings}')
+    return await finalize(proc, f'ffmpeg with {settings}'), ' '.join(args)
 
 
 async def probe_duration(src: str) -> str:
@@ -154,8 +150,9 @@ async def encode_voice(
 
     async def do_encode(desc: str, bitrate_k: int) -> tuple[float, bytes, int] | None:
         nonlocal curr_len, raw_result
-        out = await encode_opus(src, bitrate_k, report, curr_len)
+        out, info = await encode_opus(src, bitrate_k)
         curr_len = len(out)
+        report(1, f'ffmpeg: `{info}` @ {curr_len}')
         success = curr_len <= MAX_VOICE_SIZE
         log.info(
             '%s encode %s: duration=%s bitrate=%sk output=%s',
@@ -194,12 +191,10 @@ async def encode_voice(
     if result is not None:
         if quality:
             for bitrate_k in range(bitrate_k + 1, end + 1):
-                # new_out = await encode_opus(src, bitrate_k, report=report)
                 new_result = await do_encode('Step-up', bitrate_k)
                 if new_result is None:
-                    break
-                else:
-                    result = new_result
+                    return result
+                result = new_result
         return result
 
     # Oversized output: decrease bitrate 1 kbps at a time to maximize quality.
