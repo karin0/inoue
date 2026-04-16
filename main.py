@@ -12,6 +12,7 @@ from telegram.ext import (
     MessageHandler,
     CommandHandler,
     CallbackQueryHandler,
+    ChosenInlineResultHandler,
     InlineQueryHandler,
     Application,
 )
@@ -42,6 +43,7 @@ from context import Sender, get_sender
 from inoue import render_receipt
 from rg import handle_rg, handle_rg_callback
 from voice import try_handle_voice
+from ytdlp import is_http_url, handle_yt_inline_query, handle_yt_chosen_result
 from render import (
     handle_render_doc,
     handle_render_callback,
@@ -129,9 +131,11 @@ def auth(
         elif callback := update.callback_query:
             if isinstance(callback.message, Message):
                 msg = callback.message
-            log.info('%s: callback %s', src, shorten(callback.data))
+            log.info('%s: callback %s', src, callback.data)
         elif query := update.inline_query:
-            log.info('%s: inline %s', src, shorten(query.query))
+            log.info('%s: inline %s', src, query.query)
+        elif chosen := update.chosen_inline_result:
+            log.info('%s: chosen %s %s', src, chosen.result_id, chosen.query)
         else:
             log.info('%s: unknown: %s', src, update)
 
@@ -260,7 +264,30 @@ async def handle_inline_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.inline_query
     assert query
     if data := query.query.strip():
-        await handle_render_inline_query(update, query, data)
+        if is_http_url(url := data.split()[0]):
+            await handle_yt_inline_query(query, url)
+        else:
+            await handle_render_inline_query(update, query, data)
+
+
+async def handle_chosen_inline(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    result = update.chosen_inline_result
+    assert result
+    result_id = result.result_id
+    if result_id.startswith('yt_'):
+        url = result.query.strip()
+        inline_message_id = result.inline_message_id
+        if is_http_url(url) and inline_message_id:
+            await handle_yt_chosen_result(
+                ctx.bot,
+                result_id,
+                url,
+                inline_message_id,
+            )
+        else:
+            log.warning('Invalid chosen inline result: %s', result)
+    elif result_id != 'noop':
+        log.error('Bad chosen inline result: %s', result)
 
 
 async def post_init(app: Application) -> None:
@@ -324,6 +351,9 @@ def build_app():
 
     app.add_handler(CallbackQueryHandler(auth(handle_callback, permissive=True)))
     app.add_handler(InlineQueryHandler(auth(handle_inline_query, permissive=True)))
+    app.add_handler(
+        ChosenInlineResultHandler(auth(handle_chosen_inline, permissive=True))
+    )
     app.add_handler(MessageHandler(None, auth(handle_msg, permissive=True)))
 
     return app

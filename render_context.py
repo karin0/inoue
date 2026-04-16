@@ -8,8 +8,6 @@ from render_core import Context, Value, is_value_type
 
 LRU_CAPACITY = 128
 
-type Items = ItemsView[str, Value]
-
 
 def encode_value(val: Value) -> str:
     if isinstance(val, bool):
@@ -42,25 +40,24 @@ def decode_value(s: str) -> Value:
             raise ValueError('bad encoded value: ' + s)
 
 
-class LRUDict(MutableMapping[str, Value]):
+class LRUDict[K, V](MutableMapping[K, V]):
     def __init__(self):
         self._data = OrderedDict()
 
     def __contains__(self, key) -> bool:
         return key in self._data
 
-    def __getitem__(self, key: str) -> Value:
+    def __getitem__(self, key: K) -> V:
         self._data.move_to_end(key)
         return self._data[key]
 
-    def __setitem__(self, key: str, value: Value) -> None:
-        log.debug('PM set: %s = %r', key, value)
+    def __setitem__(self, key: K, value: V) -> None:
         self._data[key] = value
         self._data.move_to_end(key)
         if len(self._data) > LRU_CAPACITY:
             self._data.popitem(last=False)
 
-    def __delitem__(self, key: str) -> None:
+    def __delitem__(self, key: K) -> None:
         del self._data[key]
 
     def __iter__(self):
@@ -72,14 +69,14 @@ class LRUDict(MutableMapping[str, Value]):
     def clear(self) -> None:
         return self._data.clear()
 
-    def items(self) -> Items:
+    def items(self) -> ItemsView[K, V]:
         return self._data.items()
 
 
 class PersistentStorage(MutableMapping[str, Value]):
     def __init__(self) -> None:
         super().__init__()
-        self._cache = LRUDict()
+        self._cache = LRUDict[str, Value]()
 
     def __getitem__(self, key: str) -> Value:
         if key in self._cache:
@@ -89,6 +86,7 @@ class PersistentStorage(MutableMapping[str, Value]):
         return value
 
     def __setitem__(self, key: str, value: Value) -> None:
+        log.debug('PM set: %s = %r', key, value)
         db['pm-' + key] = encode_value(value)
         self._cache[key] = value
 
@@ -183,5 +181,5 @@ class OverriddenDict(UserDict[str, Value], Context):
     def __len__(self) -> int:
         return len(self._compact())
 
-    def items(self) -> Items:
+    def items(self) -> ItemsView[str, Value]:
         return self._compact().items()

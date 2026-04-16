@@ -2,15 +2,31 @@ import os
 import math
 import asyncio
 import logging
+import functools
 from io import BytesIO
 from typing import Any, cast
 from urllib.parse import urlparse
 
-from telegram import Message, Update
+from telegram import (
+    Bot,
+    Update,
+    Message,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InlineQuery,
+    InlineQueryResultArticle,
+    InlineQueryResultCachedVoice,
+    InputMediaAudio,
+    InputMediaVideo,
+    InputMediaDocument,
+    InputTextMessageContent,
+    SwitchInlineQueryChosenChat,
+)
 from telegram.ext import ContextTypes
 from telegram.constants import ChatAction
 
 from util import log, get_msg_arg, reply_text, keep_chat_action
+from render_context import LRUDict
 
 
 def truncate(s: str, limit: int) -> str:
@@ -34,6 +50,16 @@ THUMB_MAX_BYTES = 200 << 10
 THUMB_MAX_SIDE = 320
 THUMB_QUALITY_STEPS = (90, 80, 70, 60, 50, 40, 30)
 THUMB_SCALE_STEPS = (1.0, 0.85, 0.7, 0.55, 0.4)
+
+YT_STAGING_CHAT_ID = int(os.environ['YT_STAGING_CHAT_ID'])
+YT_STAGING_MESSAGE_THREAD_ID = (
+    int(os.environ.get('YT_STAGING_MESSAGE_THREAD_ID', 0)) or None
+)
+
+_ytdlp_lock = threading.Lock()
+
+# For passing inline voice results.
+_voice_cache: LRUDict[str, tuple[str, str]] = LRUDict()
 
 
 def _prepare_thumbnail(data: bytes) -> bytes | None:
@@ -103,23 +129,46 @@ class Output:
 
         self.duration = float(info.get('duration', 0))
         self.thumbnail_path = _get_thumbnail_path(info)
-        log.info('ytdlp: %s / %s / thumb=%s', path, self.duration, self.thumbnail_path)
+        log.info(
+            'ytdlp: %s / %s bytes / %s secs / %s',
+            path,
+            size,
+            self.duration,
+            self.thumbnail_path,
+        )
 
     def __str__(self) -> str:
         return f'<ytdlp.Output: {self.path}, {self.duration}, {self.thumbnail_path}>'
 
     __repr__ = __str__
 
-    async def finish(self, msg: Message, *, audio_only: bool = False):
-        info = self.info
+    def _get(self, key: str) -> str | None:
+        if (val := self.info.get(key)) is not None:
+            return str(val).strip()
+
+    @property
+    def title(self) -> str | None:
+        return self._get('title') or self._get('id')
+
+    @property
+    def performer(self) -> str | None:
+        return self._get('uploader') or self._get('channel') or self._get('creator')
+
+    def get_name(self) -> str:
+        title = self.title
+        performer = self.performer
+        if title:
+            if performer:
+                return f'{title} - {performer}'
+            return title
+        return os.path.basename(self.path)
+
+    async def finish(
+        self, msg_or_bot: Message | Bot, *, audio_only: bool = False
+    ) -> Message:
         path = self.path
-
-        def get(key: str) -> str | None:
-            if (val := info.get(key)) is not None:
-                return str(val).strip()
-
-        title = get('title') or get('id')
-        performer = get('uploader') or get('channel') or get('creator')
+        title = self.title
+        performer = self.performer
 
         if title:
             ext = os.path.splitext(path)[1].lower()
@@ -150,29 +199,42 @@ class Output:
             raw_thumbnail and len(raw_thumbnail),
             thumbnail and len(thumbnail),
         )
-        with open(path, 'rb') as fp:
+
+        if isinstance(msg_or_bot, Message):
+            wrap = lambda f: functools.partial(
+                f, do_quote=True, allow_sending_without_reply=True
+            )
+            send_audio = msg_or_bot.reply_audio
+            send_video = msg_or_bot.reply_video
+        else:
+            wrap = lambda f: functools.partial(
+                f,
+                YT_STAGING_CHAT_ID,
+                message_thread_id=YT_STAGING_MESSAGE_THREAD_ID,
+                disable_notification=True,
+            )
+            send_audio = msg_or_bot.send_audio
+            send_video = msg_or_bot.send_video
+
+        with open(self.path, 'rb') as fp:
             if audio_only:
                 performer = truncate(performer, 64) if performer else None
-                await msg.reply_audio(
+                return await wrap(send_audio)(
                     fp,
                     filename=name,
                     duration=duration,
                     thumbnail=thumbnail,
                     title=title,
                     performer=performer,
-                    do_quote=True,
-                    allow_sending_without_reply=True,
                 )
             else:
-                await msg.reply_video(
+                return await wrap(send_video)(
                     fp,
                     filename=name,
                     duration=duration,
                     thumbnail=thumbnail,
                     cover=raw_thumbnail,
                     supports_streaming=True,
-                    do_quote=True,
-                    allow_sending_without_reply=True,
                 )
 
 
@@ -238,3 +300,157 @@ async def handle_yt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def handle_yta(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _handle_yt(update, audio_only=True)
+
+
+def make_markup(text: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup.from_button(
+        InlineKeyboardButton(text, callback_data='noop')
+    )
+
+
+def strip_url(url: str) -> str:
+    return url.rstrip('#/?')
+
+
+async def handle_yt_inline_query(query: InlineQuery, url: str):
+    url = strip_url(url)
+
+    results: list[InlineQueryResultArticle | InlineQueryResultCachedVoice] = [
+        InlineQueryResultArticle(
+            id='yt_video',
+            title='📹 Video',
+            input_message_content=InputTextMessageContent(url),
+            reply_markup=make_markup('📹 Downloading video...'),
+        ),
+        InlineQueryResultArticle(
+            id='yt_audio',
+            title='🎵 Audio',
+            input_message_content=InputTextMessageContent(url),
+            reply_markup=make_markup('🎵 Downloading audio...'),
+        ),
+    ]
+
+    if voice := _voice_cache.get(url):
+        file_id, title = voice
+        results.append(
+            InlineQueryResultCachedVoice(
+                id='noop', title=title, voice_file_id=file_id, caption=url
+            )
+        )
+    else:
+        results.append(
+            InlineQueryResultArticle(
+                id='yt_voice',
+                title='🎤 Voice',
+                input_message_content=InputTextMessageContent(url),
+                reply_markup=make_markup('🎤 Encoding voice...'),
+            )
+        )
+
+    await query.answer(results)
+
+
+async def _finish_voice(
+    bot: Bot,
+    output: Output,
+    result: tuple[float, bytes, int],
+    url: str,
+) -> InlineKeyboardMarkup | None:
+    duration, data, bitrate = result
+    duration = math.ceil(duration) if duration > 0 else None
+
+    msg = await bot.send_voice(
+        YT_STAGING_CHAT_ID,
+        data,
+        message_thread_id=YT_STAGING_MESSAGE_THREAD_ID,
+        duration=duration,
+        disable_notification=True,
+    )
+
+    if voice := msg.voice:
+        _voice_cache[url] = (voice.file_id, output.get_name())
+        log.info('Cached voice for %s: %s', url, voice)
+    else:
+        log.error('Staging returned no voice: %s', msg)
+        return None
+
+    query = url
+    if len(query) < InlineQuery.MAX_QUERY_LENGTH:
+        # Bypass cache for the previous inline query result.
+        query += '#'
+
+    row = (
+        InlineKeyboardButton(
+            f'✅ Send here ({bitrate} kbps)', switch_inline_query_current_chat=query
+        ),
+        InlineKeyboardButton(
+            '🎤 Send to ...',
+            switch_inline_query_chosen_chat=SwitchInlineQueryChosenChat(
+                query,
+                allow_user_chats=True,
+                allow_bot_chats=True,
+                allow_group_chats=True,
+                allow_channel_chats=True,
+            ),
+        ),
+    )
+    return InlineKeyboardMarkup.from_row(row)
+
+
+async def handle_yt_chosen_result(
+    bot: Bot,
+    result_id: str,
+    url: str,
+    inline_message_id: str,
+):
+    url = strip_url(url)
+
+    try:
+        is_voice = result_id == 'yt_voice'
+        audio_only = is_voice or result_id == 'yt_audio'
+        output = await run_ytdlp(url, audio_only=audio_only)
+        if is_voice:
+            from voice import encode_voice
+
+            voice_task = asyncio.create_task(
+                encode_voice(output.path, lambda *_: None, output.duration)
+            )
+        else:
+            voice_task = None
+
+    except Exception as e:
+        log.exception('handle_yt_chosen_result: failed for %s', url)
+        error_msg = truncate(f'❌ {type(e).__name__}: {e}', 200)
+        await bot.edit_message_caption(
+            caption=error_msg, inline_message_id=inline_message_id
+        )
+        return
+
+    # Upload to staging chat to get file_id, then edit inline message.
+    staging = await output.finish(bot, audio_only=audio_only)
+    caption = output.info.get('webpage_url', url)
+
+    if media := staging.audio:
+        media = InputMediaAudio(media=media, caption=caption)
+    elif media := staging.video:
+        media = InputMediaVideo(media=media, caption=caption, supports_streaming=True)
+    elif media := staging.document:
+        # TODO: convert YouTube webm to videos?
+        media = InputMediaDocument(media=media, caption=caption)
+    else:
+        log.error('Staging returned no media: %s', staging)
+        media = None
+
+    markup = voice_task and await _finish_voice(bot, output, await voice_task, url)
+    if media:
+        await bot.edit_message_media(
+            media, inline_message_id=inline_message_id, reply_markup=markup
+        )
+    elif markup:
+        await bot.edit_message_reply_markup(
+            inline_message_id=inline_message_id, reply_markup=markup
+        )
+    else:
+        await bot.edit_message_caption(
+            inline_message_id=inline_message_id, caption='Unknown error for ' + url
+        )
