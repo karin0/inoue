@@ -256,9 +256,10 @@ def get_ytdlp(audio_only: bool) -> 'YoutubeDL':
     fmt = 'bestaudio/best' if audio_only else 'bv*+ba/b'
     debug = log.isEnabledFor(logging.DEBUG)
 
+    # Do not pass 'logger' here, or progress bars will break.
     opts = {
         'quiet': not debug,
-        'no_warnings': not debug,
+        'noprogress': not debug,
         'verbose': debug,
         'noplaylist': True,
         'restrictfilenames': False,
