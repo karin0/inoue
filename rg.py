@@ -61,33 +61,19 @@ class Formatter:
     def __init__(self):
         self.segments: list[Segment] = []
         self.length = 0
-        self.saved_idx: int | None = None
-        self.saved_length: int | None = None
+        self.full = False
 
-    def append(self, seg: Segment):
+    def try_append(self, seg: Segment) -> bool:
         new_len = self.length + get_length(seg)
         if new_len > MAX_TEXT_LENGTH:
-            raise LengthExceeded()
+            self.full = True
+            if (t := MAX_TEXT_LENGTH - self.length) > 0:
+                self.segments.append('[truncated]'[:t])
+                self.length += min(t, 11)
+            return False
         self.segments.append(seg)
         self.length = new_len
-
-    def __enter__(self):
-        # This is only used in `RGFile.render_from`, so no need to be reentrant
-        # with stacks.
-        self.saved_idx = len(self.segments)
-        self.saved_length = self.length
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        if exc_type:
-            assert exc_type in (LengthExceeded, GeneratorExit)
-            assert self.saved_idx is not None
-            assert self.saved_length is not None
-            self.segments[self.saved_idx :] = []
-            self.length = self.saved_length
-            self.saved_idx = self.saved_length = None
-            if exc_type is LengthExceeded and (t := MAX_TEXT_LENGTH - self.length) > 0:
-                self.append('[truncated]'[:t])
+        return True
 
 
 # >>> 2026-01-02 15:04:05 (1)
@@ -153,11 +139,10 @@ class RGMatch:
     # start: int
     # end: int
 
-    def render(self, segments: Formatter, i: int, j: int, k: int):
+    def segment(self, i: int, j: int, k: int) -> Segment:
         kw = self.match
         s = self.text
 
-        # p = len(s.encode('utf-8')[: self.start].decode('utf-8'))
         p = s.index(kw)
         q = p + len(kw)
         l = p - 30
@@ -178,7 +163,7 @@ class RGMatch:
         else:
             pr = '...'
 
-        segments.append(
+        return (
             Link(
                 [
                     str(self.line_number) + ':' + pl + s[l:p],
@@ -186,9 +171,9 @@ class RGMatch:
                     s[q:r] + pr,
                 ],
                 url=f'{i}_{j}_{k}',
-            )
+            ),
+            '\n',
         )
-        segments.append('\n')
 
 
 @dataclasses.dataclass
@@ -197,15 +182,16 @@ class RGFile:
     path: str
 
     def render(
-        self, segments: Formatter, i: int, j: int, match_offset: int
+        self, fmt: Formatter, i: int, j: int, match_offset: int
     ) -> Iterable[tuple[int, int]]:
-        with segments:
-            segments.append(Bold(self.path))
-            segments.append('\n')
-            for idx, m in enumerate(self.matches[match_offset:]):
-                yield (j, idx + match_offset)
-                m.render(segments, i, j, idx + match_offset)
-                segments.__enter__()  # Checkpoint before any potential LengthExceeded
+        if not fmt.try_append((Bold(self.path), '\n')):
+            yield (j, match_offset)
+            return
+        for idx, m in enumerate(self.matches[match_offset:]):
+            k = idx + match_offset
+            yield (j, k)
+            if not fmt.try_append(m.segment(i, j, k)):
+                return
 
 
 @dataclasses.dataclass
@@ -218,14 +204,16 @@ class RGQuery:
     message: Message | None = None
 
     def render(
-        self, segments: Formatter, i: int, file_offset: int, match_offset: int
+        self, fmt: Formatter, i: int, file_offset: int, match_offset: int
     ) -> Iterable[tuple[int, int]]:
         assert file_offset >= 0 and match_offset >= 0
         assert file_offset < len(self.files)
         for idx, f in enumerate(self.files[file_offset:]):
-            yield from f.render(
-                segments, i, idx + file_offset, match_offset if idx == 0 else 0
-            )
+            j = idx + file_offset
+            mo = match_offset if idx == 0 else 0
+            yield from f.render(fmt, i, j, mo)
+            if fmt.full:
+                return
         yield (-1, -1)
 
 
@@ -265,7 +253,6 @@ def render_segment(seg: Segment, out: list[str]):
     else:
         for item in seg:
             render_segment(item, out)
-
 
 
 async def handle_rg_start(msg: Message, arg: str):
@@ -426,26 +413,23 @@ def render_page(
 
     fmt = Formatter()
 
-    # This yields at least one item, and each item indicates the match that
-    # *will* be rendered in the next iteration, except the final (-1, -1).
+    # Each yield precedes the try_append for that match. The last yielded
+    # offset is therefore the first unrendered match (the resume point for
+    # the next page), or (-1, -1) if all matches were rendered.
     #
-    # This should hold for all the 3 cases of stopping: (-1, -1), `LengthExceeded`,
-    # and `PAGE_LIMIT` exceeded.
+    # This holds for all 3 cases of stopping: natural exhaustion (-1, -1),
+    # formatter full, and `PAGE_LIMIT` exceeded (islice).
     #
-    # Assuming `PAGE_LIMIT` and `MAX_TEXT_LENGTH` are resonably large, we won't
+    # Assuming `PAGE_LIMIT` and `MAX_TEXT_LENGTH` are reasonably large, we won't
     # end up with an empty page that blocks navigation, since the length of each
-    # match is limited in `RGMatch.render`. Therefore, the final `page_offset`
+    # match is limited in `RGMatch.segment`. Therefore, the final `page_offset`
     # will always point to (-1, -1, cnt).
-    it = query.render(fmt, idx, *render_offset)
-    it = itertools.islice(it, PAGE_LIMIT + 1)
-
     offset: tuple[int, int] = (-1, -1)
     total = total_offset - 1
-    try:
-        for offset in it:
-            total += 1
-    except LengthExceeded:
-        pass
+    for offset in itertools.islice(
+        query.render(fmt, idx, *render_offset), PAGE_LIMIT + 1
+    ):
+        total += 1
 
     assert total >= total_offset
 
