@@ -9,17 +9,16 @@ from typing import Iterable, Sequence
 from subprocess import DEVNULL, PIPE
 
 from telegram import (
-    MessageEntity,
     Update,
     Message,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
 from telegram.ext import ContextTypes
-from telegram.constants import MessageEntityType
 
 from util import (
     escape,
+    html_escape,
     get_msg_arg,
     get_deep_link_url,
     pre_block_raw,
@@ -36,7 +35,7 @@ type Segment = Sequence['Segment'] | str | 'Style' | 'Link'
 @dataclasses.dataclass
 class Style:
     inner: Segment
-    type: MessageEntityType
+    tag: str
 
 
 @dataclasses.dataclass
@@ -54,12 +53,8 @@ def get_length(s: Segment) -> int:
         return sum(get_length(item) for item in s)
 
 
-Bold = functools.partial(Style, type=MessageEntityType.BOLD)
-Underline = functools.partial(Style, type=MessageEntityType.UNDERLINE)
-
-
-class LengthExceeded(Exception):
-    pass
+Bold = functools.partial(Style, tag='b')
+Underline = functools.partial(Style, tag='u')
 
 
 class Formatter:
@@ -256,27 +251,21 @@ def push_query(q: RGQuery):
     return r
 
 
-def render_segment(seg: Segment, out: bytearray, entities: list[MessageEntity]):
-    the_offset = len(out)
+def render_segment(seg: Segment, out: list[str]):
     if isinstance(seg, Style):
-        offset, length = render_segment(seg.inner, out, entities)
-        entities.append(MessageEntity(type=seg.type, offset=offset, length=length))
+        out.append(f'<{seg.tag}>')
+        render_segment(seg.inner, out)
+        out.append(f'</{seg.tag}>')
     elif isinstance(seg, Link):
-        offset, length = render_segment(seg.inner, out, entities)
-        entities.append(
-            MessageEntity(
-                type=MessageEntityType.TEXT_LINK,
-                offset=offset,
-                length=length,
-                url=get_deep_link_url('rg_' + seg.url),
-            )
-        )
+        out.append(f'<a href="{html_escape(get_deep_link_url("rg_" + seg.url))}">')
+        render_segment(seg.inner, out)
+        out.append('</a>')
     elif isinstance(seg, str):
-        out.extend(seg.encode('utf-16-le'))
+        out.append(html_escape(seg))
     else:
         for item in seg:
-            render_segment(item, out, entities)
-    return the_offset >> 1, (len(out) - the_offset) >> 1
+            render_segment(item, out)
+
 
 
 async def handle_rg_start(msg: Message, arg: str):
@@ -374,12 +363,12 @@ async def handle_rg_callback(data: str):
         case _:
             raise ValueError('bad rg callback: ' + data)
 
-    text, entities, markup = render_query_menu(
+    text, markup = render_query_menu(
         query, idx, page_num=page_num, list_pages=list_pages
     )
     message = query.message
     assert message is not None
-    await message.edit_text(text, entities=entities, reply_markup=markup)
+    await message.edit_text(text, parse_mode='HTML', reply_markup=markup)
 
 
 async def _run_rg(arg: str, cwd: str) -> RGQuery:
@@ -486,7 +475,7 @@ def render_query_menu(
     idx: int,
     page_num: int = 0,
     list_pages: bool = False,
-) -> tuple[str, Sequence[MessageEntity], InlineKeyboardMarkup | None]:
+) -> tuple[str, InlineKeyboardMarkup | None]:
     if page_num >= len(query.page_offsets):
         while True:
             next_pn = len(query.page_offsets)
@@ -546,30 +535,11 @@ def render_query_menu(
     else:
         markup = None
 
-    ba = bytearray()
-    entities: list[MessageEntity] = []
-    render_segment(fmt.segments, ba, entities)
-
-    text = ba.decode('utf-16-le')
-    if len(text) > MAX_TEXT_LENGTH:
-        log.error('rg: rendering exceeded max length unexpectedly: %d', len(text))
-        n = MAX_TEXT_LENGTH - 12
-        text = text[:n] + '\n[truncated]'
-        final_entities = []
-        n = len(text.encode('utf-16-le')) >> 1
-        for ent in entities:
-            if ent.offset < n:
-                if ent.length > n - ent.offset:
-                    ent = MessageEntity(
-                        type=ent.type,
-                        offset=ent.offset,
-                        length=n - ent.offset,
-                        url=ent.url,
-                    )
-                final_entities.append(ent)
-        entities = final_entities
-
-    return text, entities, markup
+    parts = []
+    for seg in fmt.segments:
+        render_segment(seg, parts)
+    text = ''.join(parts)
+    return text, markup
 
 
 async def handle_rg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -597,5 +567,5 @@ async def handle_rg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await reply_text(msg, 'No matches.')
 
     idx = push_query(query)
-    text, entities, markup = render_query_menu(query, idx)
-    query.message = await reply_text(msg, text, entities=entities, reply_markup=markup)
+    text, markup = render_query_menu(query, idx)
+    query.message = await reply_text(msg, text, parse_mode='HTML', reply_markup=markup)
