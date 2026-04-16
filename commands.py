@@ -29,6 +29,7 @@ from util import (
 from db import db
 from render import handle_render
 from motto import greeting, hitokoto
+from ytdlp import handle_yt, handle_yta
 from rg import handle_rg, handle_rg_start
 from misc import handle_sort, handle_fetch
 from run import handle_run, handle_cmd, handle_update
@@ -204,6 +205,8 @@ permissive_handlers = (
     handle_render,
     handle_voice,
     handle_sort,
+    handle_yt,
+    handle_yta,
 )
 
 

@@ -3,7 +3,6 @@ import sys
 import math
 import asyncio
 import logging
-import tempfile
 from datetime import timedelta
 from typing import Callable
 
@@ -12,7 +11,16 @@ from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
 
 from context import is_sender_guest
-from util import log, get_msg_arg, escape, reply_text
+from ytdlp import run_ytdlp, Output
+from util import (
+    log,
+    get_msg_arg,
+    escape,
+    reply_text,
+    keep_chat_action,
+)
+
+VOICE_ASSETS_DIR = 'assets/voice'
 
 MAX_VOICE_SIZE = 1 << 20
 MIN_BITRATE_K = 4
@@ -217,21 +225,29 @@ type Media = Document | Audio | Video
 # https://openclaw.turtleand.com/topics/telegram-voice-speed-control/
 async def convert_voice(
     msg: Message,
-    attachment: Media,
-    raw_duration: timedelta | int,
-    bitrate_k: int = 0,
-    quality: bool = False,
+    attachment: Media | Output,
+    raw_duration: timedelta | float,
+    bitrate_k: int,
+    quality: bool,
 ) -> None:
     log.info('Attachment: %s', attachment)
-    file_name = attachment.file_name
-    duration = 0
 
     if isinstance(raw_duration, timedelta):
         duration = raw_duration.total_seconds()
     else:
         duration = raw_duration
 
-    attrs = [f'{attachment.file_size} bytes']
+    if isinstance(attachment, Output):
+        # Path to an external file.
+        file_name = os.path.basename(attachment.path)
+        file_size = attachment.size
+    else:
+        file_name = attachment.file_name
+        file_size = attachment.file_size
+
+    attrs = []
+    if file_size:
+        attrs.append(f'{file_size} bytes')
     if duration > 0:
         attrs.append(f'{duration} s')
     if bitrate_k > 0:
@@ -282,7 +298,6 @@ async def convert_voice(
 
             log.debug('Refreshing status: %s, %s', queue.qsize(), len(settings))
             await _refresh()
-            await msg.reply_chat_action(ChatAction.RECORD_VOICE)
 
     def report(idx: int, text: str):
         idx += 1
@@ -301,25 +316,33 @@ async def convert_voice(
         # Report initial status before downloading the file.
         queue.put_nowait(True)
 
-        file = await attachment.get_file()
-        log.debug('File: %s', file)
-
-        # https://github.com/aiogram/telegram-bot-api/issues/30
-        file_path = file.file_path
-        if file_path and os.path.isfile(file_path):
-            log.debug('Using local file: %s', file_path)
-            result = await encode_voice(file_path, report, duration, bitrate_k, quality)
+        if isinstance(attachment, Output):
+            log.debug('Using external file: %s', attachment)
+            file_path = attachment.path
         else:
-            if s := (file_name or file_path):
-                suffix = os.path.splitext(s)[1]
-            else:
-                suffix = None
+            file = await attachment.get_file()
+            log.debug('File: %s', file)
 
-            with tempfile.NamedTemporaryFile(prefix='voice-', suffix=suffix) as tmp:
-                src = await file.download_to_drive(custom_path=tmp.name)
-                result = await encode_voice(
-                    str(src), report, duration, bitrate_k, quality
-                )
+            # https://github.com/aiogram/telegram-bot-api/issues/30
+            file_path = file.file_path
+            if file_path and os.path.isfile(file_path):
+                log.debug('Using local file: %s', file_path)
+            else:
+                from pathvalidate import sanitize_filename
+
+                if file_name := (file_name or file_path):
+                    base, ext = os.path.splitext(file_name)
+                    file_name = f'{base} [{file.file_unique_id}]{ext}'
+                else:
+                    file_name = file.file_unique_id
+
+                os.makedirs(VOICE_ASSETS_DIR, exist_ok=True)
+                dst = os.path.join(VOICE_ASSETS_DIR, sanitize_filename(file_name))
+                src = await file.download_to_drive(custom_path=dst)
+                file_path = str(src)
+
+        log.info('Encoding voice from %s', file_path)
+        result = await encode_voice(file_path, report, duration, bitrate_k, quality)
 
         report(2, f'Encoded into {len(result[1])} bytes at {result[2]} kbps')
         queue.put_nowait(result)
@@ -334,7 +357,6 @@ def extract_media(
         return media, 0
     if media := (msg.audio or msg.video):
         return media, media.duration
-    return None
 
 
 async def try_handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -342,29 +364,44 @@ async def try_handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bo
     info = extract_media(msg) or (
         msg.reply_to_message and extract_media(msg.reply_to_message)
     )
-    if not info:
+
+    if not (info or arg.startswith('https://')):
         return False
 
-    if not is_sender_guest():
-        quality = True
-    elif arg:
-        quality = 'q' in arg
-    else:
-        quality = False
+    with keep_chat_action(msg, ChatAction.RECORD_VOICE):
+        if not info:
+            if (p := arg.find(' ')) > 0:
+                url = arg[:p]
+                arg = arg[p + 1 :]
+            else:
+                url = arg
+                arg = ''
 
-    if (p := arg.find('k')) > 0 and arg[:p].isdigit():
-        bitrate_k = int(arg[:p])
-    else:
-        bitrate_k = 0
+            # Delegate to ytdlp if the argument looks like a URL.
+            output = await run_ytdlp(url, audio_only=True)
+            asyncio.create_task(output.finish(msg, audio_only=True))
+            info = output, output.duration
 
-    await convert_voice(msg, *info, bitrate_k, quality)
-    return True
+        if not is_sender_guest():
+            quality = True
+        elif arg:
+            quality = 'q' in arg
+        else:
+            quality = False
+
+        if (p := arg.find('k')) > 0 and arg[:p].isdigit():
+            bitrate_k = int(arg[:p])
+        else:
+            bitrate_k = 0
+
+        await convert_voice(msg, *info, bitrate_k, quality)
+        return True
 
 
 async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not await try_handle_voice(update, ctx):
         await reply_text(
             update,
-            r'Send or reply to a media message with `/voice [q]`\.',
+            r'Send or reply to a media message with `/voice [q]`, or use `/voice <url>`\.',
             'MarkdownV2',
         )

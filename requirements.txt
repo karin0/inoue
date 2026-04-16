@@ -1,4 +1,0 @@
-python-telegram-bot>=22,<23
-simpleeval
-prettytable
-lark

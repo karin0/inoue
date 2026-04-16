@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 
 from telegram import Message, Bot, MessageEntity, InlineKeyboardMarkup, Update
-from telegram.constants import MessageLimit
+from telegram.constants import ChatAction, MessageLimit
 from telegram.helpers import escape_markdown
 
 from db import db
@@ -417,3 +417,22 @@ def blockquote_block(s: str) -> Content:
         if len(text) <= MAX_TEXT_LENGTH:
             return text, 'HTML'
     return truncate_text(s), None
+
+
+async def _keep_action(msg: Message, action: ChatAction):
+    try:
+        while True:
+            await msg.reply_chat_action(action)
+            await asyncio.sleep(4)
+    except asyncio.CancelledError:
+        pass
+
+
+@contextmanager
+def keep_chat_action(msg: Message, action: ChatAction):
+    '''Re-send chat action every 4s so it stays visible during long operations.'''
+    task = asyncio.create_task(_keep_action(msg, action))
+    try:
+        yield task
+    finally:
+        task.cancel()
