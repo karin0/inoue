@@ -329,6 +329,9 @@ def build_app():
         .token(os.environ['TELEGRAM_BOT_TOKEN'])
         .post_init(post_init)
         .post_stop(post_stop)
+        .read_timeout(30)
+        .write_timeout(30)
+        .media_write_timeout(60)
     )
 
     # Looks like http://127.0.0.1:8081/
