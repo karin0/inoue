@@ -17,7 +17,7 @@ from telegram.ext import (
     Application,
 )
 from telegram.error import NetworkError
-from telegram.constants import ChatID
+from telegram.constants import ChatID, ChatType
 
 from util import (
     log,
@@ -185,6 +185,10 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ):
         return await handle_render_group(msg, origin.message_id)
 
+    if msg.chat.type != ChatType.PRIVATE:
+        log.debug('Ignoring message from non-private chat: %s', msg)
+        return
+
     if await try_handle_voice(update, ctx):
         return
 
@@ -200,7 +204,8 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Privileged operations are only allowed in private chats, even if it's from
     # USER_ID.
     if msg.chat_id != USER_ID:
-        log.info('handle_msg: unauthorized update: %s', update)
+        # This should not happen since non-private chats are already skipped.
+        log.error('handle_msg: unauthorized update: %s', update)
         return
 
     if not ((text := msg.text) and text.strip()):
