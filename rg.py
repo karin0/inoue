@@ -66,8 +66,8 @@ class Formatter:
     def __init__(self):
         self.segments: list[Segment] = []
         self.length = 0
-        self.saved_idx = None
-        self.saved_length = None
+        self.saved_idx: int | None = None
+        self.saved_length: int | None = None
 
     def append(self, seg: Segment):
         new_len = self.length + get_length(seg)
@@ -86,6 +86,8 @@ class Formatter:
     def __exit__(self, exc_type, exc_value, traceback):
         if exc_type:
             assert exc_type in (LengthExceeded, GeneratorExit)
+            assert self.saved_idx is not None
+            assert self.saved_length is not None
             self.segments[self.saved_idx :] = []
             self.length = self.saved_length
             self.saved_idx = self.saved_length = None
@@ -284,17 +286,20 @@ async def handle_rg_start(msg: Message, arg: str):
 
 async def do_show(i: str | int, j: str | int, k: str | int | None, alt_off: int | None):
     query = QUERIES[int(i)]
+    message = query.message
+    assert message is not None
     file = query.files[int(j)]
 
     if alt_off is not None:
         off = alt_off
     else:
+        assert k is not None
         off = file.matches[int(k)].absolute_offset
 
     with open(os.path.join(query.cwd, file.path), 'rb') as fp:
         with mmap.mmap(fp.fileno(), 0, access=mmap.ACCESS_READ) as mm:
             if not (sect := Section.discover(mm, off)):
-                return await query.message.reply_text('Unable to show the section.')
+                return await message.reply_text('Unable to show the section.')
 
             text = sect.decode(mm)
 
@@ -337,7 +342,7 @@ async def do_show(i: str | int, j: str | int, k: str | int | None, alt_off: int 
         ),
     ]
 
-    await query.message.edit_text(
+    await message.edit_text(
         text,
         reply_markup=InlineKeyboardMarkup.from_row(row),
         parse_mode=parse_mode,
@@ -372,7 +377,9 @@ async def handle_rg_callback(data: str):
     text, entities, markup = render_query_menu(
         query, idx, page_num=page_num, list_pages=list_pages
     )
-    await query.message.edit_text(text, entities=entities, reply_markup=markup)
+    message = query.message
+    assert message is not None
+    await message.edit_text(text, entities=entities, reply_markup=markup)
 
 
 async def _run_rg(arg: str, cwd: str) -> RGQuery:
@@ -381,20 +388,26 @@ async def _run_rg(arg: str, cwd: str) -> RGQuery:
         *cmd, stdin=DEVNULL, stdout=PIPE, stderr=DEVNULL, cwd=cwd
     )
 
-    query = RGQuery(files=[], cwd=cwd)
+    files: list[RGFile] = []
+    query = RGQuery(files=files, cwd=cwd)
+    stdout = child.stdout
+    assert stdout is not None
     cnt = 0
     try:
-        async for line in child.stdout:
+        async for line in stdout:
             if line:
                 line = json.loads(line)
                 match line['type']:
                     case 'begin':
-                        file = RGFile(matches=[], path=line['data']['path']['text'])
-                        query.files.append(file)
+                        files.append(
+                            RGFile(matches=[], path=line['data']['path']['text'])
+                        )
                     case 'match':
+                        if not files:
+                            continue
                         data = line['data']
                         match = data['submatches'][0]
-                        file.matches.append(
+                        files[-1].matches.append(
                             RGMatch(
                                 text=data['lines']['text'].strip(),
                                 line_number=data['line_number'],
@@ -409,7 +422,7 @@ async def _run_rg(arg: str, cwd: str) -> RGQuery:
                             break
     finally:
         # child.stdout.feed_eof()
-        await child.stdout.read()
+        await stdout.read()
         if r := await child.wait():
             with notify.suppress():
                 log.warning('rg exited with code %d', r)
@@ -444,8 +457,9 @@ def render_page(
     it = query.render(fmt, idx, *render_offset)
     it = itertools.islice(it, PAGE_LIMIT + 1)
 
+    offset: tuple[int, int] = (-1, -1)
+    total = total_offset - 1
     try:
-        total = total_offset - 1
         for offset in it:
             total += 1
     except LengthExceeded:
@@ -453,12 +467,12 @@ def render_page(
 
     assert total >= total_offset
 
-    offset = (*offset, total)
+    page_offset = (offset[0], offset[1], total)
     if len(query.page_offsets) == page_num:
-        log.info('rg: page %d for %d: %s', page_num, idx, offset)
-        query.page_offsets.append(offset)
+        log.info('rg: page %d for %d: %s', page_num, idx, page_offset)
+        query.page_offsets.append(page_offset)
     else:
-        assert query.page_offsets[page_num] == offset
+        assert query.page_offsets[page_num] == page_offset
 
     return fmt
 
@@ -472,7 +486,7 @@ def render_query_menu(
     idx: int,
     page_num: int = 0,
     list_pages: bool = False,
-) -> tuple[str, Sequence[MessageEntity]]:
+) -> tuple[str, Sequence[MessageEntity], InlineKeyboardMarkup | None]:
     if page_num >= len(query.page_offsets):
         while True:
             next_pn = len(query.page_offsets)
@@ -501,11 +515,13 @@ def render_query_menu(
                 text = f'{off} ({pn})'
             row.append(button(text, f'rg_page_{idx}_{pn}'))
 
-        if (left := query.match_cnt - off) > 0:
+        last_off = query.page_offsets[-1][2]
+        last_pn = len(query.page_offsets) - 1
+        if (left := query.match_cnt - last_off) > 0:
             # Not exhausted yet.
-            guessed_max_page = pn + left // PAGE_LIMIT + 5
-            for pn in range(pn + 1, guessed_max_page):
-                row.append(button(f'? ({pn})', f'rg_page_{idx}_{pn}'))
+            guessed_max_page = last_pn + left // PAGE_LIMIT + 5
+            for next_pn in range(last_pn + 1, guessed_max_page):
+                row.append(button(f'? ({next_pn})', f'rg_page_{idx}_{next_pn}'))
 
         # Group by 5 buttons per row.
         rows = tuple(row[i : i + 5] for i in range(0, len(row), 5))
@@ -561,9 +577,10 @@ async def handle_rg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not arg:
         return await reply_text(msg, 'Provide a keyword.')
 
-    text = msg.text.strip()
-    bare = text.removeprefix(f'/rg')
-    if bare != text:
+    text = msg.text
+    assert text
+    text = text.strip()
+    if len(bare := text.removeprefix('/rg')) != len(text):
         if bare:
             if (c := bare[0]).isdigit():
                 off = '' if c == '0' else c
