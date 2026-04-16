@@ -300,8 +300,9 @@ async def post_init(app: Application) -> None:
     init_util(bot)
     db.connect(DB_FILE)
     await set_commands(bot)
+    log.info('%s initiated: %s', ME, bot.bot)
     if not log.isEnabledFor(logging.DEBUG):
-        await do_notify(*stats(await bot.get_me(), f'{ME} initiated'))
+        await do_notify(*stats(bot.bot, f'{ME} initiated'))
 
 
 async def post_stop(_: Application) -> None:
