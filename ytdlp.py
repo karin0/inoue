@@ -5,9 +5,9 @@ import json
 import asyncio
 import logging
 import functools
-import threading
 from io import BytesIO
 from typing import Any, cast, TYPE_CHECKING
+from concurrent.futures import ThreadPoolExecutor
 
 from telegram import (
     Bot,
@@ -106,7 +106,8 @@ YT_STAGING_MESSAGE_THREAD_ID = (
     int(os.environ.get('YT_STAGING_MESSAGE_THREAD_ID', 0)) or None
 )
 
-_ytdlp_lock = threading.Lock()
+# max_workers=1 to serialize yt-dlp invocations.
+_executor = ThreadPoolExecutor(max_workers=1)
 _instances: list['YoutubeDL | None'] = [None, None]
 
 # For passing inline query results.
@@ -296,7 +297,6 @@ class Output:
 
 
 def get_ytdlp(audio_only: bool) -> 'YoutubeDL':
-    '''Must be serialized with _ytdlp_lock held.'''
     from yt_dlp import YoutubeDL
 
     if (ydl := _instances[audio_only]) is not None:
@@ -333,22 +333,16 @@ def get_ytdlp(audio_only: bool) -> 'YoutubeDL':
     return ydl
 
 
+# Serialized to avoid conflicts inside ASSETS_DIR and races on _instances,
+# since _executor has max_workers=1.
 def ytdlp_task(url: str, audio_only: bool) -> Output:
-    # Serialize to avoid conflicts inside ASSETS_DIR and races on _instances.
-    if not _ytdlp_lock.acquire(blocking=False):
-        log.info('yt-dlp: waiting for lock: %s', url)
-        _ytdlp_lock.acquire()
-
     log.info('yt-dlp: invoking %s (audio_only=%s)', url, audio_only)
-    try:
-        info = get_ytdlp(audio_only).extract_info(url)
+    info = get_ytdlp(audio_only).extract_info(url)
 
-        if log.isEnabledFor(logging.DEBUG) and info:
-            default = lambda o: f'<default: {type(o).__name__}: {o!r}>'
-            with open('last_ytdlp_info.json', 'w', encoding='utf-8') as fp:
-                json.dump(info, fp, ensure_ascii=False, indent=2, default=default)
-    finally:
-        _ytdlp_lock.release()
+    if log.isEnabledFor(logging.DEBUG) and info:
+        default = lambda o: f'<default: {type(o).__name__}: {o!r}>'
+        with open('last_ytdlp_info.json', 'w', encoding='utf-8') as fp:
+            json.dump(info, fp, ensure_ascii=False, indent=2, default=default)
 
     if not info:
         raise RuntimeError('yt-dlp returned no info')
@@ -357,7 +351,8 @@ def ytdlp_task(url: str, audio_only: bool) -> Output:
 
 
 async def run_ytdlp(url: str, *, audio_only: bool = False) -> Output:
-    return await asyncio.to_thread(ytdlp_task, url, audio_only)
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_executor, ytdlp_task, url, audio_only)
 
 
 async def _handle_yt(update: Update, *, audio_only: bool = False):
