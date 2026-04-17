@@ -214,11 +214,11 @@ handlers = (
 
 permissive_handlers = (
     handle_play,
-    handle_render,
-    handle_voice,
-    handle_sort,
     handle_yt,
     handle_yta,
+    handle_voice,
+    handle_render,
+    handle_sort,
 )
 
 
