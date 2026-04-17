@@ -1,4 +1,5 @@
 import os
+import re
 import math
 import json
 import asyncio
@@ -7,12 +8,17 @@ import functools
 import threading
 from io import BytesIO
 from typing import Any, cast, TYPE_CHECKING
-from urllib.parse import urlparse
 
 from telegram import (
     Bot,
+    Video,
+    Audio,
+    Document,
     Update,
     Message,
+    InlineQueryResultCachedAudio,
+    InlineQueryResultCachedVideo,
+    InlineQueryResultCachedDocument,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InlineQuery,
@@ -33,6 +39,17 @@ from render_context import LRUDict
 if TYPE_CHECKING:
     from yt_dlp import YoutubeDL
 
+REG_URL = re.compile(
+    r'(?:(?:https?|voice)://|(www\.))([-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b(?:[-a-zA-Z0-9()@:%_\+.~#?&//=]*))'
+)
+
+
+def matched_url(m: re.Match) -> str:
+    url = ''.join(s for s in m.groups() if s is not None)
+    url = url.rstrip('#/?')
+    p = url.find('#')
+    return 'https://' + (url[:p] if p >= 0 else url)
+
 
 def truncate(s: str, limit: int) -> str:
     if len(s) <= limit:
@@ -40,9 +57,24 @@ def truncate(s: str, limit: int) -> str:
     return s[: max(0, limit - 3)] + '...'
 
 
-def is_http_url(text: str) -> bool:
-    p = urlparse(text)
-    return p.scheme in ('http', 'https') and bool(p.netloc)
+def extract_url(text: str) -> tuple[str, str] | None:
+    url = None
+
+    def repl(m: re.Match) -> str:
+        nonlocal url
+        url = matched_url(m)
+        if m.string[m.start()] == 'v':
+            return 'voice'
+        return ''
+
+    left = REG_URL.sub(repl, text.strip(), count=1)
+    if url is not None:
+        return url, left.strip()
+
+
+def find_url(text: str) -> str | None:
+    m = REG_URL.search(text.strip())
+    return m and matched_url(m)
 
 
 MAX_FILE_SIZE = 50 << 20
@@ -64,7 +96,8 @@ YT_STAGING_MESSAGE_THREAD_ID = (
 _ytdlp_lock = threading.Lock()
 _instances: list['YoutubeDL | None'] = [None, None]
 
-# For passing inline voice results.
+# For passing inline query results.
+_media_cache: LRUDict[str, Video | Audio | Document] = LRUDict()
 _voice_cache: LRUDict[str, tuple[str, str]] = LRUDict()
 
 
@@ -307,8 +340,7 @@ async def _handle_yt(update: Update, *, audio_only: bool = False):
         await reply_text(msg, f'Usage: {usage} <url>')
         return
 
-    url = arg.split()[0]
-    if not is_http_url(url):
+    if (url := find_url(arg)) is None:
         await reply_text(msg, 'Please provide a valid URL.')
         return
 
@@ -337,36 +369,84 @@ def make_markup(text: str) -> InlineKeyboardMarkup:
     )
 
 
-def strip_url(url: str) -> str:
-    return url.rstrip('#/?')
+async def handle_yt_inline_query(query: InlineQuery, parsed: tuple[str, str]):
+    url, arg = parsed
+    log.info('handle_yt_inline_query: %s / %s', url, arg)
+    caption = None if 'q' in arg else url
 
+    if 'voice' in arg and (voice := _voice_cache.get(url)):
+        # `voice://` is set from `_finish_voice`.
+        file_id, title = voice
+        result = InlineQueryResultCachedVoice(
+            id='noop', title=title, voice_file_id=file_id, caption=caption
+        )
+        await query.answer((result,))
+        return
 
-async def handle_yt_inline_query(query: InlineQuery, url: str):
-    url = strip_url(url)
+    media = _media_cache.get(url)
+    results = []
+    cached_time = None
 
-    results: list[InlineQueryResultArticle | InlineQueryResultCachedVoice] = [
-        InlineQueryResultArticle(
-            id='yt_video',
-            title='📹 Video',
-            input_message_content=InputTextMessageContent(url),
-            reply_markup=make_markup('📹 Downloading video...'),
-        ),
-        InlineQueryResultArticle(
-            id='yt_audio',
-            title='🎵 Audio',
-            input_message_content=InputTextMessageContent(url),
-            reply_markup=make_markup('🎵 Downloading audio...'),
-        ),
-    ]
+    if isinstance(media, Video):
+        results.append(
+            InlineQueryResultCachedVideo(
+                id='noop_1',
+                video_file_id=media.file_id,
+                title='📹 Video: ' + (media.file_name or url),
+                caption=caption,
+            )
+        )
+    elif isinstance(media, Document):
+        results.append(
+            InlineQueryResultCachedDocument(
+                id='noop_2',
+                document_file_id=media.file_id,
+                title='📄 File: ' + (media.file_name or url),
+                caption=caption,
+            )
+        )
+    else:
+        cached_time = 0
+        results.append(
+            InlineQueryResultArticle(
+                id='yt_video',
+                title='📹 Video',
+                input_message_content=InputTextMessageContent(url),
+                reply_markup=make_markup('📹 Downloading video...'),
+            )
+        )
+
+    if isinstance(media, Audio):
+        results.append(
+            InlineQueryResultCachedAudio(
+                id='noop_3',
+                audio_file_id=media.file_id,
+                caption=caption,
+            )
+        )
+    else:
+        cached_time = 0
+        results.append(
+            InlineQueryResultArticle(
+                id='yt_audio',
+                title='🎵 Audio',
+                input_message_content=InputTextMessageContent(url),
+                reply_markup=make_markup('🎵 Downloading audio...'),
+            )
+        )
 
     if voice := _voice_cache.get(url):
         file_id, title = voice
         results.append(
             InlineQueryResultCachedVoice(
-                id='noop', title=title, voice_file_id=file_id, caption=url
+                id='noop_4',
+                title='🎤 Voice:' + title,
+                voice_file_id=file_id,
+                caption=caption,
             )
         )
     else:
+        cached_time = 0
         results.append(
             InlineQueryResultArticle(
                 id='yt_voice',
@@ -376,7 +456,7 @@ async def handle_yt_inline_query(query: InlineQuery, url: str):
             )
         )
 
-    await query.answer(results)
+    await query.answer(results, cache_time=cached_time)
 
 
 async def _finish_voice(
@@ -403,10 +483,10 @@ async def _finish_voice(
         log.error('Staging returned no voice: %s', msg)
         return None
 
-    query = url
-    if len(query) < InlineQuery.MAX_QUERY_LENGTH:
-        # Bypass cache for the previous inline query result.
-        query += '#'
+    # Bypass cache for the previous inline query result. Also detected above in
+    # `handle_yt_inline_query()`.
+    # `matched_url()` ensures the url starts with 'https://'.
+    query = 'voice://' + url[8:]
 
     row = (
         InlineKeyboardButton(
@@ -429,23 +509,35 @@ async def _finish_voice(
 async def handle_yt_chosen_result(
     bot: Bot,
     result_id: str,
-    url: str,
+    parsed: tuple[str, str],
     inline_message_id: str,
 ):
-    url = strip_url(url)
+    url, arg = parsed
+    log.info('handle_yt_chosen_result: %s: %s / %s', result_id, url, arg)
+    markup = None
 
     try:
         is_voice = result_id == 'yt_voice'
         audio_only = is_voice or result_id == 'yt_audio'
         output = await run_ytdlp(url, audio_only=audio_only)
+        caption = None if 'q' in arg else output.info.get('webpage_url', url)
+
         if is_voice:
             from voice import encode_voice
 
-            voice_task = asyncio.create_task(
-                encode_voice(output.path, lambda *_: None, output.duration)
-            )
-        else:
-            voice_task = None
+            async def worker():
+                nonlocal markup
+                result = await encode_voice(
+                    output.path, lambda *_: None, output.duration
+                )
+                markup = await _finish_voice(bot, output, result, url)
+                await bot.edit_message_caption(
+                    inline_message_id=inline_message_id,
+                    caption=caption,
+                    reply_markup=markup,
+                )
+
+            asyncio.create_task(worker())
 
     except Exception as e:
         log.exception('handle_yt_chosen_result: failed for %s', url)
@@ -457,29 +549,31 @@ async def handle_yt_chosen_result(
 
     # Upload to staging chat to get file_id, then edit inline message.
     staging = await output.finish(bot, audio_only=audio_only)
-    caption = output.info.get('webpage_url', url)
 
     if media := staging.audio:
-        media = InputMediaAudio(media=media, caption=caption)
+        _media_cache[url] = media
+        input_media = InputMediaAudio(media=media, caption=caption)
     elif media := staging.video:
-        media = InputMediaVideo(media=media, caption=caption, supports_streaming=True)
+        _media_cache[url] = media
+        input_media = InputMediaVideo(
+            media=media, caption=caption, supports_streaming=True
+        )
     elif media := staging.document:
+        _media_cache[url] = media
         # TODO: convert YouTube webm to videos?
-        media = InputMediaDocument(media=media, caption=caption)
+        input_media = InputMediaDocument(media=media, caption=caption)
     else:
         log.error('Staging returned no media: %s', staging)
-        media = None
+        input_media = None
 
-    markup = voice_task and await _finish_voice(bot, output, await voice_task, url)
-    if media:
+    if input_media:
+        log.info('Media ready: %s', media)
         await bot.edit_message_media(
-            media, inline_message_id=inline_message_id, reply_markup=markup
-        )
-    elif markup:
-        await bot.edit_message_reply_markup(
-            inline_message_id=inline_message_id, reply_markup=markup
+            input_media, inline_message_id=inline_message_id, reply_markup=markup
         )
     else:
         await bot.edit_message_caption(
-            inline_message_id=inline_message_id, caption='Unknown error for ' + url
+            inline_message_id=inline_message_id,
+            caption='Unknown error for ' + url,
+            reply_markup=markup,
         )

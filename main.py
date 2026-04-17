@@ -43,7 +43,7 @@ from context import Sender, get_sender
 from inoue import render_receipt
 from rg import handle_rg, handle_rg_callback
 from voice import try_handle_voice
-from ytdlp import is_http_url, handle_yt_inline_query, handle_yt_chosen_result
+from ytdlp import extract_url, handle_yt_inline_query, handle_yt_chosen_result
 from render import (
     handle_render_doc,
     handle_render_callback,
@@ -269,8 +269,8 @@ async def handle_inline_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.inline_query
     assert query
     if data := query.query.strip():
-        if is_http_url(url := data.split()[0]):
-            await handle_yt_inline_query(query, url)
+        if (parsed := extract_url(data)) is not None:
+            await handle_yt_inline_query(query, parsed)
         else:
             await handle_render_inline_query(update, query, data)
 
@@ -280,18 +280,17 @@ async def handle_chosen_inline(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     assert result
     result_id = result.result_id
     if result_id.startswith('yt_'):
-        url = result.query.strip()
-        inline_message_id = result.inline_message_id
-        if is_http_url(url) and inline_message_id:
+        query = result.query.strip()
+        if result.inline_message_id and (parsed := extract_url(query)) is not None:
             await handle_yt_chosen_result(
                 ctx.bot,
                 result_id,
-                url,
-                inline_message_id,
+                parsed,
+                result.inline_message_id,
             )
         else:
             log.warning('Invalid chosen inline result: %s', result)
-    elif result_id != 'noop':
+    elif not result_id.startswith('noop'):
         log.error('Bad chosen inline result: %s', result)
 
 
