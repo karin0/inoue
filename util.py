@@ -24,12 +24,13 @@ def load_ids(var_name: str) -> tuple[int, ...]:
 USER_ID = int(os.environ['USER_ID'])
 CHAN_ID = int(os.environ['CHAN_ID'])
 GROUP_ID = int(os.environ['GROUP_ID'])
-BOT_NAME = os.environ['BOT_NAME']
 
 GUEST_USER_IDS = frozenset(load_ids('GUEST_USER_IDS'))
 IGNORE_CHAT_IDS = frozenset(load_ids('IGNORE_CHAT_IDS'))
 
 TRUSTED_IDS = frozenset((USER_ID, CHAN_ID, GROUP_ID, *load_ids('TRUSTED_IDS')))
+
+LOG_THREAD_ID = int(os.environ.get('LOG_THREAD_ID', 0)) or None
 
 DB_FILE = os.environ.get('DB_FILE', ME_LOWER + '.db')
 
@@ -210,7 +211,9 @@ async def do_notify(
                     GROUP_ID, text, parse_mode, disable_notification=True, **kwargs
                 )
             else:
-                await bot.send_message(USER_ID, text, parse_mode, **kwargs)
+                await bot.send_message(
+                    USER_ID, text, parse_mode, message_thread_id=LOG_THREAD_ID, **kwargs
+                )
         except Exception:
             with notify.suppress():
                 log.exception('do_notify: send_message failed')
@@ -254,7 +257,8 @@ def get_msg_url(msg_id, chat_id=None) -> str:
 
 
 def get_deep_link_url(arg: str) -> str:
-    return f'https://t.me/{BOT_NAME}?start={arg}'
+    assert bot is not None
+    return f'https://t.me/{bot.username}?start={arg}'
 
 
 def encode_chat_id(m: Message, default: str = 'u') -> str:
