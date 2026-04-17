@@ -36,7 +36,6 @@ from util import (
     use_msg,
     get_msg,
     do_notify,
-    escape,
 )
 from db import db
 from context import Sender, get_sender
@@ -51,16 +50,7 @@ from render import (
     handle_render_inline_query,
     CALLBACK_SPECIAL,
 )
-from commands import dispatch_cmd, set_commands, stats, commands
-
-try:
-    from env import guest_usage
-except ImportError:
-
-    async def guest_usage(msg: Message, sender: Sender):
-        assert sender and sender.is_guest
-        text = rf'Hello, {escape(sender.name)}\!'
-        await reply_text(msg, text, 'MarkdownV2')
+from commands import dispatch_cmd, set_commands, stats, commands, reply_usage
 
 
 def auth(
@@ -153,7 +143,7 @@ def auth(
             )
             if is_guest and msg:
                 assert sender is not None
-                await guest_usage(msg, sender)
+                await reply_usage(msg, sender)
             return
 
         with use_msg(msg, sender):
@@ -186,7 +176,6 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await handle_render_group(msg, origin.message_id)
 
     if msg.chat.type != ChatType.PRIVATE:
-        log.debug('Ignoring message from non-private chat: %s', msg)
         return
 
     if await try_handle_voice(update, ctx):
@@ -198,7 +187,7 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if is_guest:
         assert sender is not None
-        await guest_usage(msg, sender)
+        await reply_usage(msg, sender)
         return
 
     # Privileged operations are only allowed in private chats, even if it's from

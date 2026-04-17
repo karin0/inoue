@@ -27,6 +27,7 @@ from util import (
     TRUSTED_IDS,
 )
 from db import db
+from context import Sender, get_sender
 from render import handle_render
 from motto import greeting, hitokoto
 from ytdlp import handle_yt, handle_yta
@@ -35,6 +36,15 @@ from misc import handle_sort, handle_fetch
 from run import handle_run, handle_cmd, handle_update
 from voice import handle_voice
 from media import *
+
+try:
+    from env import reply_usage
+except ImportError:
+
+    async def reply_usage(msg: Message, sender: Sender):
+        text = rf'Hello, {escape(sender.name)}\!'
+        await reply_text(msg, text, 'MarkdownV2')
+
 
 REG_TEMPLATE_ARG = re.compile(r'\$(\*|\d+)')
 
@@ -185,7 +195,9 @@ async def handle_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 return await reply_text(msg, 'Bad unsave link.')
             return await handle_remove_media(msg, *parsed)
 
-    return await reply_text(msg, *stats(await ctx.bot.get_me()))
+    sender = get_sender()
+    assert sender is not None
+    return await reply_usage(msg, sender)
 
 
 handlers = (
