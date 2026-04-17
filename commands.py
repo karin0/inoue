@@ -30,7 +30,7 @@ from db import db
 from context import Sender, get_sender
 from render import handle_render
 from motto import greeting, hitokoto
-from ytdlp import handle_yt, handle_yta
+from ytdlp import handle_yt, handle_yta, handle_ytn
 from rg import handle_rg, handle_rg_start
 from misc import handle_sort, handle_fetch
 from run import handle_run, handle_cmd, handle_update
@@ -216,6 +216,7 @@ permissive_handlers = (
     handle_play,
     handle_yt,
     handle_yta,
+    handle_ytn,
     handle_voice,
     handle_render,
     handle_sort,

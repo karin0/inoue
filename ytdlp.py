@@ -171,6 +171,56 @@ def _get_thumbnail_path(info: dict[str, Any]) -> str | None:
                 return path
 
 
+VIDEO_NOTE_MAX_DURATION = 60
+VIDEO_NOTE_SIDE = 640
+
+
+async def _convert_video_note(src: str) -> str:
+    from voice import finalize
+
+    dst = os.path.splitext(src)[0] + '.note.mp4'
+    if os.path.isfile(dst):
+        log.info('Cached video note: %s', dst)
+        return dst
+
+    log.info('Encoding video note: %s', dst)
+    proc = await asyncio.create_subprocess_exec(
+        'ffmpeg',
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-xerror',
+        '-y',
+        '-i',
+        src,
+        '-t',
+        str(VIDEO_NOTE_MAX_DURATION),
+        '-vf',
+        f"crop='min(iw,ih)':'min(iw,ih)',scale={VIDEO_NOTE_SIDE}:{VIDEO_NOTE_SIDE}",
+        '-c:v',
+        'libx264',
+        '-preset',
+        'ultrafast',
+        '-crf',
+        '28',
+        '-pix_fmt',
+        'yuv420p',
+        '-c:a',
+        'copy',
+        '-movflags',
+        '+faststart',
+        dst,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    await finalize(proc, 'ffmpeg (video note)')
+    return dst
+
+
+def media_duration(duration: float) -> int | None:
+    return math.ceil(duration) if duration > 0 else None
+
+
 class Output:
     def __init__(self, info: dict[str, Any]):
         self.info = info
@@ -212,6 +262,20 @@ class Output:
         url = self.info.get('webpage_url')
         return url and canonicalize_url(url)
 
+    def _thumbnail(self) -> tuple[bytes | None, bytes | None]:
+        if not self.thumbnail_path:
+            return None, None
+
+        raw, thumb = None, None
+        try:
+            with open(self.thumbnail_path, 'rb') as fp:
+                raw = fp.read()
+            thumb = _prepare_thumbnail(raw)
+        except Exception as e:
+            log.exception('Failed to thumbnail: %s: %s', self.thumbnail_path, e)
+
+        return raw, thumb
+
     def get_name(self) -> str:
         title = self.title
         performer = self.performer
@@ -238,17 +302,9 @@ class Output:
             name = os.path.basename(path)
 
         name = truncate(name, 64)
-        duration = math.ceil(self.duration) if self.duration > 0 else None
+        duration = media_duration(self.duration)
 
-        thumbnail = raw_thumbnail = None
-        if self.thumbnail_path:
-            try:
-                with open(self.thumbnail_path, 'rb') as fp:
-                    raw_thumbnail = fp.read()
-            except Exception as e:
-                log.exception('Failed to read thumbnail %s: %s', self.thumbnail_path, e)
-            else:
-                thumbnail = _prepare_thumbnail(raw_thumbnail)
+        raw_thumbnail, thumbnail = self._thumbnail()
 
         log.info(
             'finish: %s %s thumb=%s/%s',
@@ -294,6 +350,25 @@ class Output:
                     cover=raw_thumbnail,
                     supports_streaming=True,
                 )
+
+    async def finish_video_note(self, msg: Message) -> Message:
+        dst = await _convert_video_note(self.path)
+
+        duration = media_duration(self.duration)
+        if duration is not None:
+            duration = min(duration, VIDEO_NOTE_MAX_DURATION)
+
+        _, thumbnail = self._thumbnail()
+
+        with open(dst, 'rb') as fp:
+            return await msg.reply_video_note(
+                fp,
+                duration=duration,
+                length=VIDEO_NOTE_SIDE,
+                thumbnail=thumbnail,
+                do_quote=True,
+                allow_sending_without_reply=True,
+            )
 
 
 def get_ytdlp(audio_only: bool) -> 'YoutubeDL':
@@ -355,22 +430,30 @@ async def run_ytdlp(url: str, *, audio_only: bool = False) -> Output:
     return await loop.run_in_executor(_executor, ytdlp_task, url, audio_only)
 
 
-async def _handle_yt(update: Update, *, audio_only: bool = False):
+async def _handle_yt(
+    update: Update,
+    cmd: str,
+    action: ChatAction,
+    *,
+    audio_only: bool = False,
+    video_note: bool = False,
+):
     msg, arg = get_msg_arg(update)
     if not arg:
-        usage = '/yta' if audio_only else '/yt'
-        await reply_text(msg, f'Usage: {usage} <url>')
+        await reply_text(msg, f'Usage: {cmd} <url>')
         return
 
     if (url := find_url(arg)) is None:
         await reply_text(msg, 'Please provide a valid URL.')
         return
 
-    action = ChatAction.RECORD_VOICE if audio_only else ChatAction.RECORD_VIDEO
     with keep_chat_action(msg, action):
         try:
             output = await run_ytdlp(url, audio_only=audio_only)
-            await output.finish(msg, audio_only=audio_only)
+            if video_note:
+                await output.finish_video_note(msg)
+            else:
+                await output.finish(msg, audio_only=audio_only)
         except Exception as e:
             log.exception('ytdlp failed for %s', url)
             error_msg = truncate(f'Download failed: {type(e).__name__}: {e}', 500)
@@ -378,11 +461,15 @@ async def _handle_yt(update: Update, *, audio_only: bool = False):
 
 
 async def handle_yt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await _handle_yt(update, audio_only=False)
+    await _handle_yt(update, '/yt', ChatAction.RECORD_VIDEO)
 
 
 async def handle_yta(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await _handle_yt(update, audio_only=True)
+    await _handle_yt(update, '/yta', ChatAction.RECORD_VOICE, audio_only=True)
+
+
+async def handle_ytn(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await _handle_yt(update, '/ytn', ChatAction.RECORD_VIDEO_NOTE, video_note=True)
 
 
 def make_markup(text: str) -> InlineKeyboardMarkup:
@@ -488,7 +575,7 @@ async def _finish_voice(
     url: str,
 ) -> InlineKeyboardMarkup | None:
     duration, data, bitrate = result
-    duration = math.ceil(duration) if duration > 0 else None
+    duration = media_duration(duration)
 
     msg = await bot.send_voice(
         YT_STAGING_CHAT_ID,
