@@ -43,12 +43,25 @@ REG_URL = re.compile(
     r'(?:(?:https?|voice)://|(www\.))([-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b(?:[-a-zA-Z0-9()@:%_\+.~#?&//=]*))'
 )
 
+CANONICAL_KEEP_QUERY = frozenset(('v', 'list', 't', 'index', 'p'))
+
+
+def canonicalize_url(url: str) -> str:
+    from urllib.parse import urlparse, urlencode, parse_qsl, urlunparse
+
+    u = urlparse(url)
+    qs = [
+        (k, v)
+        for k, v in parse_qsl(u.query)
+        if k in CANONICAL_KEEP_QUERY and (k, v) != ('p', '1')
+    ]
+    qs.sort()
+    return urlunparse(u._replace(query=urlencode(qs), fragment='', scheme='https'))
+
 
 def matched_url(m: re.Match) -> str:
     url = ''.join(s for s in m.groups() if s is not None)
-    url = url.rstrip('#/?')
-    p = url.find('#')
-    return 'https://' + (url[:p] if p >= 0 else url)
+    return canonicalize_url('https://' + url.rstrip('#/?'))
 
 
 def truncate(s: str, limit: int) -> str:
@@ -192,6 +205,11 @@ class Output:
     @property
     def performer(self) -> str | None:
         return self._get('uploader') or self._get('channel') or self._get('creator')
+
+    @property
+    def url(self) -> str | None:
+        url = self.info.get('webpage_url')
+        return url and canonicalize_url(url)
 
     def get_name(self) -> str:
         title = self.title
@@ -485,7 +503,7 @@ async def _finish_voice(
 
     # Bypass cache for the previous inline query result. Also detected above in
     # `handle_yt_inline_query()`.
-    # `matched_url()` ensures the url starts with 'https://'.
+    # `matched_url()` and `canonicalize_url()` ensures the url starts with 'https://'.
     query = 'voice://' + url[8:]
 
     row = (
@@ -520,7 +538,8 @@ async def handle_yt_chosen_result(
         is_voice = result_id == 'yt_voice'
         audio_only = is_voice or result_id == 'yt_audio'
         output = await run_ytdlp(url, audio_only=audio_only)
-        caption = None if 'q' in arg else output.info.get('webpage_url', url)
+        url = output.url or url
+        caption = None if 'q' in arg else url
 
         if is_voice:
             from voice import encode_voice
