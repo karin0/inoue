@@ -298,10 +298,13 @@ async def post_init(app: Application) -> None:
     bot: Bot = app.bot
     init_util(bot)
     db.connect(DB_FILE)
-    await set_commands(bot)
     log.info('%s initiated: %s', ME, bot.bot)
-    if not log.isEnabledFor(logging.DEBUG):
-        await do_notify(*stats(bot.bot, f'{ME} initiated'))
+    await asyncio.gather(
+        set_commands(bot),
+        do_notify(
+            *stats(bot.bot, f'{ME} initiated'), quiet=log.isEnabledFor(logging.DEBUG)
+        ),
+    )
 
 
 async def post_stop(_: Application) -> None:
