@@ -304,8 +304,15 @@ def get_ytdlp(audio_only: bool) -> 'YoutubeDL':
 
     os.makedirs(ASSETS_DIR, exist_ok=True)
 
-    fmt = 'bestaudio/best' if audio_only else 'bv*+ba/b'
     debug = log.isEnabledFor(logging.DEBUG)
+
+    # Prefer Telegram-streamable containers.
+    if audio_only:
+        fmt = 'bestaudio[ext=m4a]/bestaudio/best'
+        postprocessors = ({'key': 'FFmpegExtractAudio', 'preferredcodec': 'm4a'},)
+    else:
+        fmt = 'bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b'
+        postprocessors = ({'key': 'FFmpegVideoConvertor', 'preferedformat': 'mp4'},)
 
     # Do not pass 'logger' here, or progress bars will break.
     opts = {
@@ -313,8 +320,10 @@ def get_ytdlp(audio_only: bool) -> 'YoutubeDL':
         'noprogress': not debug,
         'verbose': debug,
         'noplaylist': True,
+        'keepvideo': True,
         'restrictfilenames': False,
         'format': fmt,
+        'postprocessors': postprocessors,
         'outtmpl': OUTTMPL,
         'writethumbnail': True,
         'max_filesize': MAX_FILE_SIZE,
@@ -579,7 +588,6 @@ async def handle_yt_chosen_result(
         )
     elif media := staging.document:
         _media_cache[url] = media
-        # TODO: convert YouTube webm to videos?
         input_media = InputMediaDocument(media=media, caption=caption)
     else:
         log.error('Staging returned no media: %s', staging)
