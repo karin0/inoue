@@ -268,7 +268,10 @@ type MessageSpec = tuple[str, str | None, InlineKeyboardMarkup | None]
 type UpdateCallback = Callable[[MessageSpec], Awaitable[None]]
 
 
-async def _collect_redirect_hook_result(hook: str, text: str, res: list[str]) -> str:
+async def _collect_redirect_hook_result(text: str, res: list[str]) -> str:
+    assert RENDER_REDIRECT_HOOK is not None
+    hook = RENDER_REDIRECT_HOOK
+
     t0 = time.monotonic()
     proc = await asyncio.create_subprocess_shell(
         hook,
@@ -427,6 +430,7 @@ class RenderContext:
 
         if self._trusted and (spec := get_env_flag(ctx, 'redirect')):
             res = []
+            as_md = True
 
             if isinstance(spec, str):
                 has_file = 'file' in spec.lower()
@@ -448,25 +452,8 @@ class RenderContext:
                 log.info(
                     'Redirecting %d chars to hook %s', len(result), RENDER_REDIRECT_HOOK
                 )
-                if update_callback is None:
-                    result = await _collect_redirect_hook_result(
-                        RENDER_REDIRECT_HOOK,
-                        result,
-                        res,
-                    )
-                else:
-                    base_res = list(res)
-                    res.append(
-                        rf'Redirecting {len(result)} chars to hook `{escape(RENDER_REDIRECT_HOOK)}` \.\.\.'
-                    )
-                    asyncio.create_task(
-                        self._update_redirect_hook_result(
-                            path, result, base_res, update_callback
-                        )
-                    )
-
-            as_md = True
-            if res:
+                result = await self._redirect_hook(path, result, res, update_callback)
+            elif res:
                 result = '\n'.join(res)
             else:
                 size = len(result)
@@ -555,24 +542,36 @@ class RenderContext:
 
         return result, parse_mode, markup
 
-    async def _update_redirect_hook_result(
+    async def _redirect_hook(
         self,
         path: str | None,
-        text: str,
-        base_res: list[str],
-        update_callback: UpdateCallback,
-    ) -> None:
-        try:
+        result: str,
+        res: list[str],
+        update_callback: Callable[[MessageSpec], Awaitable[None]] | None,
+    ) -> str:
+        if not update_callback:
+            return await _collect_redirect_hook_result(result, res)
+
+        event = asyncio.Event()
+
+        async def send_placeholder():
             assert RENDER_REDIRECT_HOOK is not None
-            final_text = await _collect_redirect_hook_result(
-                RENDER_REDIRECT_HOOK,
-                text,
-                base_res,
-            )
-            spec = self._format_response(path, final_text, as_md=True)
-            await update_callback(spec)
-        except Exception:
-            log.exception('_update_redirect_hook_result failed')
+            try:
+                await asyncio.wait_for(event.wait(), timeout=0.01)
+            except asyncio.TimeoutError:
+                text = (
+                    '\n'.join(res)
+                    + f'\nRedirecting {len(result)} chars to hook `{escape(RENDER_REDIRECT_HOOK)}` \\.\\.\\.'
+                )
+                spec = self._format_response(path, text, as_md=True)
+                await update_callback(spec)
+
+        placeholder_task = asyncio.create_task(send_placeholder())
+        try:
+            return await _collect_redirect_hook_result(result, res)
+        finally:
+            event.set()
+            await placeholder_task
 
 
 REG_DOC_REF = re.compile(r'[*:]\s*(\w+)\s*;')
