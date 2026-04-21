@@ -174,8 +174,12 @@ def _get_thumbnail_path(info: dict[str, Any]) -> str | None:
 VIDEO_NOTE_MAX_DURATION = 60
 VIDEO_NOTE_SIDE = 640
 
+# Telegram rejects video notes larger than 12 MiB.
+VIDEO_NOTE_MAX_BYTES = 12 << 20
+VIDEO_NOTE_AUDIO_BITRATE_K = 64
 
-async def _convert_video_note(src: str) -> str:
+
+async def _convert_video_note(src: str, duration: float) -> str:
     from voice import finalize
 
     dst = os.path.splitext(src)[0] + '.note.mp4'
@@ -183,7 +187,14 @@ async def _convert_video_note(src: str) -> str:
         log.info('Cached video note: %s', dst)
         return dst
 
-    log.info('Encoding video note: %s', dst)
+    duration = min(max(duration, 1.0), VIDEO_NOTE_MAX_DURATION)
+
+    # Reserve 512 KiB for container/muxing overhead and rate control slack.
+    budget_bits = (VIDEO_NOTE_MAX_BYTES - (512 << 10)) << 3
+    total_bitrate_k = int(budget_bits / (duration * 1000))
+    video_bitrate_k = max(200, total_bitrate_k - VIDEO_NOTE_AUDIO_BITRATE_K)
+
+    log.info('Encoding video note: %s (%.1fs, %dk)', dst, duration, video_bitrate_k)
     proc = await asyncio.create_subprocess_exec(
         'ffmpeg',
         '-hide_banner',
@@ -200,13 +211,19 @@ async def _convert_video_note(src: str) -> str:
         '-c:v',
         'libx264',
         '-preset',
-        'ultrafast',
-        '-crf',
-        '28',
+        'veryfast',
+        '-b:v',
+        f'{video_bitrate_k}k',
+        '-maxrate',
+        f'{video_bitrate_k}k',
+        '-bufsize',
+        f'{video_bitrate_k * 2}k',
         '-pix_fmt',
         'yuv420p',
         '-c:a',
-        'copy',
+        'aac',
+        '-b:a',
+        f'{VIDEO_NOTE_AUDIO_BITRATE_K}k',
         '-movflags',
         '+faststart',
         dst,
@@ -214,6 +231,8 @@ async def _convert_video_note(src: str) -> str:
         stderr=asyncio.subprocess.PIPE,
     )
     await finalize(proc, 'ffmpeg (video note)')
+
+    log.info('Video note encoded into %d bytes', os.path.getsize(dst))
     return dst
 
 
@@ -352,7 +371,7 @@ class Output:
                 )
 
     async def finish_video_note(self, msg: Message) -> Message:
-        dst = await _convert_video_note(self.path)
+        dst = await _convert_video_note(self.path, self.duration)
 
         duration = media_duration(self.duration)
         if duration is not None:
