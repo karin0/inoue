@@ -1,7 +1,6 @@
 import os
 import sys
 import asyncio
-import logging
 import functools
 from typing import Callable, Coroutine
 
@@ -21,6 +20,7 @@ from telegram.constants import ChatID, ChatType
 
 from util import (
     log,
+    is_debug,
     notify,
     pre_block,
     reply_text,
@@ -290,9 +290,7 @@ async def post_init(app: Application) -> None:
     log.info('%s initiated: %s', ME, bot.bot)
     await asyncio.gather(
         set_commands(bot),
-        do_notify(
-            *stats(bot.bot, f'{ME} initiated'), quiet=log.isEnabledFor(logging.DEBUG)
-        ),
+        do_notify(*stats(bot.bot, f'{ME} initiated'), quiet=is_debug),
     )
 
 

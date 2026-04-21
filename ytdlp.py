@@ -3,7 +3,6 @@ import re
 import math
 import json
 import asyncio
-import logging
 import functools
 from io import BytesIO
 from typing import Any, cast, TYPE_CHECKING
@@ -33,7 +32,7 @@ from telegram import (
 from telegram.ext import ContextTypes
 from telegram.constants import ChatAction
 
-from util import log, get_msg_arg, reply_text, keep_chat_action
+from util import log, is_debug, get_msg_arg, reply_text, keep_chat_action
 from render_context import LRUDict
 from ffmpeg import run_ffmpeg
 
@@ -390,8 +389,6 @@ def get_ytdlp(audio_only: bool) -> 'YoutubeDL':
 
     os.makedirs(ASSETS_DIR, exist_ok=True)
 
-    debug = log.isEnabledFor(logging.DEBUG)
-
     # Prefer Telegram-streamable containers.
     if audio_only:
         fmt = 'bestaudio[ext=m4a]/bestaudio/best'
@@ -402,9 +399,9 @@ def get_ytdlp(audio_only: bool) -> 'YoutubeDL':
 
     # Do not pass 'logger' here, or progress bars will break.
     opts = {
-        'quiet': not debug,
-        'noprogress': not debug,
-        'verbose': debug,
+        'quiet': not is_debug,
+        'noprogress': not is_debug,
+        'verbose': is_debug,
         'noplaylist': True,
         'keepvideo': True,
         'restrictfilenames': False,
@@ -425,7 +422,7 @@ def ytdlp_task(url: str, audio_only: bool) -> Output:
     log.info('yt-dlp: invoking %s (audio_only=%s)', url, audio_only)
     info = get_ytdlp(audio_only).extract_info(url)
 
-    if log.isEnabledFor(logging.DEBUG) and info:
+    if is_debug and info:
         default = lambda o: f'<default: {type(o).__name__}: {o!r}>'
         with open('last_ytdlp_info.json', 'w', encoding='utf-8') as fp:
             json.dump(info, fp, ensure_ascii=False, indent=2, default=default)
