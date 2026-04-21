@@ -1,8 +1,6 @@
 import os
-import sys
 import math
 import asyncio
-import logging
 from datetime import timedelta
 from typing import Callable
 
@@ -10,6 +8,7 @@ from telegram import Message, Document, Audio, Update, Video
 from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
 
+from ffmpeg import run_ffmpeg
 from context import is_sender_guest
 from ytdlp import run_ytdlp, Output
 from util import (
@@ -51,11 +50,7 @@ async def encode_opus(
     settings += f'({",".join(attrs)})'
     log.debug('Running ffmpeg with %s', settings)
 
-    proc = await asyncio.create_subprocess_exec(
-        'ffmpeg',
-        '-hide_banner',
-        '-loglevel',
-        'error',
+    out = await run_ffmpeg(
         '-xerror',
         '-i',
         src,
@@ -76,47 +71,23 @@ async def encode_opus(
         '-f',
         'ogg',
         'pipe:1',
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+        desc=f'ffmpeg (voice/{settings})',
+        capture=True,
     )
-
-    return await finalize(proc, f'ffmpeg with {settings}'), ' '.join(args)
+    return out, ' '.join(args)
 
 
 async def probe_duration(src: str) -> str:
-    proc = await asyncio.create_subprocess_exec(
-        'ffprobe',
-        '-v',
-        'error',
+    out = await run_ffmpeg(
         '-show_entries',
         'format=duration',
         '-of',
         'default=noprint_wrappers=1:nokey=1',
         src,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+        prog='ffprobe',
+        capture=True,
     )
-
-    out = await finalize(proc, 'ffprobe')
     return out.decode(errors='replace').strip()
-
-
-async def finalize(proc: asyncio.subprocess.Process, desc: str) -> bytes:
-    out, err = await proc.communicate()
-
-    if err and log.isEnabledFor(logging.DEBUG):
-        sys.stderr.buffer.write(err)
-        sys.stderr.buffer.flush()
-
-    ret = proc.returncode
-    log.info('%s finished with %s, output %s bytes', desc, ret, len(out))
-
-    if ret:
-        lines = err.decode(errors='replace').strip().splitlines()
-        msg = lines[-1] if lines else None
-        raise RuntimeError(f'{desc} failed: {msg}')
-
-    return out
 
 
 def _clamp_bitrate(bitrate_k: int) -> int:

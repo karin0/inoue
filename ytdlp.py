@@ -35,6 +35,7 @@ from telegram.constants import ChatAction
 
 from util import log, get_msg_arg, reply_text, keep_chat_action
 from render_context import LRUDict
+from ffmpeg import run_ffmpeg
 
 if TYPE_CHECKING:
     from yt_dlp import YoutubeDL
@@ -180,8 +181,6 @@ VIDEO_NOTE_AUDIO_BITRATE_K = 64
 
 
 async def _convert_video_note(src: str, duration: float) -> str:
-    from voice import finalize
-
     dst = os.path.splitext(src)[0] + '.note.mp4'
     if os.path.isfile(dst):
         log.info('Cached video note: %s', dst)
@@ -195,13 +194,8 @@ async def _convert_video_note(src: str, duration: float) -> str:
     video_bitrate_k = max(200, total_bitrate_k - VIDEO_NOTE_AUDIO_BITRATE_K)
 
     log.info('Encoding video note: %s (%.1fs, %dk)', dst, duration, video_bitrate_k)
-    proc = await asyncio.create_subprocess_exec(
-        'ffmpeg',
-        '-hide_banner',
-        '-loglevel',
-        'error',
+    await run_ffmpeg(
         '-xerror',
-        '-y',
         '-i',
         src,
         '-t',
@@ -227,10 +221,8 @@ async def _convert_video_note(src: str, duration: float) -> str:
         '-movflags',
         '+faststart',
         dst,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+        desc=f'ffmpeg (video note/{video_bitrate_k}k)',
     )
-    await finalize(proc, 'ffmpeg (video note)')
 
     log.info('Video note encoded into %d bytes', os.path.getsize(dst))
     return dst

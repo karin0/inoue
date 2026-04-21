@@ -115,6 +115,7 @@ def _get_logger(name):
 
 
 log = _get_logger(ME_LOWER)
+is_debug = log.isEnabledFor(logging.DEBUG)
 
 
 def init_util(b: Bot):
