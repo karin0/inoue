@@ -666,10 +666,23 @@ async def handle_render_inline_query(update: Update, query: InlineQuery, text: s
         doc_id = path = None
 
     ctx = RenderContext(update, doc_id=doc_id)
-    result, parse_mode, markup = await ctx.render(text, path)
+    rendered = ctx.render_text(text)
+    result, parse_mode, markup = await ctx.to_response(path, rendered)
+
+    if rendered := rendered.strip():
+        p = 50
+        left_chars = len(rendered) - p * 2
+        title = (
+            (f'{rendered[:p]} ...[{left_chars} chars]... \\{rendered[-p:]}')
+            if left_chars > 0
+            else rendered
+        )
+    else:
+        title = '[empty]'
+
     r = InlineQueryResultArticle(
-        id='1',
-        title=f'Render: {len(result)}',
+        id='noop',
+        title=title,
         input_message_content=InputTextMessageContent(result, parse_mode=parse_mode),
         reply_markup=markup,
     )
