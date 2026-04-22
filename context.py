@@ -11,6 +11,9 @@ class Sender(NamedTuple):
     name: str
     is_guest: bool
 
+    def __str__(self) -> str:
+        return f'{self.name} ({self.id}{", guest" if self.is_guest else ""})'
+
 
 current_sender: ContextVar[Sender | None] = ContextVar('current_sender', default=None)
 

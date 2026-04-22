@@ -32,6 +32,7 @@ from telegram import (
 from telegram.ext import ContextTypes
 from telegram.constants import ChatAction
 
+from context import get_sender
 from util import log, is_debug, get_msg_arg, reply_text, keep_chat_action
 from render_context import LRUDict
 from ffmpeg import (
@@ -247,7 +248,11 @@ class Output:
         return os.path.basename(self.path)
 
     async def finish(
-        self, msg_or_bot: Message | Bot, *, audio_only: bool = False
+        self,
+        msg_or_bot: Message | Bot,
+        *,
+        audio_only: bool = False,
+        caption: str | None = None,
     ) -> Message:
         path = self.path
         title = self.title
@@ -301,6 +306,7 @@ class Output:
                     thumbnail=thumbnail,
                     title=title,
                     performer=performer,
+                    caption=caption,
                 )
             else:
                 return await wrap(send_video)(
@@ -310,6 +316,7 @@ class Output:
                     thumbnail=thumbnail,
                     cover=raw_thumbnail,
                     supports_streaming=True,
+                    caption=caption,
                 )
 
     async def finish_video_note(self, msg: Message) -> Message:
@@ -616,7 +623,8 @@ async def handle_yt_chosen_result(
         return
 
     # Upload to staging chat to get file_id, then edit inline message.
-    staging = await output.finish(bot, audio_only=audio_only)
+    stage_caption = f'{url}\n{get_sender()} {result_id} {arg}'.strip()
+    staging = await output.finish(bot, audio_only=audio_only, caption=stage_caption)
 
     if media := staging.audio:
         _media_cache[url] = media
