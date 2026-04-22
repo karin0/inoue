@@ -10,7 +10,7 @@ from telegram.ext import ContextTypes
 
 from ffmpeg import run_ffmpeg
 from context import is_sender_guest
-from ytdlp import run_ytdlp, Output
+from ytdlp import run_ytdlp, extract_url, Output
 from util import (
     log,
     get_msg_arg,
@@ -330,20 +330,15 @@ async def try_handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bo
     info = extract_media(msg) or (
         msg.reply_to_message and extract_media(msg.reply_to_message)
     )
-
-    if not (info or arg.startswith('https://')):
+    parsed = None
+    if not info and (parsed := extract_url(arg)) is None:
         return False
 
     with keep_chat_action(msg, ChatAction.RECORD_VOICE):
         if not info:
-            if (p := arg.find(' ')) > 0:
-                url = arg[:p]
-                arg = arg[p + 1 :]
-            else:
-                url = arg
-                arg = ''
-
             # Delegate to ytdlp if the argument looks like a URL.
+            assert parsed is not None
+            url, arg = parsed
             output = await run_ytdlp(url, audio_only=True)
             asyncio.create_task(output.finish(msg, audio_only=True))
             info = output, output.duration
