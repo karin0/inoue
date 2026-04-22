@@ -34,7 +34,12 @@ from telegram.constants import ChatAction
 
 from util import log, is_debug, get_msg_arg, reply_text, keep_chat_action
 from render_context import LRUDict
-from ffmpeg import run_ffmpeg
+from ffmpeg import (
+    encode_voice,
+    encode_video_note,
+    VIDEO_NOTE_MAX_DURATION,
+    VIDEO_NOTE_SIDE,
+)
 
 if TYPE_CHECKING:
     from yt_dlp import YoutubeDL
@@ -173,62 +178,6 @@ def _get_thumbnail_path(info: dict[str, Any]) -> str | None:
                 return path
 
 
-VIDEO_NOTE_MAX_DURATION = 60
-VIDEO_NOTE_SIDE = 640
-
-# Telegram rejects video notes larger than 12 MiB.
-VIDEO_NOTE_MAX_BYTES = 12 << 20
-VIDEO_NOTE_AUDIO_BITRATE_K = 64
-
-
-async def _convert_video_note(src: str, duration: float) -> str:
-    dst = os.path.splitext(src)[0] + '.note.mp4'
-    if os.path.isfile(dst):
-        log.info('Cached video note: %s', dst)
-        return dst
-
-    duration = min(max(duration, 1.0), VIDEO_NOTE_MAX_DURATION)
-
-    # Reserve 512 KiB for container/muxing overhead and rate control slack.
-    budget_bits = (VIDEO_NOTE_MAX_BYTES - (512 << 10)) << 3
-    total_bitrate_k = int(budget_bits / (duration * 1000))
-    video_bitrate_k = max(200, total_bitrate_k - VIDEO_NOTE_AUDIO_BITRATE_K)
-
-    log.info('Encoding video note: %s (%.1fs, %dk)', dst, duration, video_bitrate_k)
-    await run_ffmpeg(
-        '-xerror',
-        '-i',
-        src,
-        '-t',
-        str(VIDEO_NOTE_MAX_DURATION),
-        '-vf',
-        f"crop='min(iw,ih)':'min(iw,ih)',scale={VIDEO_NOTE_SIDE}:{VIDEO_NOTE_SIDE}",
-        '-c:v',
-        'libx264',
-        '-preset',
-        'veryfast',
-        '-b:v',
-        f'{video_bitrate_k}k',
-        '-maxrate',
-        f'{video_bitrate_k}k',
-        '-bufsize',
-        f'{video_bitrate_k * 2}k',
-        '-pix_fmt',
-        'yuv420p',
-        '-c:a',
-        'aac',
-        '-b:a',
-        f'{VIDEO_NOTE_AUDIO_BITRATE_K}k',
-        '-movflags',
-        '+faststart',
-        dst,
-        desc=f'ffmpeg (video note/{video_bitrate_k}k)',
-    )
-
-    log.info('Video note encoded into %d bytes', os.path.getsize(dst))
-    return dst
-
-
 def media_duration(duration: float) -> int | None:
     return math.ceil(duration) if duration > 0 else None
 
@@ -364,7 +313,7 @@ class Output:
                 )
 
     async def finish_video_note(self, msg: Message) -> Message:
-        dst = await _convert_video_note(self.path, self.duration)
+        dst = await encode_video_note(self.path, self.duration)
 
         duration = media_duration(self.duration)
         if duration is not None:
@@ -643,7 +592,6 @@ async def handle_yt_chosen_result(
         caption = None if 'q' in arg else url
 
         if is_voice:
-            from voice import encode_voice
 
             async def worker():
                 nonlocal markup
