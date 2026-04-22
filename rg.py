@@ -390,11 +390,9 @@ async def _run_rg(arg: str, cwd: str) -> RGQuery:
                         if cnt >= MATCH_LIMIT:
                             break
     finally:
-        # child.stdout.feed_eof()
         await stdout.read()
         if r := await child.wait():
-            with notify.suppress():
-                log.warning('rg exited with code %d', r)
+            log.info('rg exited with code %d', r)
 
     query.match_cnt = cnt
     return query
