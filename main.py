@@ -21,6 +21,7 @@ from telegram.constants import ChatID, ChatType
 from util import (
     log,
     is_debug,
+    trace,
     notify,
     pre_block,
     reply_text,
@@ -107,7 +108,7 @@ def auth(
         else:
             sender = None
 
-        log.debug('Entering %s from %s: %s', func.__name__, src, update)
+        trace('Entering %s from %s: %s', func.__name__, src, update)
 
         item = callback = query = None
         if msg := update.message:

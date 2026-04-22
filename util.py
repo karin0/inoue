@@ -116,6 +116,7 @@ def _get_logger(name):
 
 log = _get_logger(ME_LOWER)
 is_debug = log.isEnabledFor(logging.DEBUG)
+trace = log.debug if os.environ.get('TRACE') == '1' else lambda *_: None
 
 
 def init_util(b: Bot):
