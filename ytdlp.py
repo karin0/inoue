@@ -56,12 +56,14 @@ def canonicalize_url(url: str) -> str:
         if k in CANONICAL_KEEP_QUERY and (k, v) != ('p', '1')
     ]
     qs.sort()
-    return urlunparse(u._replace(query=urlencode(qs), fragment='', scheme='https'))
+    return urlunparse(
+        u._replace(query=urlencode(qs), fragment='', scheme='https')
+    ).rstrip('#/?')
 
 
 def matched_url(m: re.Match) -> str:
     url = ''.join(s for s in m.groups() if s is not None)
-    return canonicalize_url('https://' + url.rstrip('#/?'))
+    return canonicalize_url('https://' + url)
 
 
 def truncate(s: str, limit: int) -> str:
