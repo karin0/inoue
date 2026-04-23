@@ -115,14 +115,34 @@ class Exit(Abort):
     pass
 
 
+# A deferred block: a parsed `block_inner` paired with parameter names and
+# an optionally captured scope.
+# A SubDoc defined with `↦` runs in the caller's current scope when invoked.
+# A SubDoc defined with `⇒` captures the `scope` from its definition site, where
+# it should be invoked later.
 class SubDoc(Box):
-    def __init__(self, tree: Tree, params: tuple[str, ...] | None):
+    def __init__(
+        self,
+        tree: Tree,
+        params: tuple[str, ...] | None,
+        engine: 'Engine',
+        scope: str | None = None,
+    ):
         self.tree = tree
         self.params = params
+        self.engine = engine
+        self.scope = scope
+
+    def bind(self) -> SubDoc:
+        return SubDoc(self.tree, self.params, self.engine, self.engine._scope.current())
+
+    def __call__(self, *args, **kwargs) -> Value | None:
+        return self.engine._call_box(self, *args, **kwargs)
 
     @override
     def __repr__(self) -> str:
-        return f'{{{self.params} ↦ {Engine.debug_node(self.tree)}}}'
+        scope = f' @{self.scope!r}' if self.scope is not None else ''
+        return f'{{{self.params}{scope} ↦ {Engine.debug_node(self.tree)}}}'
 
 
 class Engine(Interpreter, ContextCallbacks):
@@ -191,55 +211,35 @@ class Engine(Interpreter, ContextCallbacks):
             self._output.append(val)
 
     @overload
-    def _gather_output(
+    def _gather_output[T](
         self,
         out: list[Value],
-        default: Literal[None],
+        default: T = '',
         *,
         as_str: Literal[False] = False,
         trim: bool = False,
-    ) -> Value | None: ...
+    ) -> Value | T: ...
 
     @overload
-    def _gather_output(
+    def _gather_output[T](
         self,
         out: list[Value],
-        default: Literal[None],
+        default: T = '',
         *,
         as_str: Literal[True],
         trim: bool = False,
-    ) -> str | None: ...
-
-    @overload
-    def _gather_output(
-        self,
-        out: list[Value],
-        default: Value = '',
-        *,
-        as_str: Literal[False] = False,
-        trim: bool = False,
-    ) -> Value: ...
-
-    @overload
-    def _gather_output(
-        self,
-        out: list[Value],
-        default: Value = '',
-        *,
-        as_str: Literal[True],
-        trim: bool = False,
-    ) -> str: ...
+    ) -> str | T: ...
 
     # The output implementation is responsible for filtering out any empty strings,
     # like in `_put` or `_unary_chain`.
-    def _gather_output(
+    def _gather_output[T](
         self,
         out: list[Value],
-        default: Value | None = '',
+        default: T = '',
         *,
         as_str: bool = False,
         trim: bool = False,
-    ) -> Value | None:
+    ) -> Value | T:
         match len(out):
             case 0:
                 return default
@@ -550,7 +550,7 @@ class Engine(Interpreter, ContextCallbacks):
     # This wraps `_scan_block()` for a `code_block` for runtime caching.
     # To reduce stack usage, the caller is responsible for calling `_sub_doc()`
     # or `_run_block()`, based on whether a sub-doc token is returned.
-    def _scan_code_block(self, tree: Tree) -> tuple[Tree, str | None]:
+    def _scan_code_block(self, tree: Tree) -> tuple[Tree, tuple[str, bool] | None]:
         inner = tree.children[1]
         if isinstance(inner, Tree):
             assert inner.data == 'block_inner'
@@ -580,32 +580,41 @@ class Engine(Interpreter, ContextCallbacks):
             trace('_code_block: cached: %s', inner[1])
         return inner
 
-    # Create a boxed sub-doc value from `block_inner`, and store it in the current
+    # Create a boxed sub-doc value from `block_inner`, storing it in the current
     # scope if uncaptured.
+    # With the `⇒` marker, the current scope is captured onto the SubDoc so it
+    # can later be invoked with its defining scope restored.
     def _sub_doc(
-        self, tree: Tree, sub_doc_token: str, *, captured: bool = False
+        self,
+        tree: Tree,
+        sub_doc_token: tuple[str, bool],
+        *,
+        captured: bool = False,
     ) -> SubDoc:
-        if sub_doc_token:
+        name, capture_scope = sub_doc_token
+        scope = self._scope.current() if capture_scope else None
+
+        if name:
             if captured:
-                params = tuple(r for s in sub_doc_token.split(',') if (r := s.strip()))
-                sub_doc = SubDoc(tree, params)
-                trace('Captured sub-doc: %s %s', sub_doc_token, sub_doc)
+                params = tuple(r for s in name.split(',') if (r := s.strip()))
+                sub_doc = SubDoc(tree, params, self, scope)
+                trace('Captured sub-doc: %s %s', name, sub_doc)
                 return sub_doc
 
-            key = sub_doc_token
-            self._check_iden(key)
-            sub_doc = SubDoc(tree, None)
-            trace('Uncaptured sub-doc: %s %s', key, sub_doc)
+            self._check_iden(name)
+            sub_doc = SubDoc(tree, None, self, scope)
+            trace('Uncaptured sub-doc: %s %s', name, sub_doc)
             # Side-effect: the box is saved in the current scope.
-            self._scope.set(key, sub_doc)
+            self._scope.set(name, sub_doc)
             return sub_doc
 
         if not captured:
             self._error('unnamed sub-doc must be captured')
-        return SubDoc(tree, None)
+        return SubDoc(tree, None, self, scope)
 
-    # Returns name of the sub-doc.
-    def _scan_block(self, tree: Tree, *, root: bool = False) -> str | None:
+    # Returns `(name, capture_scope)` for the sub-doc, or None if the block is
+    # not a sub-doc definition. `capture_scope` is set when the marker is `⇒`.
+    def _scan_block(self, tree: Tree, *, root: bool = False) -> tuple[str, bool] | None:
         assert tree.data == 'block_inner', tree
         # Find any doc_def before entering statements to enable sub-docs.
         for i, ch in enumerate(tree.children):
@@ -620,6 +629,7 @@ class Engine(Interpreter, ContextCallbacks):
             # Sub-document definition:
             # { name ↦ ... } (uncaptured, as statement)
             # { arg1, arg2, ... ↦ ... } (captured as expression)
+            # `⇒` in place of `↦` additionally captures the current scope.
             if op != ':':
                 # Current 'block_inner' as a sub-document.
                 # Scope from 'code_block' is already embedded.
@@ -628,7 +638,8 @@ class Engine(Interpreter, ContextCallbacks):
 
                 # The caller should skip evaluating the entire block (`_run_block`)
                 # in this branch.
-                return '' if key is None else narrow(key, Token).value.strip()
+                name = '' if key is None else narrow(key, Token).value.strip()
+                return name, op == '⇒'
 
             # Doc name definition: {name:}
             key = ch.children[0]
@@ -651,9 +662,14 @@ class Engine(Interpreter, ContextCallbacks):
 
             return
 
-    def _set_tco(self, tree: Tree, env: dict[str, Any] | None = None) -> TCO:
+    def _set_tco(
+        self,
+        tree: Tree,
+        env: dict[str, Any] | None = None,
+        scope: str | None = None,
+    ) -> TCO:
         assert self._tco is None
-        self._tco = (tree, self._scope.current(), env)
+        self._tco = (tree, self._scope.current() if scope is None else scope, env)
         return Tco
 
     def _run_block(self, tree: Tree, *, env: dict[str, Any] | None = None):
@@ -1063,7 +1079,11 @@ class Engine(Interpreter, ContextCallbacks):
             if not isinstance(sub_doc, SubDoc):
                 self._error('bad tail-call')
                 return ''
-            return self._set_tco(sub_doc.tree, self._create_block_env(*val))
+            return self._set_tco(
+                sub_doc.tree,
+                env=self._create_block_env(*val),
+                scope=sub_doc.scope,
+            )
 
         # Not necessarily str!
         return to_str(val) if as_str else val
@@ -1217,11 +1237,8 @@ class Engine(Interpreter, ContextCallbacks):
                     self.debug_node(tree),
                 )
             if allow_tco:
-                return self._set_tco(tree)
-
-            with self._push():
-                self._run_block(tree)
-                return self._gather_output(self._output, trim=True)
+                return self._set_tco(tree, scope=val.scope)
+            return self._call_subdoc(val, trim=True)
 
         doc = self._get_doc(key)
         if doc is None:
@@ -1260,14 +1277,41 @@ class Engine(Interpreter, ContextCallbacks):
         assert tree.data == 'block_inner', tree
         if is_tracing:
             trace(
-                '_call_box: %s args=%s kwargs=%s', self.debug_node(tree), args, kwargs
+                '_call_box: @%s %s args=%s kwargs=%s',
+                sub_doc.scope,
+                self.debug_node(tree),
+                args,
+                kwargs,
             )
 
-        # Recursive boxed calls are still limited by `MAX_DEPTH`.
         env = self._create_block_env(sub_doc, args, kwargs)
-        with self._push():
-            self._run_block(tree, env=env)
-            return self._gather_output(self._output, default=None)
+        return self._call_subdoc(sub_doc, env, default=None)
+
+    def _call_subdoc[T](
+        self,
+        sub_doc: SubDoc,
+        env: dict[str, Any] | None = None,
+        *,
+        default: T = '',
+        trim: bool = False,
+    ) -> Value | T:
+        scope = sub_doc.scope
+
+        # If `sub_doc` has a captured scope, temporarily switch to it so the
+        # block sees its definition-site locals.
+        if scope is not None and scope != self._scope.current():
+            self._scope.push_raw(scope)
+        else:
+            scope = None
+
+        try:
+            # Recursive boxed calls are still bounded by `MAX_DEPTH`.
+            with self._push():
+                self._run_block(sub_doc.tree, env=env)
+                return self._gather_output(self._output, default=default, trim=trim)
+        finally:
+            if scope is not None:
+                self._scope.pop()
 
     # Due to LALR limitations, AOE chains have very different semantics:
     # - In expression statements, they set context vars and return ''.

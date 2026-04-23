@@ -1201,6 +1201,47 @@ safe = 1;
         self.render_it(text, eq='Alive')
         self.render_it(text.replace('v?', '"v+1" ?:'), eq='Alive')
 
+    def test_subdoc_captures_scope(self):
+        text = r'''
+{ x = "1"; { cb ⇒ ; "'x=' + str(x)" }; @inner { x = "2"; *cb; } }
+'''
+        self.render_it(text, eq='x=1')
+
+    def test_subdoc_no_capture(self):
+        text = r'''
+{ x = "1"; { cb ↦ ; "'x=' + str(x)" }; @inner { x = "2"; *cb; } }
+'''
+        self.render_it(text, eq='x=2')
+
+    def test_subdoc_captured_form(self):
+        text = r'''
+{ x = "10"; f = {a, b ⇒ "a*x + b"}; "f(3, 7)"; @inner { x = "99"; "f(3, 7)"; } }
+'''
+        self.render_it(text, eq='3737')
+
+    def test_subdoc_external_call(self):
+        engine = self.start()
+        text = r'''
+{ x = "5"; cb = {arg ⇒ "arg * int(x)"}; }
+'''
+        engine.render(text)
+        self.assertFalse(engine.errors)
+
+        cb = engine._ctx['cb']
+        assert callable(cb)
+        self.assertEqual(cb(3), 15)
+        self.assertEqual(cb(arg=4), 20)
+
+    def test_subdoc_callable(self):
+        engine = self.start()
+        text = r'''
+{ x = "5"; cb = {arg ↦ "arg * int(x)"}; }
+'''
+        engine.render(text)
+        cb = engine._ctx['cb']
+        assert callable(cb)
+        self.assertEqual(cb(3), 15)
+
 
 if __name__ == '__main__':
     unittest.main()
