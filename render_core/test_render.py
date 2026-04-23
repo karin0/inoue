@@ -735,9 +735,7 @@ n ?= m = "2";
 
     def test_prime_vectorized(self):
         db = {}
-        db[
-            'iter0'
-        ] = r'''
+        db['iter0'] = r'''
 iter: ;
 "m * m <= n and n % m == 0" ? n="n+2"; m="2"; :;
 "m * m <= n and n % m" ? m="m > 2 and m+2 or 3";
@@ -750,14 +748,10 @@ iter: ;
 
         mock_db(db.get)
 
-        text = (
-            r'''
+        text = r'''
         prime2: ; n ?= m = "2";
 "m * m > n" ? $n; n="n > 2 and n+2 or 3"; m="2" :;
-'''
-            + '*iter4;' * 100
-            + '*prime2;'
-        )
+''' + '*iter4;' * 100 + '*prime2;'
         result = self.render_it(text, e='out of gas')
         ans = '\n'.join(str(v) for v in self.iter_prime(59))
         self.assertTrue(result.startswith(ans), result)
