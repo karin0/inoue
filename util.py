@@ -373,6 +373,18 @@ async def reply_text(
     return resp
 
 
+def serialized[**P, R](
+    func: Callable[P, Awaitable[R]],
+) -> Callable[P, Awaitable[R]]:
+    lock = asyncio.Lock()
+
+    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        async with lock:
+            return await func(*args, **kwargs)
+
+    return wrapper
+
+
 def shorten(s: str | None, limit: int = 30) -> str:
     if s is None:
         return 'None'

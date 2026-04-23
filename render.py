@@ -37,10 +37,11 @@ from util import (
     blockquote_block,
     do_notify,
     encode_chat_id,
+    serialized,
 )
 from db import db
 from render_core import Engine, Value
-from render_bridge import Bridge, Signature, use_context
+from render_bridge import Bridge
 from render_context import OverriddenDict, encode_value, decode_value
 
 # '/' is kept for compatibility, which was used for '-'.
@@ -265,7 +266,7 @@ def repl_cleanup_pre(m: re.Match) -> str:
 
 
 type MessageSpec = tuple[str, str | None, InlineKeyboardMarkup | None]
-type UpdateCallback = Callable[[MessageSpec], Awaitable[None]]
+type UpdateCallback = Callable[[MessageSpec], Awaitable[Message | bool | None]]
 
 
 async def _collect_redirect_hook_result(text: str, res: list[str]) -> str:
@@ -329,11 +330,16 @@ class RenderContext:
         flags: dict[str, bool] | None = None,
         doc_id: int | None = None,
         callback_data: str | None = None,
+        path: str | None = None,
+        update_callback: UpdateCallback | None = None,
     ):
         if flags is None:
             flags = {}
         self.flags = flags
         self._callback_data = callback_data
+        self.set_path(path)
+        self.set_update_callback(update_callback)
+        self._update_callback_result = None
 
         overrides: dict[str, Value] = dict(flags) if flags is not None else {}
         source = None
@@ -356,9 +362,8 @@ class RenderContext:
             overrides['_source'] = source
         if msg := update.effective_message:
             overrides['_msg_id'] = str(msg.message_id)
-
         if trusted is not None:
-            overrides['_trusted'] = Signature(trusted)
+            overrides['_trusted'] = trusted
 
         log.info('create_engine: %s', overrides)
 
@@ -367,11 +372,37 @@ class RenderContext:
         self._default_doc_id = doc_id
         self._trusted = trusted
 
+        self.data = OverriddenDict({}, overrides)
+        bridge = Bridge(self.data, self._update_text, trusted)
+
         # Access to attributes with underscores should be forbidden in `simpleeval`,
         # so `os` is safe.
-        data = {'os': Bridge, 'sys': Bridge}
-        self.data = OverriddenDict(data, overrides)
-        self.engine = Engine(self.data, self._doc_loader, funcs=Bridge.funcs)
+        self.data['os'] = self.data['sys'] = bridge
+
+        self.engine = Engine(self.data, self._doc_loader, funcs=bridge.funcs)
+
+    def set_path(self, path: str | None) -> None:
+        self._path = path
+
+    def set_update_callback(self, callback: UpdateCallback | None) -> None:
+        self._update_callback = callback and serialized(callback)
+
+    async def _invoke_update_callback(self, spec: MessageSpec) -> Message | bool | None:
+        if self._update_callback is not None:
+            r = await self._update_callback(spec)
+            self._update_callback_result = r
+            return r
+
+    # Exposed as a callback to Bridge, used for `edit_message`.
+    async def _update_text(self, text: str) -> int | None:
+        if self._update_callback is None:
+            log.info('_update_text: no update_callback')
+            return
+
+        await self.to_response(text)
+        if isinstance(r := self._update_callback_result, Message):
+            log.debug('_update_text: %s', r)
+            return r.message_id
 
     def _doc_loader(self, name: str) -> str | None:
         row = db.get_doc(name)
@@ -389,9 +420,8 @@ class RenderContext:
         return row[1]
 
     def render_text(self, text: str) -> str:
-        with use_context(self.data):
-            result = self.engine.render(text)
-            self._render_time = int(time.time())
+        result = self.engine.render(text)
+        self._render_time = int(time.time())
 
         log.info('rendered %d -> %d (%s)', len(text), len(result), self._first_doc_id)
         if self._first_doc_id is None:
@@ -402,25 +432,11 @@ class RenderContext:
     async def render(
         self,
         text: str,
-        path: str | None,
-        update_callback: UpdateCallback | None = None,
     ) -> MessageSpec:
         rendered = self.render_text(text)
-        result = await self.to_response(
-            path,
-            rendered,
-            update_callback,
-        )
-        if update_callback:
-            await update_callback(result)
-        return result
+        return await self.to_response(rendered)
 
-    async def to_response(
-        self,
-        path: str | None,
-        result: str,
-        update_callback: UpdateCallback | None = None,
-    ) -> MessageSpec:
+    async def to_response(self, result: str) -> MessageSpec:
         ctx = self.data
         result = result or '[empty]'
 
@@ -452,7 +468,7 @@ class RenderContext:
                 log.info(
                     'Redirecting %d chars to hook %s', len(result), RENDER_REDIRECT_HOOK
                 )
-                result = await self._redirect_hook(path, result, res, update_callback)
+                result = await self._redirect_hook(result, res)
             elif res:
                 result = '\n'.join(res)
             else:
@@ -466,11 +482,13 @@ class RenderContext:
         else:
             as_md = bool(get_env_flag(ctx, 'md'))
 
-        return self._format_response(path, result, as_md=as_md)
+        spec = self._format_response(result, as_md=as_md)
+        if self._update_callback is not None:
+            await self._invoke_update_callback(spec)
+        return spec
 
     def _format_response(
         self,
-        path: str | None,
         result: str,
         as_md: bool,
     ) -> MessageSpec:
@@ -480,7 +498,7 @@ class RenderContext:
             result += f'\n\n---\n\n' + '\n'.join(errors)
 
         result = truncate_text(result)
-        if ret := make_markup(path, self):
+        if ret := make_markup(self._path, self):
             markup, current_state = ret
         else:
             markup = current_state = None
@@ -544,12 +562,10 @@ class RenderContext:
 
     async def _redirect_hook(
         self,
-        path: str | None,
         result: str,
         res: list[str],
-        update_callback: Callable[[MessageSpec], Awaitable[None]] | None,
     ) -> str:
-        if not update_callback:
+        if self._update_callback is None:
             return await _collect_redirect_hook_result(result, res)
 
         event = asyncio.Event()
@@ -563,8 +579,8 @@ class RenderContext:
                     '\n'.join(res)
                     + f'\nRedirecting {len(result)} chars to hook `{escape(RENDER_REDIRECT_HOOK)}` \\.\\.\\.'
                 )
-                spec = self._format_response(path, text, as_md=True)
-                await update_callback(spec)
+                spec = self._format_response(text, as_md=True)
+                await self._invoke_update_callback(spec)
 
         placeholder_task = asyncio.create_task(send_placeholder())
         try:
@@ -602,11 +618,13 @@ async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
         db['r-' + path] = text
         doc_id = None
 
-    async def edit_reply_message(spec: MessageSpec) -> None:
-        await reply_text(msg, *spec, allow_not_modified=True)
+    async def edit_reply_message(spec: MessageSpec):
+        return await reply_text(msg, *spec, allow_not_modified=True)
 
-    ctx = RenderContext(update, doc_id=doc_id)
-    await ctx.render(text, path, update_callback=edit_reply_message)
+    ctx = RenderContext(
+        update, doc_id=doc_id, path=path, update_callback=edit_reply_message
+    )
+    await ctx.render(text)
 
 
 def is_doc_ref(text: str) -> tuple[str, tuple[int, str]] | tuple[None, str] | None:
@@ -627,15 +645,12 @@ async def handle_render_group(msg: Message, origin_id: int):
         ctx, doc_name, result = cache
         log.info('Doc in group: %s -> %s %s', msg.id, origin_id, doc_name)
 
-        async def edit_reply_message(spec: MessageSpec) -> None:
-            await reply_text(msg, *spec, allow_not_modified=True)
+        async def edit_reply_message(spec: MessageSpec):
+            return await reply_text(msg, *spec, allow_not_modified=True)
 
-        spec = await ctx.to_response(
-            ':' + doc_name,
-            result,
-            update_callback=edit_reply_message,
-        )
-        await edit_reply_message(spec)
+        ctx.set_path(':' + doc_name)
+        ctx.set_update_callback(edit_reply_message)
+        await ctx.to_response(result)
     else:
         log.info('No preview cache in group: %s -> %s', msg.id, origin_id)
 
@@ -665,9 +680,9 @@ async def handle_render_inline_query(update: Update, query: InlineQuery, text: s
     else:
         doc_id = path = None
 
-    ctx = RenderContext(update, doc_id=doc_id)
+    ctx = RenderContext(update, doc_id=doc_id, path=path)
     rendered = ctx.render_text(text)
-    result, parse_mode, markup = await ctx.to_response(path, rendered)
+    result, parse_mode, markup = await ctx.to_response(rendered)
 
     if rendered := rendered.strip():
         p = 50
@@ -748,21 +763,14 @@ async def handle_render_callback(
         case _:
             raise ValueError('bad render callback: ' + data)
 
-    ctx = RenderContext(update, flags, doc_id=doc_id, callback_data=data)
-    if clicked_button is not None:
-        ctx.data[BUTTON_KEY] = clicked_button
-    if memory is not None:
-        ctx.data[MEMORY_KEY] = decode_value(memory)
-    ctx.data['_state'] = data
-
     query = update.callback_query
     assert query is not None
 
-    async def edit_callback_message(spec: MessageSpec) -> None:
+    async def edit_callback_message(spec: MessageSpec):
         text, parse_mode, markup = spec
         try:
             if query.inline_message_id:
-                await try_send_text(
+                return await try_send_text(
                     ctx_.bot.edit_message_text,
                     text,
                     inline_message_id=query.inline_message_id,
@@ -772,7 +780,7 @@ async def handle_render_callback(
             else:
                 assert update.effective_chat is not None
                 assert query.message is not None
-                await try_send_text(
+                return await try_send_text(
                     ctx_.bot.edit_message_text,
                     text,
                     chat_id=update.effective_chat.id,
@@ -784,7 +792,21 @@ async def handle_render_callback(
             if 'Message is not modified' not in str(e):
                 raise
 
-    await ctx.render(text, path, update_callback=edit_callback_message)
+    ctx = RenderContext(
+        update,
+        flags,
+        doc_id=doc_id,
+        callback_data=data,
+        path=path,
+        update_callback=edit_callback_message,
+    )
+    if clicked_button is not None:
+        ctx.data[BUTTON_KEY] = clicked_button
+    if memory is not None:
+        ctx.data[MEMORY_KEY] = decode_value(memory)
+    ctx.data['_state'] = data
+
+    await ctx.render(text)
 
 
 def _report(
