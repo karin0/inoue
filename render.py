@@ -17,11 +17,12 @@ from telegram.ext import ContextTypes
 from telegram.error import BadRequest
 from telegram.constants import ReactionEmoji
 
+from db import db
 from util import (
-    MAX_TEXT_LENGTH,
     USER_ID,
     DOC_SEARCH_PATH,
     log,
+    is_debug,
     get_msg_arg,
     get_msg_url,
     reply_text,
@@ -29,18 +30,14 @@ from util import (
     shorten,
     truncate_text,
     escape,
-    html_escape,
-    pre_block,
-    pre_block_raw,
-    blockquote_block,
     cleanup_text,
     do_notify,
     encode_chat_id,
     serialized,
 )
-from db import db
+from segments import Element, Segment, Pre, Time, BlockQuote, Formatter, render_segment
 from render_core import Engine, Value
-from render_bridge import Bridge
+from render_bridge import Bridge, to_segment
 from render_context import OverriddenDict, encode_value, decode_value
 
 # '/' is kept for compatibility, which was used for '-'.
@@ -331,7 +328,7 @@ class RenderContext:
             return r
 
     # Exposed as a callback to Bridge, used for `edit_message`.
-    async def _update_text(self, text: str) -> int | None:
+    async def _update_text(self, text: Segment) -> int | None:
         if self._update_callback is None:
             log.info('_update_text: no update_callback')
             return
@@ -357,11 +354,18 @@ class RenderContext:
             self._first_doc_id = row[0]
         return row[1]
 
-    def render_text(self, text: str) -> str:
-        result = self.engine.render(text)
+    def render_text(self, text: str) -> Segment:
+        val = self.engine.render_value(text)
+        log.debug('render_text: %r', val)
+        result = to_segment(val)
         self._render_time = int(time.time())
 
-        log.info('rendered %d -> %d (%s)', len(text), len(result), self._first_doc_id)
+        log.info(
+            'rendered %d -> %s (%s)',
+            len(text),
+            type(result).__name__,
+            self._first_doc_id,
+        )
         if self._first_doc_id is None:
             self._first_doc_id = self._default_doc_id
 
@@ -374,88 +378,100 @@ class RenderContext:
         rendered = self.render_text(text)
         return await self.to_response(rendered)
 
-    async def to_response(self, rendered: str) -> MessageSpec:
-        ctx = self.data
-        result = rendered or '[empty]'
-        if get_env_flag(self.data, 'cleanup', True):
-            result = cleanup_text(result)
-
-        as_md = bool(get_env_flag(ctx, 'md'))
-        spec = self._format_response(result, as_md=as_md)
+    async def to_response(self, rendered: Segment) -> MessageSpec:
+        spec = self._format_response(rendered)
         if self._update_callback is not None:
             await self._invoke_update_callback(spec)
         return spec
 
-    def _format_response(
-        self,
-        result: str,
-        as_md: bool,
-    ) -> MessageSpec:
+    def _format_response(self, seg: Segment) -> MessageSpec:
+        log.debug('_format_response: %r', seg)
         ctx = self.data
+        do_cleanup = get_env_flag(ctx, 'cleanup', True)
+
+        if not seg:
+            seg = '[empty]'
+            text_only = True
+        elif isinstance(seg, str):
+            if do_cleanup:
+                seg = cleanup_text(seg)
+            text_only = True
+        else:
+            text_only = False
+
+        if get_env_flag(ctx, 'fold'):
+            seg = BlockQuote(seg, expandable=True)
+        elif get_env_flag(ctx, 'pre', True) and text_only:
+            seg = Pre(seg)
+
+        fmt = Formatter()
+        if not (
+            fmt.try_extend(seg)
+            if isinstance(seg, (list, tuple))
+            else fmt.try_append(seg)
+        ):
+            log.info('_format_response: segment overflow: %r', seg)
+
+        if not fmt.length:
+            fmt.append('[empty?]')
 
         if errors := self.engine.errors:
-            result += f'\n\n---\n\n' + '\n'.join(errors)
+            fmt.try_append('\n\n---\n')
+            for e in errors:
+                fmt.try_push('\n', e)
 
-        result = truncate_text(result)
         if ret := make_markup(self._path, self):
             markup, current_state = ret
         else:
             markup = current_state = None
 
-        parse_mode = None
-        if not errors:
-            if as_md:
-                parse_mode = 'MarkdownV2'
-                do_escape = escape
-            elif get_env_flag(ctx, 'html'):
-                parse_mode = 'HTML'
-                do_escape = html_escape
-            elif get_env_flag(ctx, 'fold'):
-                result, parse_mode = blockquote_block(result)
-                do_escape = html_escape
-            elif get_env_flag(ctx, 'pre', True):
-                result, parse_mode = pre_block(result)
-                do_escape = escape
-                as_md = True
-            else:
-                do_escape = lambda x: x[1 / 0]
+        footers = []
 
-            if parse_mode:
-                footers = []
+        if footer := get_env(ctx, 'footer'):
+            footers.append(to_segment(footer))
 
-                if footer := get_env(ctx, 'footer'):
-                    footers.append(do_escape(str(footer)))
+        if get_env_flag(ctx, 'show_state', True) and current_state:
+            footers.append(current_state)
 
-                if get_env_flag(ctx, 'show_state', True) and current_state:
-                    footers.append(do_escape(current_state))
+        if get_env_flag(ctx, 'show_source') and (source := self.engine.get_doc_text()):
+            footers.append(Pre(source, lang='c'))
 
-                if as_md:
-                    if get_env_flag(ctx, 'show_source') and (
-                        source := self.engine.get_doc_text()
-                    ):
-                        footers.append(pre_block_raw(source, lang='c'))
+        if get_env_flag(ctx, 'show_stats', True) and (unix := self._render_time):
+            gas = self.engine.gas_used()
+            seg = (
+                Time(str(unix), unix, format='wdt'),
+                ' (',
+                Time('now', unix, format='r'),
+                f') | {gas}',
+            )
+            footers.append(seg)
 
-                    if get_env_flag(ctx, 'show_stats', True) and (
-                        unix := self._render_time
-                    ):
-                        gas = self.engine.gas_used()
-                        footers.append(
-                            rf'![{unix}](tg://time?unix={unix}&format=wdt) \(![now](tg://time?unix={unix}&format=r)\) \| {gas}'
-                        )
+        if footers:
+            is_first = True
+            ends_with_block = fmt.segments and isinstance(
+                fmt.segments[-1], (Pre, BlockQuote)
+            )
+            for part in footers:
+                if not (is_first and ends_with_block):
+                    fmt.try_append('\n')
+                fmt.try_append(part)
+                is_first = False
 
-                if footers:
-                    is_first = True
-                    for part in footers:
-                        if not (
-                            is_first
-                            and (result.endswith('>') or result.endswith('```'))
-                        ):
-                            part = '\n' + part
-                        if len(result) + len(part) <= MAX_TEXT_LENGTH:
-                            result += part
-                        else:
-                            break
-                        is_first = False
+        if get_env_flag(ctx, 'plain'):
+            result = fmt.plain()
+            parse_mode = None
+        elif get_env_flag(ctx, 'html'):
+            result = fmt.html()
+            parse_mode = 'HTML'
+        else:
+            result = fmt.md()
+            parse_mode = 'MarkdownV2'
+
+        if do_cleanup:
+            result = cleanup_text(result)
+
+        if is_debug:
+            log.debug('_format_response: final: %r\n%s', fmt.segments, result)
 
         return result, parse_mode, markup
 
@@ -507,7 +523,7 @@ def is_doc_ref(text: str) -> tuple[str, tuple[int, str]] | tuple[None, str] | No
         return ':' + doc_name, row
 
 
-preview_cache: dict[int, tuple[RenderContext, str, str]] = {}
+preview_cache: dict[int, tuple[RenderContext, str, Segment]] = {}
 
 
 async def handle_render_group(msg: Message, origin_id: int):
@@ -554,7 +570,7 @@ async def handle_render_inline_query(update: Update, query: InlineQuery, text: s
     rendered = ctx.render_text(text)
     result, parse_mode, markup = await ctx.to_response(rendered)
 
-    if rendered := rendered.strip():
+    if rendered := render_segment(rendered).strip():
         p = 50
         left_chars = len(rendered) - p * 2
         title = (

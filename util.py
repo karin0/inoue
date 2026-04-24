@@ -425,12 +425,6 @@ def pre_block_raw(s: str, *, lang: str = '') -> str:
     return f'```{lang}\n{escape_pre(s)}\n```'
 
 
-def blockquote_block(s: str) -> Content:
-    if len(s) <= MAX_TEXT_LENGTH:
-        return '<blockquote expandable>' + html_escape(s) + '</blockquote>', 'HTML'
-    return truncate_text(s), None
-
-
 reg_cleanup = re.compile(r'\n{3,}')
 reg_cleanup_pre = re.compile(r'^```\n+(.+?)\n+```$', re.DOTALL | re.MULTILINE)
 

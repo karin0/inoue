@@ -8,10 +8,11 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Coroutine, cast
 from collections.abc import MutableMapping
 
-from render_core import Box, Value
+from render_core import Box, Value, Fragment, to_str
 
-from util import log, escape, html_escape, pre_block_raw, cleanup_text
+from util import log, escape, html_escape, cleanup_text
 from motto import hitokoto
+from segments import Bold, Raw, Segment, Element, Style, Pre, Code, Underline
 
 
 async def _run[T](coro: Awaitable[T]) -> T | None:
@@ -51,6 +52,50 @@ class Promise[T: Value | None](Box):
         return f'<Promise task={self._task!r}>'
 
 
+def to_segment(val: Value | None) -> Segment:
+    if val is None:
+        return ''
+
+    if isinstance(val, Element):
+        return val
+
+    if isinstance(val, Fragment):
+        out = []
+        parts = []
+        for v in val.flatten():
+            if s := to_segment(v):
+                # Exclude empty strings and sequences.
+                if isinstance(s, str):
+                    # Join consecutive strings.
+                    parts.append(s)
+                else:
+                    if parts:
+                        out.append(''.join(parts))
+                        parts.clear()
+                    if isinstance(s, Element):
+                        out.append(s)
+                    else:
+                        log.error(
+                            'to_segment: unexpected sequence from flattened Fragment: %r',
+                            s,
+                        )
+                        out.extend(s)
+        if parts:
+            out.append(''.join(parts))
+
+        if len(out) == 1:
+            return out[0]
+        return out or ''
+
+    return to_str(val)
+
+
+def create_style[T: Element](
+    text: Value | None, factory: Callable[[Segment], T]
+) -> T | str:
+    return factory(seg) if (seg := to_segment(text)) else ''
+
+
 _PUBLIC: set[str] = set()
 _TRUSTED: set[str] = set()
 
@@ -69,7 +114,7 @@ class Bridge(Box):
     def __init__(
         self,
         ctx: MutableMapping[str, Value],
-        update_text: Callable[[str], Awaitable[Value | None]],
+        update_text: Callable[[Segment], Awaitable[Value | None]],
         trusted: int | None = None,
     ) -> None:
         super().__init__()
@@ -139,7 +184,8 @@ class Bridge(Box):
 
     @trusted
     def edit_message(self, text) -> Promise:
-        return Promise(self._update_text(str(text)))
+        log.debug('Bridge: edit_message: %r', text)
+        return Promise(self._update_text(to_segment(text)))
 
     @trusted
     def communicate(self, cmd: str, input: str | None = None) -> Promise[ProcessResult]:
@@ -162,12 +208,25 @@ class Bridge(Box):
         return html_escape(str(text))
 
     @public
-    def pre(self, text) -> str:
-        return pre_block_raw(str(text))
+    def pre(self, text) -> Pre | str:
+        return create_style(text, Pre)
 
     @public
-    def mono(self, text) -> str:
-        return f'`{escape(str(text))}`'
+    def code(self, text) -> Style | str:
+        return create_style(text, Code)
+
+    @public
+    def bold(self, text) -> Style | str:
+        return create_style(text, Bold)
+
+    @public
+    def underline(self, text) -> Style | str:
+        return create_style(text, Underline)
+
+    @public
+    def raw(self, text) -> Raw | str:
+        text = str(text)
+        return Raw(text) if text else ''
 
     @public
     def cleanup(self, text) -> str:
