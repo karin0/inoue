@@ -21,8 +21,6 @@ from util import (
     MAX_TEXT_LENGTH,
     USER_ID,
     DOC_SEARCH_PATH,
-    RENDER_REDIRECT_FILE,
-    RENDER_REDIRECT_HOOK,
     log,
     get_msg_arg,
     get_msg_url,
@@ -35,6 +33,7 @@ from util import (
     pre_block,
     pre_block_raw,
     blockquote_block,
+    cleanup_text,
     do_notify,
     encode_chat_id,
     serialized,
@@ -257,70 +256,8 @@ def make_markup(
     return InlineKeyboardMarkup(rows), current_data
 
 
-reg_cleanup = re.compile(r'\n{3,}')
-reg_cleanup_pre = re.compile(r'^```\n+(.+?)\n+```$', re.DOTALL | re.MULTILINE)
-
-
-def repl_cleanup_pre(m: re.Match) -> str:
-    return '```\n' + m.group(1).strip() + '\n```'
-
-
 type MessageSpec = tuple[str, str | None, InlineKeyboardMarkup | None]
 type UpdateCallback = Callable[[MessageSpec], Awaitable[Message | bool | None]]
-
-
-async def _collect_redirect_hook_result(text: str, res: list[str]) -> str:
-    assert RENDER_REDIRECT_HOOK is not None
-    hook = RENDER_REDIRECT_HOOK
-
-    t0 = time.monotonic()
-    proc = await asyncio.create_subprocess_shell(
-        hook,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-
-    timeout = None
-    try:
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(text.encode('utf-8')), timeout=10
-        )
-    except asyncio.TimeoutError:
-        timeout = 'timed out'
-        proc.terminate()
-        try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=5)
-        except asyncio.TimeoutError:
-            timeout = 'timed out to terminate and was killed'
-            proc.kill()
-            stdout, stderr = await proc.communicate()
-
-    dt = time.monotonic() - t0
-    elapsed = escape(f'{dt:.2f}s' if dt >= 1 else f'{int(dt * 1000)}ms')
-    status = escape(str(proc.returncode))
-    res = ['\n'.join(res)]
-
-    if timeout:
-        res.append(
-            f'\nRedirection `{escape(hook)}` {timeout} in {elapsed}, status {status}'
-        )
-    else:
-        res.append(
-            f'\nRedirected {len(text)} chars to hook `{escape(hook)}` in {elapsed}'
-        )
-        if status:
-            res.append(f', status {status}')
-
-    if out := stdout.decode('utf-8', 'replace').strip():
-        res.append(f'\nstdout:\n{pre_block_raw(out)}')
-
-    if err := stderr.decode('utf-8', 'replace').strip():
-        if not out:
-            res.append('\n')
-        res.append(f'stderr:\n{pre_block_raw(err)}')
-
-    return ''.join(res)
 
 
 class RenderContext:
@@ -436,52 +373,13 @@ class RenderContext:
         rendered = self.render_text(text)
         return await self.to_response(rendered)
 
-    async def to_response(self, result: str) -> MessageSpec:
+    async def to_response(self, rendered: str) -> MessageSpec:
         ctx = self.data
-        result = result or '[empty]'
+        result = rendered or '[empty]'
+        if get_env_flag(self.data, 'cleanup', True):
+            result = cleanup_text(result)
 
-        if get_env_flag(ctx, 'cleanup', True):
-            result = reg_cleanup.sub('\n\n', result)
-            result = reg_cleanup_pre.sub(repl_cleanup_pre, result)
-
-        if self._trusted and (spec := get_env_flag(ctx, 'redirect')):
-            res = []
-            as_md = True
-
-            if isinstance(spec, str):
-                has_file = 'file' in spec.lower()
-                has_hook = 'hook' in spec.lower()
-            else:
-                has_file = has_hook = True
-
-            if has_file and RENDER_REDIRECT_FILE:
-                log.info(
-                    'Redirecting %d chars to %s', len(result), RENDER_REDIRECT_FILE
-                )
-                with open(RENDER_REDIRECT_FILE, 'w', encoding='utf-8') as fp:
-                    fp.write(result)
-                res.append(
-                    f'Redirected {len(result)} chars to `{escape(RENDER_REDIRECT_FILE)}`'
-                )
-
-            if has_hook and RENDER_REDIRECT_HOOK:
-                log.info(
-                    'Redirecting %d chars to hook %s', len(result), RENDER_REDIRECT_HOOK
-                )
-                result = await self._redirect_hook(result, res)
-            elif res:
-                result = '\n'.join(res)
-            else:
-                size = len(result)
-                header = f'Requested redirection for {size} chars without available destination\\.\n'
-                p = 200
-                if size > 2 * p:
-                    result = f'{header}{pre_block_raw(result[:p])}\\[{size - 2 * p} chars\\]\n{pre_block_raw(result[-p:])}'
-                else:
-                    result = header + pre_block_raw(result)
-        else:
-            as_md = bool(get_env_flag(ctx, 'md'))
-
+        as_md = bool(get_env_flag(ctx, 'md'))
         spec = self._format_response(result, as_md=as_md)
         if self._update_callback is not None:
             await self._invoke_update_callback(spec)
@@ -559,35 +457,6 @@ class RenderContext:
                         is_first = False
 
         return result, parse_mode, markup
-
-    async def _redirect_hook(
-        self,
-        result: str,
-        res: list[str],
-    ) -> str:
-        if self._update_callback is None:
-            return await _collect_redirect_hook_result(result, res)
-
-        event = asyncio.Event()
-
-        async def send_placeholder():
-            assert RENDER_REDIRECT_HOOK is not None
-            try:
-                await asyncio.wait_for(event.wait(), timeout=0.01)
-            except asyncio.TimeoutError:
-                text = (
-                    '\n'.join(res)
-                    + f'\nRedirecting {len(result)} chars to hook `{escape(RENDER_REDIRECT_HOOK)}` \\.\\.\\.'
-                )
-                spec = self._format_response(text, as_md=True)
-                await self._invoke_update_callback(spec)
-
-        placeholder_task = asyncio.create_task(send_placeholder())
-        try:
-            return await _collect_redirect_hook_result(result, res)
-        finally:
-            event.set()
-            await placeholder_task
 
 
 REG_DOC_REF = re.compile(r'[*:]\s*(\w+)\s*;')

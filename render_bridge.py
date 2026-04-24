@@ -10,7 +10,7 @@ from collections.abc import MutableMapping
 
 from render_core import Box, Value
 
-from util import escape, escape_pre, html_escape, log
+from util import log, escape, html_escape, pre_block_raw, cleanup_text
 from motto import hitokoto
 
 
@@ -131,6 +131,14 @@ class Bridge(Box):
         return sys.version
 
     @trusted
+    def write_file(self, path, text) -> None:
+        if not isinstance(path, str):
+            raise TypeError(f'write_file: path must be a str, got {path!r}')
+
+        with open(path, 'w', encoding='utf-8') as fp:
+            fp.write(str(text))
+
+    @trusted
     def edit_message(self, text) -> Promise:
         return Promise(self._update_text(str(text)))
 
@@ -155,8 +163,16 @@ class Bridge(Box):
         return html_escape(str(text))
 
     @public
-    def escape_pre(self, text) -> str:
-        return escape_pre(str(text))
+    def pre(self, text) -> str:
+        return pre_block_raw(str(text))
+
+    @public
+    def mono(self, text) -> str:
+        return f'`{escape(str(text))}`'
+
+    @public
+    def cleanup(self, text) -> str:
+        return cleanup_text(str(text))
 
     @public
     def hitokoto(self):

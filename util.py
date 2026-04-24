@@ -1,4 +1,5 @@
 import os
+import re
 import asyncio
 import logging
 import traceback
@@ -36,9 +37,6 @@ DB_FILE = os.environ.get('DB_FILE', ME_LOWER + '.db')
 
 if DOC_SEARCH_PATH := os.environ.get('DOC_SEARCH_PATH'):
     DOC_SEARCH_PATH = tuple(d.strip() for d in DOC_SEARCH_PATH.split(':'))
-
-RENDER_REDIRECT_FILE = os.environ.get('RENDER_REDIRECT_FILE')
-RENDER_REDIRECT_HOOK = os.environ.get('RENDER_REDIRECT_HOOK')
 
 MAX_TEXT_LENGTH = MessageLimit.MAX_TEXT_LENGTH
 
@@ -431,6 +429,20 @@ def blockquote_block(s: str) -> Content:
     if len(s) <= MAX_TEXT_LENGTH:
         return '<blockquote expandable>' + html_escape(s) + '</blockquote>', 'HTML'
     return truncate_text(s), None
+
+
+reg_cleanup = re.compile(r'\n{3,}')
+reg_cleanup_pre = re.compile(r'^```\n+(.+?)\n+```$', re.DOTALL | re.MULTILINE)
+
+
+def repl_cleanup_pre(m: re.Match) -> str:
+    return '```\n' + m.group(1).strip() + '\n```'
+
+
+def cleanup_text(s: str) -> str:
+    s = reg_cleanup.sub('\n\n', s)
+    s = reg_cleanup_pre.sub(repl_cleanup_pre, s)
+    return s
 
 
 async def _keep_action(msg: Message, action: ChatAction):
