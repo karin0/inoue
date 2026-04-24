@@ -336,6 +336,7 @@ class RenderContext:
             log.info('_update_text: no update_callback')
             return
 
+        self._render_time = int(time.time())
         await self.to_response(text)
         if isinstance(r := self._update_callback_result, Message):
             log.debug('_update_text: %s', r)
