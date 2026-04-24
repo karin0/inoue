@@ -32,10 +32,12 @@ from .context import (
     trace,
     log,
     Value,
+    Fragment,
     Box,
     to_str,
     try_to_str,
     try_to_value,
+    trim_output,
     Context,
     ScopedContext,
     ContextCallbacks,
@@ -213,33 +215,36 @@ class Engine(Interpreter, ContextCallbacks):
     @overload
     def _gather_output[T](
         self,
-        out: list[Value],
         default: T = '',
         *,
+        out: list[Value] | None = None,
         as_str: Literal[False] = False,
-        trim: bool = False,
+        trim: int = False,
     ) -> Value | T: ...
 
     @overload
     def _gather_output[T](
         self,
-        out: list[Value],
         default: T = '',
         *,
+        out: list[Value] | None = None,
         as_str: Literal[True],
-        trim: bool = False,
+        trim: int = False,
     ) -> str | T: ...
 
     # The output implementation is responsible for filtering out any empty strings,
     # like in `_put` or `_unary_chain`.
     def _gather_output[T](
         self,
-        out: list[Value],
         default: T = '',
         *,
+        out: list[Value] | None = None,
         as_str: bool = False,
-        trim: bool = False,
+        trim: int = False,
     ) -> Value | T:
+        if out is None:
+            out = self._output
+
         match len(out):
             case 0:
                 return default
@@ -248,21 +253,25 @@ class Engine(Interpreter, ContextCallbacks):
                 val = out[0]
                 if as_str:
                     val = to_str(val)
-                    return self._trim_output(val) if trim else val
-                elif trim and isinstance(val, str):
-                    return self._trim_output(val)
+                    return trim_output(val, trim is True) if trim else val
                 else:
-                    return val
+                    return self._trim_value(val, trim)
             case _:
-                val = ''.join(to_str(x) for x in out)
-                return self._trim_output(val) if trim else val
+                if as_str:
+                    val = ''.join(to_str(x) for x in out)
+                    return trim_output(val, trim is True) if trim else val
 
-    def _trim_output(self, s: str) -> str:
-        r = s.lstrip()
-        s = r.rstrip()
-        if len(s) != len(r) and s and r.find('\n', len(s)) >= 0:
-            return s + '\n'
-        return s
+                val = Fragment.create(out)
+                return self._trim_value(val, trim)
+
+    @staticmethod
+    def _trim_value(val: Value, trim: int) -> Value:
+        if trim:
+            if isinstance(val, str):
+                return trim_output(val, trim is True)
+            if isinstance(val, Fragment):
+                return val._trim(trim is True)
+        return val
 
     def _render_tree(self, tree: Tree, fragment: str, root: bool):
         # Entry of the syntax: '{ ... }', or '...;' in a single line.
@@ -400,19 +409,33 @@ class Engine(Interpreter, ContextCallbacks):
             self._error('unclosed if clause')
         trace('Rendered result: %r', self._output)
 
-    def render(self, text: str) -> str:
+    def _trace_result(self, r: Value):
+        trace('Final rendered result: %r\nGas cost: %s', r, self._gas)
+        for k, v in self._ctx.items():
+            trace('%s = %s', k, v)
+
+    def _render_root(self, text: str):
         self._doc_text = text = text.strip()
+
         # Internal document expansion does not trim spaces.
         try:
             self._render(text, root=True)
         except Abort:
             trace('Rendering aborted.')
-        r = self._gather_output(self._output, as_str=True)
+
+    def render(self, text: str) -> str:
+        self._render_root(text)
+        r = self._gather_output(as_str=True, trim=2)
         if is_tracing:
-            trace('Final rendered result: %r\nGas cost: %s', r, self._gas)
-            for k, v in self._ctx.items():
-                trace('%s = %s', k, v)
-        return r.strip()  # type: ignore
+            self._trace_result(r)
+        return r
+
+    def render_value(self, text: str) -> Value:
+        self._render_root(text)
+        r = self._gather_output(trim=2)
+        if is_tracing:
+            self._trace_result(r)
+        return r
 
     MAX_DEBUG_DEPTH = 2 if is_not_quiet else 1
 
@@ -981,7 +1004,7 @@ class Engine(Interpreter, ContextCallbacks):
                     trace('unary_chain (captured): %r', val)
                     if val != '':
                         out.append(val)
-                return self._gather_output(out, as_str=as_str)
+                return self._gather_output(out=out, as_str=as_str)
 
             case 'assign_or_equal':
                 return self._equal(ch, allow_undef=allow_undef)
@@ -1001,7 +1024,7 @@ class Engine(Interpreter, ContextCallbacks):
 
                 with self._push():
                     self._run_block(inner)
-                    return self._gather_output(self._output, as_str=as_str)
+                    return self._gather_output(as_str=as_str)
 
             case 'subscript':
                 key = self._subscript(ch)
@@ -1247,7 +1270,7 @@ class Engine(Interpreter, ContextCallbacks):
         trace('_doc_ref: Rendering doc: %s', key)
         with self._push():
             self._render(doc)
-            return self._gather_output(self._output, trim=True)
+            return self._gather_output(trim=True)
 
     def _create_block_env(
         self, sub_doc: SubDoc, args: tuple, kwargs: dict[str, Any]
@@ -1308,7 +1331,7 @@ class Engine(Interpreter, ContextCallbacks):
             # Recursive boxed calls are still bounded by `MAX_DEPTH`.
             with self._push():
                 self._run_block(sub_doc.tree, env=env)
-                return self._gather_output(self._output, default=default, trim=trim)
+                return self._gather_output(default=default, trim=trim)
         finally:
             if scope is not None:
                 self._scope.pop()

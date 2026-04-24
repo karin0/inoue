@@ -7,7 +7,7 @@ import functools
 from datetime import datetime
 from abc import ABC, abstractmethod
 from collections.abc import MutableMapping
-from typing import Any, Callable, Literal, TypeGuard, overload
+from typing import Any, Callable, Literal, Sequence, TypeGuard, Iterable, overload
 
 from simpleeval import SimpleEval, DEFAULT_FUNCTIONS, DISALLOW_FUNCTIONS
 
@@ -98,6 +98,93 @@ EVAL_FUNCS = {
     'today': today_func,
     'len': len,
 }
+
+
+class Fragment(Box):
+    def __init__(self, inner: list[Value]):
+        # Join all consecutive strings.
+        self.inner = inner
+
+    @staticmethod
+    def create(inner: Sequence[Value]) -> Fragment | str:
+        new = []
+        parts = []
+        for x in inner:
+            if isinstance(x, str):
+                parts.append(x)
+            else:
+                if parts:
+                    new.append(''.join(parts))
+                    parts.clear()
+                new.append(x)
+
+        if parts:
+            new.append(''.join(parts))
+
+        if len(new) == 1:
+            return new[0]
+        return Fragment(new) if new else ''
+
+    def __str__(self) -> str:
+        return ''.join(to_str(x) for x in self.inner)
+
+    def __repr__(self) -> str:
+        return f'Fragment({self.inner!r})'
+
+    # Pretend to be a string in `simpleeval` to keep us transparent.
+    def __add__(self, other) -> str:
+        return str(self) + to_str(other)
+
+    def __radd__(self, other) -> str:
+        return to_str(other) + str(self)
+
+    def flatten(self) -> Iterable[Value]:
+        for x in self.inner:
+            if isinstance(x, Fragment):
+                yield from x.flatten()
+            else:
+                yield x
+
+    def _trim(self, keep_newline: bool = True) -> Fragment | str:
+        '''Similar to `trim_output`.'''
+        if not (items := list(self.flatten())):
+            return ''
+
+        start = 0
+        while start < len(items) and isinstance(x := items[start], str):
+            if x.isspace():
+                start += 1
+            else:
+                items[start] = x.lstrip()
+                break
+
+        end = len(items)
+        newline = not keep_newline
+        while end > start and isinstance(x := items[end - 1], str):
+            if x.isspace():
+                end -= 1
+                newline = newline or '\n' in x
+            else:
+                items[end - 1] = t = x.rstrip()
+                newline = newline or x.find('\n', len(t)) >= 0
+                break
+
+        if (out := items[start:end]) and newline and keep_newline:
+            out.append('\n')
+
+        return Fragment.create(out)
+
+
+def trim_output(s: str, keep_newline: bool = True) -> str:
+    '''Trim leading and trailing whitespace, but may keep a line break if the trailing whitespaces contain any.'''
+    if not keep_newline:
+        return s.strip()
+
+    r = s.lstrip()
+    s = r.rstrip()
+    if len(s) != len(r) and s and r.find('\n', len(s)) >= 0:
+        return s + '\n'
+    return s
 
 
 class ScopeProxy:
