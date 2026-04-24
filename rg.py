@@ -3,7 +3,6 @@ import asyncio
 import dataclasses
 import json
 import mmap
-import functools
 import itertools
 from typing import Iterable, Sequence
 from subprocess import DEVNULL, PIPE
@@ -17,64 +16,16 @@ from telegram import (
 from telegram.ext import ContextTypes
 
 from util import (
+    log,
     escape,
-    html_escape,
     get_msg_arg,
     get_deep_link_url,
     pre_block_raw,
     truncate_text,
     reply_text,
-    log,
-    notify,
     MAX_TEXT_LENGTH,
 )
-
-type Segment = Sequence['Segment'] | str | 'Style' | 'Link'
-
-
-@dataclasses.dataclass
-class Style:
-    inner: Segment
-    tag: str
-
-
-@dataclasses.dataclass
-class Link:
-    inner: Segment
-    url: str
-
-
-def get_length(s: Segment) -> int:
-    if isinstance(s, Style) or isinstance(s, Link):
-        return get_length(s.inner)
-    elif isinstance(s, str):
-        return len(s)
-    else:
-        return sum(get_length(item) for item in s)
-
-
-Bold = functools.partial(Style, tag='b')
-Underline = functools.partial(Style, tag='u')
-
-
-class Formatter:
-    def __init__(self):
-        self.segments: list[Segment] = []
-        self.length = 0
-        self.full = False
-
-    def try_append(self, seg: Segment) -> bool:
-        new_len = self.length + get_length(seg)
-        if new_len > MAX_TEXT_LENGTH:
-            self.full = True
-            if (t := MAX_TEXT_LENGTH - self.length) > 0:
-                self.segments.append('[truncated]'[:t])
-                self.length += min(t, 11)
-            return False
-        self.segments.append(seg)
-        self.length = new_len
-        return True
-
+from segments import Segment, Link, Bold, Underline, Formatter
 
 # >>> 2026-01-02 15:04:05 (1)
 SECTION_SEP = b'>>> 202'
@@ -170,7 +121,7 @@ class RGMatch:
                     Underline(Bold(kw)),
                     s[q:r] + pr,
                 ],
-                url=f'{i}_{j}_{k}',
+                url=get_deep_link_url(f'rg_{i}_{j}_{k}'),
             ),
             '\n',
         )
@@ -237,22 +188,6 @@ def push_query(q: RGQuery):
         r = len(QUERIES)
         QUERIES.append(q)
     return r
-
-
-def render_segment(seg: Segment, out: list[str]):
-    if isinstance(seg, Style):
-        out.append(f'<{seg.tag}>')
-        render_segment(seg.inner, out)
-        out.append(f'</{seg.tag}>')
-    elif isinstance(seg, Link):
-        out.append(f'<a href="{html_escape(get_deep_link_url("rg_" + seg.url))}">')
-        render_segment(seg.inner, out)
-        out.append('</a>')
-    elif isinstance(seg, str):
-        out.append(html_escape(seg))
-    else:
-        for item in seg:
-            render_segment(item, out)
 
 
 async def handle_rg_start(msg: Message, arg: str):
@@ -510,11 +445,7 @@ def render_query_menu(
     else:
         markup = None
 
-    parts = []
-    for seg in fmt.segments:
-        render_segment(seg, parts)
-    text = ''.join(parts)
-    return text, markup
+    return fmt.html(), markup
 
 
 async def handle_rg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
