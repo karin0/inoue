@@ -4,7 +4,7 @@ import json
 import random
 from typing import Iterable
 
-from util import truncate_text, log
+from util import truncate_text, log, is_debug
 
 
 def sentences() -> Iterable[str]:
@@ -28,9 +28,6 @@ def sentences() -> Iterable[str]:
                     yield s + '。'
 
 
-SENTENCES = tuple(truncate_text(s) for s in set(s for s in sentences() if len(s) > 5))
-
-
 def greeting() -> str:
     s = random.choice(SENTENCES)
     log.info('motto: %s', s)
@@ -47,10 +44,12 @@ def top(n=None):
     return ''.join(s for s, c in cnt().most_common(n) if c > 2)
 
 
-SENTENCES_BUNDLE_DIR = os.environ.get('SENTENCES_BUNDLE_DIR', '')
+def hitokoto_sentences():
+    sentences_dir = os.environ.get('SENTENCES_BUNDLE_DIR')
+    if not sentences_dir:
+        log.info('SENTENCES_BUNDLE_DIR unset, hitokoto sentences disabled')
+        return
 
-
-def hitokoto_sentences(sentences_dir: str):
     HITOKOTO_TYPES = os.environ.get('HITOKOTO_TYPES', '').strip()
     HITOKOTO_BANNED = os.environ.get('HITOKOTO_BANNED', '').strip()
     if HITOKOTO_BANNED:
@@ -92,9 +91,17 @@ def hitokoto_sentences(sentences_dir: str):
                 yield s
 
 
-if SENTENCES_BUNDLE_DIR:
-    HITOKOTO_SENTENCES = tuple(hitokoto_sentences(SENTENCES_BUNDLE_DIR))
-    log.info('Loaded %d hitokoto sentences', len(HITOKOTO_SENTENCES))
+if is_debug:
+    HITOKOTO_SENTENCES = SENTENCES = (__name__,)
+else:
+    HITOKOTO_SENTENCES = tuple(hitokoto_sentences())
+
+    SENTENCES = tuple(
+        truncate_text(s) for s in set(s for s in sentences() if len(s) > 5)
+    )
+    log.info(
+        'Loaded %d sentences, %d hitokotos', len(SENTENCES), len(HITOKOTO_SENTENCES)
+    )
 
 
 def hitokoto() -> str:
