@@ -5,7 +5,7 @@ import asyncio
 import subprocess
 
 from dataclasses import dataclass
-from typing import Awaitable, Callable, cast
+from typing import Any, Awaitable, Callable, Coroutine, cast
 from collections.abc import MutableMapping
 
 from render_core import Box, Value
@@ -19,11 +19,10 @@ async def _run[T](coro: Awaitable[T]) -> T | None:
         return await coro
     except Exception:
         log.exception('Promise: coroutine failed')
-        return None
 
 
 async def _chained[T, U](
-    prev: Awaitable[T], callback: Callable[[T], U | Awaitable[U]]
+    prev: Awaitable[T], callback: Callable[[T], U | Coroutine[Any, Any, U]]
 ) -> U:
     result = await prev
     log.debug('Promise: calling callback %r with result %r', callback, result)
@@ -40,7 +39,7 @@ class Promise[T: Value | None](Box):
         self._task = asyncio.create_task(_run(coro))
 
     def then[U: Value | None](
-        self, callback: Callable[[T | None], U | Awaitable[U]]
+        self, callback: Callable[[T | None], U | Coroutine[Any, Any, U]]
     ) -> Promise[U]:
         # `callback` is expected to be a `SubDoc` with a `scope`, so we can call
         # it safely while not rendering.
