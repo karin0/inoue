@@ -342,7 +342,7 @@ class RenderContext:
     def _doc_loader(self, name: str) -> str | None:
         row = db.get_doc(name)
         if row is None:
-            if self._trusted and DOC_SEARCH_PATH:
+            if self._trusted and DOC_SEARCH_PATH and os.path.basename(name) == name:
                 for d in DOC_SEARCH_PATH:
                     if os.path.isfile(
                         file := os.path.join(d, name + '.m')
