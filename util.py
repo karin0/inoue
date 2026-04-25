@@ -13,6 +13,7 @@ from contextvars import ContextVar
 from telegram import Message, Bot, MessageEntity, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction, MessageLimit
 from telegram.helpers import escape_markdown
+from telegram.error import BadRequest
 
 from db import db
 from context import *
@@ -278,14 +279,14 @@ async def try_send_text[**P, R](
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> R:
+    '''`parse_mode` must be specified via `kwargs` to enable the fallback.'''
     if not ('parse_mode' in kwargs or 'entities' in kwargs):
         return await func(text, *args, **kwargs)
 
     try:
         return await func(text, *args, **kwargs)
-    except Exception as e:
-        e = str(e)
-        if "Can't parse entities:" in e:
+    except BadRequest as e:
+        if "Can't parse entities:" in (e_str := str(e)):
             log.warning(
                 'try_send_text: falling back without entities: %s %s %s %s',
                 e,
@@ -293,7 +294,7 @@ async def try_send_text[**P, R](
                 args,
                 kwargs,
             )
-            new_text = truncate_text(str(e) + '\n' + text)
+            new_text = truncate_text(f'{e_str}\n{text}')
             kwargs.pop('parse_mode', None)
             kwargs.pop('entities', None)
             return await func(new_text, *args, **kwargs)
@@ -369,18 +370,6 @@ async def reply_text(
 
     assert isinstance(resp, Message)
     return resp
-
-
-def serialized[**P, R](
-    func: Callable[P, Awaitable[R]],
-) -> Callable[P, Awaitable[R]]:
-    lock = asyncio.Lock()
-
-    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-        async with lock:
-            return await func(*args, **kwargs)
-
-    return wrapper
 
 
 def shorten(s: str | None, limit: int = 30) -> str:

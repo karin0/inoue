@@ -5,6 +5,7 @@ import asyncio
 from typing import Container, Mapping, Callable, Awaitable, cast
 
 from telegram import (
+    CallbackQuery,
     InlineQuery,
     InlineQueryResultArticle,
     InputTextMessageContent,
@@ -33,9 +34,8 @@ from util import (
     cleanup_text,
     do_notify,
     encode_chat_id,
-    serialized,
 )
-from segments import Element, Segment, Pre, Time, BlockQuote, Formatter, render_segment
+from segments import Segment, Pre, Time, BlockQuote, Formatter, render_segment
 from render_core import Engine, Value
 from render_bridge import Bridge, to_segment
 from render_context import OverriddenDict, encode_value, decode_value
@@ -273,7 +273,6 @@ class RenderContext:
         self._callback_data = callback_data
         self.set_path(path)
         self.set_update_callback(update_callback)
-        self._update_callback_result = None
 
         overrides: dict[str, Value] = dict(flags) if flags is not None else {}
         source = None
@@ -319,24 +318,25 @@ class RenderContext:
         self._path = path
 
     def set_update_callback(self, callback: UpdateCallback | None) -> None:
-        self._update_callback = callback and serialized(callback)
+        self._update_callback = callback and (callback, asyncio.Lock())
 
     async def _invoke_update_callback(self, spec: MessageSpec) -> Message | bool | None:
         if self._update_callback is not None:
-            r = await self._update_callback(spec)
-            self._update_callback_result = r
-            return r
+            func, lock = self._update_callback
+            async with lock:
+                return await func(spec)
 
     # Exposed as a callback to Bridge, used for `edit_message`.
-    async def _update_text(self, text: Segment) -> int | None:
+    async def _update_text(self, seg: Segment) -> int | None:
         if self._update_callback is None:
             log.info('_update_text: no update_callback')
             return
 
         self._render_time = int(time.time())
-        await self.to_response(text)
-        if isinstance(r := self._update_callback_result, Message):
-            log.debug('_update_text: %s', r)
+        spec = self._format_response(seg)
+        r = await self._invoke_update_callback(spec)
+        log.debug('_update_text: %s', r)
+        if isinstance(r, Message):
             return r.message_id
 
     def _doc_loader(self, name: str) -> str | None:
@@ -590,9 +590,7 @@ async def handle_render_inline_query(update: Update, query: InlineQuery, text: s
     await query.answer((r,))
 
 
-async def handle_render_callback(
-    update: Update, ctx_: ContextTypes.DEFAULT_TYPE, data: str
-):
+async def handle_render_callback(update: Update, query: CallbackQuery, data: str):
     flags = {}
     clicked_button = None
 
@@ -649,31 +647,15 @@ async def handle_render_callback(
         case _:
             raise ValueError('bad render callback: ' + data)
 
-    query = update.callback_query
-    assert query is not None
-
     async def edit_callback_message(spec: MessageSpec):
         text, parse_mode, markup = spec
         try:
-            if query.inline_message_id:
-                return await try_send_text(
-                    ctx_.bot.edit_message_text,
-                    text,
-                    inline_message_id=query.inline_message_id,
-                    reply_markup=markup,
-                    parse_mode=parse_mode,
-                )
-            else:
-                assert update.effective_chat is not None
-                assert query.message is not None
-                return await try_send_text(
-                    ctx_.bot.edit_message_text,
-                    text,
-                    chat_id=update.effective_chat.id,
-                    message_id=query.message.message_id,
-                    reply_markup=markup,
-                    parse_mode=parse_mode,
-                )
+            return await try_send_text(
+                query.edit_message_text,
+                text,
+                parse_mode=parse_mode,
+                reply_markup=markup,
+            )
         except BadRequest as e:
             if 'Message is not modified' not in str(e):
                 raise

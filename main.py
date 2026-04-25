@@ -239,7 +239,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if data.startswith('rg_'):
             fut = handle_rg_callback(data)
         elif data[0] in CALLBACK_SPECIAL:
-            fut = handle_render_callback(update, ctx, data)
+            fut = handle_render_callback(update, callback, data)
         elif data != 'noop':
             log.warning('bad callback: %s', data)
     else:
