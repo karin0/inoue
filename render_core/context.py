@@ -6,8 +6,8 @@ import functools
 
 from datetime import datetime
 from abc import ABC, abstractmethod
-from collections.abc import MutableMapping
-from typing import Any, Callable, Literal, Sequence, TypeGuard, Iterable, overload
+from collections.abc import MutableMapping, Sequence
+from typing import Any, Callable, Iterator, Literal, TypeGuard, Iterable, overload
 
 from simpleeval import SimpleEval, DEFAULT_FUNCTIONS, DISALLOW_FUNCTIONS
 
@@ -25,6 +25,13 @@ class Box:
 
     def __repr__(self) -> str:
         return 'Box(...)'
+
+    # Pretend to be a string in `simpleeval` to keep us transparent.
+    def __add__(self, other) -> str:
+        return str(self) + to_str(other)
+
+    def __radd__(self, other) -> str:
+        return to_str(other) + str(self)
 
 
 # Allowed types for context values, as allowed by `simpleeval` by default (except None).
@@ -100,18 +107,49 @@ EVAL_FUNCS = {
 }
 
 
-class Fragment(Box):
-    def __init__(self, inner: list[Value]):
-        # Join all consecutive strings.
-        self.inner = inner
+class Fragment(Box, Sequence[Value]):
+    '''An immutable fragment of values.'''
 
-    @staticmethod
-    def create(inner: Sequence[Value]) -> Fragment | str:
+    def __init__(self, inner: list[Value]):
+        self._inner = inner
+        self._flattened = False
+
+    def __str__(self) -> str:
+        return ''.join(to_str(x) for x in self._flatten())
+
+    def __repr__(self) -> str:
+        return f'Fragment({self._flatten()!r})'
+
+    @overload
+    def __getitem__(self, index: int) -> Value: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> list[Value]: ...
+
+    def __getitem__(self, index: int | slice) -> Value | list[Value]:
+        return self._flatten()[index]
+
+    def __len__(self) -> int:
+        return len(self._flatten())
+
+    def __iter__(self) -> Iterator[Value]:
+        return iter(self._flatten())
+
+    def _flatten_inner(self) -> Iterable[Value]:
+        for x in self._inner:
+            if isinstance(x, Fragment):
+                yield from x._flatten_inner()
+            else:
+                yield x
+
+    def _flatten_copy(self) -> list[Value]:
+        # Join all consecutive strings.
         new = []
         parts = []
-        for x in inner:
+        for x in self._flatten_inner():
             if isinstance(x, str):
-                parts.append(x)
+                if x:
+                    parts.append(x)
             else:
                 if parts:
                     new.append(''.join(parts))
@@ -121,33 +159,17 @@ class Fragment(Box):
         if parts:
             new.append(''.join(parts))
 
-        if len(new) == 1:
-            return new[0]
-        return Fragment(new) if new else ''
+        return new
 
-    def __str__(self) -> str:
-        return ''.join(to_str(x) for x in self.inner)
+    def _flatten(self) -> list[Value]:
+        if not self._flattened:
+            self._inner = self._flatten_copy()
+            self._flattened = True
+        return self._inner
 
-    def __repr__(self) -> str:
-        return f'Fragment({self.inner!r})'
-
-    # Pretend to be a string in `simpleeval` to keep us transparent.
-    def __add__(self, other) -> str:
-        return str(self) + to_str(other)
-
-    def __radd__(self, other) -> str:
-        return to_str(other) + str(self)
-
-    def flatten(self) -> Iterable[Value]:
-        for x in self.inner:
-            if isinstance(x, Fragment):
-                yield from x.flatten()
-            else:
-                yield x
-
-    def _trim(self, keep_newline: bool = True) -> Fragment | str:
+    def _trim(self, keep_newline: bool = True) -> Value:
         '''Similar to `trim_output`.'''
-        if not (items := list(self.flatten())):
+        if not (items := self._flatten_copy()):
             return ''
 
         start = 0
@@ -172,7 +194,9 @@ class Fragment(Box):
         if (out := items[start:end]) and newline and keep_newline:
             out.append('\n')
 
-        return Fragment.create(out)
+        if len(out) == 1:
+            return out[0]
+        return Fragment(out) if out else ''
 
 
 def trim_output(s: str, keep_newline: bool = True) -> str:

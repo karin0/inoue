@@ -273,7 +273,7 @@ class Engine(Interpreter, ContextCallbacks):
                     val = ''.join(to_str(x) for x in out)
                     return trim_output(val, trim is True) if trim else val
 
-                val = Fragment.create(out)
+                val = Fragment(out)
                 return self._trim_value(val, trim)
 
     @staticmethod

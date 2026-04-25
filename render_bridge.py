@@ -62,24 +62,19 @@ def to_segment(val: Value | None) -> Segment:
     if isinstance(val, Fragment):
         out = []
         parts = []
-        for v in val.flatten():
-            if s := to_segment(v):
+        for v in val:
+            # Fragment is flattened when iterated, so returned seg must be either Element or str.
+            if s := cast(Element | str, to_segment(v)):
                 # Exclude empty strings and sequences.
                 if isinstance(s, str):
                     # Join consecutive strings.
-                    parts.append(s)
+                    if s:
+                        parts.append(s)
                 else:
                     if parts:
                         out.append(''.join(parts))
                         parts.clear()
-                    if isinstance(s, Element):
-                        out.append(s)
-                    else:
-                        log.error(
-                            'to_segment: unexpected sequence from flattened Fragment: %r',
-                            s,
-                        )
-                        out.extend(s)
+                    out.append(s)
         if parts:
             out.append(''.join(parts))
 
