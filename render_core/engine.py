@@ -189,6 +189,7 @@ class Engine(Interpreter, ContextCallbacks):
             '__file__': self.get_doc_text,
             'print': self._print_func,
             'exit': self._exit_func,
+            'eval': self._eval_func,
         }
         if funcs:
             eval_funcs.update(funcs)
@@ -1280,6 +1281,13 @@ class Engine(Interpreter, ContextCallbacks):
             return ''
 
         trace('_doc_ref: Rendering doc: %s', key)
+        with self._push():
+            self._render(doc)
+            return self._gather_output(trim=True)
+
+    def _eval_func(self, doc) -> Value:
+        trace('_eval_func: %s', doc)
+        doc = to_str(doc)
         with self._push():
             self._render(doc)
             return self._gather_output(trim=True)
