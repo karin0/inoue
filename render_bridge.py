@@ -239,6 +239,9 @@ class ProcessResult(Box):
     returncode: int | None
     elapsed: float
 
+    def __str__(self) -> str:
+        return self.stdout
+
 
 async def _communicate(cmd: str, input: str | None = None) -> ProcessResult:
     t0 = time.monotonic()
