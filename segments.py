@@ -77,9 +77,13 @@ class Pre(Element):
         out.append('\n```')
 
 
+# https://core.telegram.org/bots/api#markdownv2-style
 Bold = functools.partial(Style, tag='b', sym='*')
+Italic = functools.partial(Style, tag='i', sym='_')
 Underline = functools.partial(Style, tag='u', sym='__')
+Strikethrough = functools.partial(Style, tag='s', sym='~')
 Code = functools.partial(Style, tag='code', sym='`')
+Spoiler = functools.partial(Style, tag='tg-spoiler', sym='||')
 
 
 class Link(Element):
