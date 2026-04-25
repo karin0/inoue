@@ -753,3 +753,18 @@ async def handle_render_doc(update: Update, msg: Message):
         do_notify(res, 'MarkdownV2', quiet=True),
         set_reaction,
     )
+
+
+async def handle_ls(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg, arg = get_msg_arg(update)
+    keywords = arg.split()
+
+    if not (docs := tuple(db.find_docs(keywords))):
+        return await reply_text(msg, 'No docs found.')
+
+    lines = [rf'{len(docs)} docs:']
+    for id, name, length in docs:
+        line = rf'\- [*{escape(name)}*]({get_msg_url(id)}) \({id}, {length}\)'
+        lines.append(line)
+
+    await reply_text(msg, '\n'.join(lines), parse_mode='MarkdownV2')

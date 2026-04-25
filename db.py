@@ -1,7 +1,7 @@
 import os
 import atexit
 import logging
-from typing import Iterable, cast
+from typing import Iterable, Sequence, cast
 from sqlite3 import connect, Connection
 
 from context import is_sender_guest, ME_LOWER
@@ -121,6 +121,16 @@ class DataStore:
                 self.conn.execute('DELETE FROM Doc WHERE id = ?;', (id,))
 
         return row
+
+    def find_docs(self, kws: Sequence[str]) -> Iterable[tuple[int, str, int]]:
+        if kws:
+            cond = ' OR '.join('name LIKE ?' for _ in kws)
+            query = f'SELECT id, name, LENGTH(text) FROM Doc WHERE {cond} ORDER BY id;'
+            args = tuple(f'%{kw}%' for kw in kws)
+            yield from self.conn.execute(query, args)
+        else:
+            query = 'SELECT id, name, LENGTH(text) FROM Doc ORDER BY id;'
+            yield from self.conn.execute(query)
 
     def get(self, key: str, default: str | None = None) -> str | None:
         cursor = self.conn.execute('SELECT value FROM KV WHERE key = ?;', (key,))

@@ -28,7 +28,7 @@ from util import (
 )
 from db import db
 from context import Sender, get_sender
-from render import handle_render
+from render import handle_render, handle_ls
 from motto import greeting, hitokoto
 from ytdlp import handle_yt, handle_yta, handle_ytn
 from rg import handle_rg, handle_rg_start
@@ -212,6 +212,7 @@ handlers = (
     handle_def,
     handle_save,
     handle_playlist,
+    handle_ls,
 )
 
 permissive_handlers = (
