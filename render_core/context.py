@@ -207,10 +207,6 @@ class ContextCallbacks(ABC):
     def _consume_gas(self):
         pass
 
-    @abstractmethod
-    def _call_box(self, data, *args, **kwargs) -> Value | None:
-        pass
-
 
 class Context(MutableMapping[str, Value]):
     def setitem_with(self, key: str, val: Value, op: str) -> None:
@@ -359,8 +355,9 @@ class ScopedContext:
         elif isinstance(func_node, ast.Name):
             name = func_node.id
             func = self.get(name, allow_undef=True)
-            if isinstance(func, Box):
-                return self._cb._call_box(func, *args, **kwargs)
+            if isinstance(func, Box) and callable(func):
+                # A SubDoc.
+                return func(*args, **kwargs)
             func = self._funcs[name]
         else:
             raise NotImplementedError('unsupported call: ' + str(type(func_node)))

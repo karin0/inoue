@@ -139,7 +139,19 @@ class SubDoc(Box):
         return SubDoc(self.tree, self.params, self.engine, self.engine._scope.current())
 
     def __call__(self, *args, **kwargs) -> Value | None:
-        return self.engine._call_box(self, *args, **kwargs)
+        # Called from Python side.
+        if is_tracing:
+            assert self.tree.data == 'block_inner', self
+            trace(
+                'SubDoc called: @%s %s args=%s kwargs=%s',
+                self.scope,
+                self.engine.debug_node(self.tree),
+                args,
+                kwargs,
+            )
+
+        env = self.engine._create_block_env(self, args, kwargs)
+        return self.engine._call_subdoc(self, env, default=None)
 
     @override
     def __repr__(self) -> str:
@@ -1289,26 +1301,6 @@ class Engine(Interpreter, ContextCallbacks):
             for i, arg in enumerate(args):
                 kwargs.setdefault(str(i), arg)
         return kwargs
-
-    @override
-    def _call_box(self, sub_doc: Box, *args, **kwargs) -> Value | None:
-        if not isinstance(sub_doc, SubDoc):
-            self._error('bad box call')
-            return
-
-        tree = sub_doc.tree
-        assert tree.data == 'block_inner', tree
-        if is_tracing:
-            trace(
-                '_call_box: @%s %s args=%s kwargs=%s',
-                sub_doc.scope,
-                self.debug_node(tree),
-                args,
-                kwargs,
-            )
-
-        env = self._create_block_env(sub_doc, args, kwargs)
-        return self._call_subdoc(sub_doc, env, default=None)
 
     def _call_subdoc[T](
         self,
