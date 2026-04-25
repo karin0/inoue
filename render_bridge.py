@@ -5,14 +5,28 @@ import asyncio
 import subprocess
 
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Coroutine, cast
+from typing import Any, Awaitable, Callable, Concatenate, Coroutine, cast
 from collections.abc import MutableMapping
 
 from render_core import Box, Value, Fragment, to_str
 
 from util import log, escape, html_escape, cleanup_text
 from motto import hitokoto
-from segments import Bold, Raw, Segment, Element, Style, Pre, Code, Underline
+from segments import (
+    Segment,
+    Element,
+    Style,
+    Link,
+    Pre,
+    BlockQuote,
+    Raw,
+    Code,
+    Bold,
+    Italic,
+    Underline,
+    Strikethrough,
+    Spoiler,
+)
 
 
 async def _run[T](coro: Awaitable[T]) -> T | None:
@@ -85,10 +99,13 @@ def to_segment(val: Value | None) -> Segment:
     return to_str(val)
 
 
-def create_style[T: Element](
-    text: Value | None, factory: Callable[[Segment], T]
+def create_style[**P, T: Element](
+    text: Value | None,
+    factory: Callable[Concatenate[Segment, P], T],
+    *args: P.args,
+    **kwargs: P.kwargs,
 ) -> T | str:
-    return factory(seg) if (seg := to_segment(text)) else ''
+    return factory(seg, *args, **kwargs) if (seg := to_segment(text)) else ''
 
 
 _PUBLIC: set[str] = set()
@@ -207,6 +224,14 @@ class Bridge(Box):
         return create_style(text, Pre)
 
     @public
+    def quote(self, text, expandable=True) -> BlockQuote | str:
+        return create_style(text, BlockQuote, bool(expandable))
+
+    @public
+    def link(self, text, url) -> Link | str:
+        return create_style(text, Link, url)
+
+    @public
     def code(self, text) -> Style | str:
         return create_style(text, Code)
 
@@ -215,8 +240,20 @@ class Bridge(Box):
         return create_style(text, Bold)
 
     @public
-    def underline(self, text) -> Style | str:
+    def italic(self, text) -> Style | str:
+        return create_style(text, Italic)
+
+    @public
+    def uline(self, text) -> Style | str:
         return create_style(text, Underline)
+
+    @public
+    def strike(self, text) -> Style | str:
+        return create_style(text, Strikethrough)
+
+    @public
+    def spoiler(self, text) -> Style | str:
+        return create_style(text, Spoiler)
 
     @public
     def raw(self, text) -> Raw | str:
