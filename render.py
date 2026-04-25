@@ -467,6 +467,11 @@ class RenderContext:
             result = fmt.md()
             parse_mode = 'MarkdownV2'
 
+        if get_env_flag(ctx, 'raw'):
+            # Markup characters are counted in length when `parse_mode` is unset.
+            result = truncate_text(result)
+            parse_mode = None
+
         if do_cleanup:
             result = cleanup_text(result)
 
