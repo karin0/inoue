@@ -337,14 +337,12 @@ def render_page(
     query: RGQuery,
     idx: int,
     page_num: int = 0,  # must be an existing or next page ( `<= len(page_offsets)`)
-) -> Formatter:
+) -> str:
     if page_num == 0:
         offsets = (0, 0, 0)
     else:
         offsets = query.page_offsets[page_num - 1]
     *render_offset, total_offset = offsets
-
-    fmt = Formatter()
 
     # Each yield precedes the try_append for that match. The last yielded
     # offset is therefore the first unrendered match (the resume point for
@@ -359,10 +357,13 @@ def render_page(
     # will always point to (-1, -1, cnt).
     offset: tuple[int, int] = (-1, -1)
     total = total_offset - 1
-    for offset in itertools.islice(
-        query.render(fmt, idx, *render_offset), PAGE_LIMIT + 1
-    ):
-        total += 1
+
+    with Formatter(strict=True) as fmt:
+        for offset in itertools.islice(
+            query.render(fmt, idx, *render_offset), PAGE_LIMIT + 1
+        ):
+            total += 1
+        result = fmt.html()
 
     assert total >= total_offset
 
@@ -373,7 +374,7 @@ def render_page(
     else:
         assert query.page_offsets[page_num] == page_offset
 
-    return fmt
+    return result
 
 
 def button(text: str, callback_data: str = 'noop') -> InlineKeyboardButton:
@@ -445,7 +446,7 @@ def render_query_menu(
     else:
         markup = None
 
-    return fmt.html(), markup
+    return fmt, markup
 
 
 async def handle_rg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

@@ -1,4 +1,5 @@
 import functools
+from contextvars import ContextVar
 from typing import Callable, Sequence
 from abc import ABC, abstractmethod
 
@@ -178,10 +179,39 @@ class Raw(Element):
         out.append(self.inner)
 
 
+ctx_length_cache: ContextVar[dict[int, int] | None] = ContextVar(
+    'length_cache', default=None
+)
+
+
+def _to_length(s: Element | Sequence[Segment], cache: dict[int, int]) -> int:
+    '''Cache lengths for non-leaf segments.'''
+    # Use `id` so that lists can be cached.
+    # This means that the formatted lists must not be mutated in the same `Formatter` context.
+    id_s = id(s)
+    if (r := cache.get(id_s)) is not None:
+        return r
+
+    r = (
+        len(s)
+        if isinstance(s, Element)
+        else sum(
+            len(item) if isinstance(item, str) else _to_length(item, cache)
+            for item in s
+        )
+    )
+    cache[id_s] = r
+    return r
+
+
 def to_length(s: Segment) -> int:
-    if isinstance(s, (Element, str)):
+    if isinstance(s, str):
         return len(s)
-    return sum(to_length(item) for item in s)
+
+    if (cache := ctx_length_cache.get()) is not None:
+        return _to_length(s, cache)
+
+    return len(s) if isinstance(s, Element) else sum(to_length(item) for item in s)
 
 
 def to_html(seg: Segment, out: list[str]) -> None:
@@ -223,27 +253,80 @@ def render_segment(
 
 
 class Formatter:
-    def __init__(self) -> None:
+    def __init__(self, *, strict: bool = False) -> None:
         self.segments: list[Segment] = []
         self.length = 0
         self.full = False
+        self._best_effort = not strict
+
+    def __enter__(self):
+        self._token = ctx_length_cache.set({})
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        ctx_length_cache.reset(self._token)
+
+    def _append_best_effort(self, seg: Segment, budget: int):
+        '''Precondition: to_length(seg) > budget > 0'''
+        if isinstance(seg, str):
+            item = seg[:budget]
+            log.debug('_append_best_effort: %r (%d)', item, budget)
+            self.segments.append(item)
+            self.length += len(item)
+            return
+
+        if isinstance(seg, Element):
+            item = seg.inner
+            if (inc_len := to_length(item)) > budget:
+                return self._append_best_effort(item, budget)
+
+            log.debug('_append_best_effort: %r (%d)', item, budget)
+            self.segments.append(item)
+            self.length += inc_len
+            return
+
+        for item in seg:
+            if (inc_len := to_length(item)) > budget:
+                return self._append_best_effort(item, budget)
+
+            log.debug('_append_best_effort: %r (%d)', item, budget)
+            self.segments.append(item)
+            self.length += inc_len
+            budget -= inc_len
+            if budget <= 0:
+                break
 
     def try_append(self, seg: Segment) -> bool:
         if not seg:
             return True
 
+        if self.full:
+            return False
+
+        if self._best_effort and isinstance(seg, (list, tuple)):
+            return self.try_extend(seg)
+
         inc_len = to_length(seg)
         new_len = self.length + inc_len
-        if new_len > MAX_TEXT_LENGTH:
-            self.full = True
-            if (t := MAX_TEXT_LENGTH - self.length) > 0:
-                log.info(f'segment truncated: {seg!r} ({self.length} + {inc_len})')
-                self.segments.append('[truncated]'[:t])
-                self.length += min(t, 11)
-            return False
-        self.segments.append(seg)
-        self.length = new_len
-        return True
+        if new_len <= MAX_TEXT_LENGTH:
+            self.segments.append(seg)
+            self.length = new_len
+            return True
+
+        self.full = True
+        log.info(
+            'segment truncated: %r (%d + %d = %d)', seg, self.length, inc_len, new_len
+        )
+
+        if self._best_effort and (budget := MAX_TEXT_LENGTH - self.length - 2) > 0:
+            self._append_best_effort(seg, budget)
+
+        if (t := MAX_TEXT_LENGTH - self.length) > 0:
+            text = '[truncated]'[:t]
+            self.segments.append(text)
+            self.length += len(text)
+
+        return False
 
     def try_extend(self, segs: Sequence[Segment]) -> bool:
         for seg in segs:
