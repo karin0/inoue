@@ -52,13 +52,15 @@ commands: dict[str, tuple[Callable, bool]]
 
 
 def expand_template(template: str, args_str: str) -> str:
-    args = shlex.split(args_str) if args_str else []
+    args = None
 
     def replacer(m):
-        token = m.group(1)
-        if token == '*':
+        nonlocal args
+        if (token := m.group(1)) == '*':
             return args_str
         idx = int(token) - 1
+        if args is None:
+            args = shlex.split(args_str)
         return args[idx] if 0 <= idx < len(args) else ''
 
     return REG_TEMPLATE_ARG.sub(replacer, template)
