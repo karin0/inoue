@@ -2,7 +2,8 @@ import os
 import re
 import time
 import asyncio
-from typing import Container, Mapping, Callable, Awaitable, cast
+import itertools
+from typing import Container, Iterable, Mapping, Callable, Awaitable, cast
 
 from telegram import (
     CallbackQuery,
@@ -20,10 +21,10 @@ from telegram.constants import ReactionEmoji
 
 from db import db
 from util import (
+    MAX_TEXT_LENGTH,
     USER_ID,
     DOC_SEARCH_PATH,
     log,
-    is_debug,
     get_msg_arg,
     get_msg_url,
     reply_text,
@@ -35,7 +36,16 @@ from util import (
     do_notify,
     encode_chat_id,
 )
-from segments import Segment, Pre, Time, BlockQuote, Formatter, render_segment
+from segments import (
+    Segment,
+    Pre,
+    Time,
+    BlockQuote,
+    Formatter,
+    get_renderer,
+    render_segment,
+    to_length,
+)
 from render_core import Engine, Value
 from render_bridge import Bridge, to_segment
 from render_context import OverriddenDict, encode_value, decode_value
@@ -74,9 +84,7 @@ SPECIAL_KEYS = (MEMORY_KEY, BUTTON_KEY)
 BUTTON_PREFIX = ENV_PREFIX + 'btn' + '.'
 
 
-def get_env(
-    ctx: Mapping[str, Value], key: str, default: Value | None = None
-) -> Value | None:
+def get_env[T](ctx: Mapping[str, Value], key: str, default: T = None) -> Value | T:
     v = ctx.get(ENV_PREFIX + key)
     if v is None:
         v = ctx.get('_' + key)
@@ -85,7 +93,9 @@ def get_env(
     return v
 
 
-def get_env_flag(ctx: Mapping[str, Value], key: str, default: bool = False) -> Value:
+def get_env_flag[T](
+    ctx: Mapping[str, Value], key: str, default: T = False
+) -> Value | T:
     v = get_env(ctx, key)
     if v is None:
         return default
@@ -97,12 +107,11 @@ def get_env_flag(ctx: Mapping[str, Value], key: str, default: bool = False) -> V
 
 
 def make_markup(
-    path: str | None,
-    render_ctx: RenderContext,
-) -> tuple[InlineKeyboardMarkup, str | None] | None:
-    if not path:
-        return None
-
+    path: str,
+    ctx: Mapping[str, Value],
+    current_state: MarkupState | None,
+    doc_id: int | None,
+) -> tuple[InlineKeyboardMarkup | None, str | None]:
     # query data:
     #   ('-'|'+' <flag-key>)*
     #   ['!' <btn-key>]
@@ -110,14 +119,18 @@ def make_markup(
     #   <path-header: ':'|'#'|'`'> <path-body>
     # where '-' means 0, '+' means 1
 
+    if current_state is None:
+        state = current_data = None
+    else:
+        state, current_data = current_state
+
     size = len(path.encode('utf-8'))
-    if state := render_ctx.flags:
+    if state:
         size += sum(len(k.encode('utf-8')) for k in state.keys()) + len(state)
 
     if size > InlineKeyboardButton.MAX_CALLBACK_DATA:
-        return None
+        return None, None
 
-    ctx = render_ctx.data
     memory = ''
     if (val := ctx.get(MEMORY_KEY)) is not None and is_safe_mem(
         payload := encode_value(val)
@@ -129,7 +142,7 @@ def make_markup(
 
     # `state`, `memory` and `ctx[BUTTON_KEY]` defines the current state, while
     # `flags` and `buttons` defines the potential next states.
-    flags = {}
+    flags: dict[str, bool] = {}
     buttons = []
     for k, v in ctx.items():
         if len(btn_key := k.removeprefix(BUTTON_PREFIX)) != len(k):
@@ -159,15 +172,14 @@ def make_markup(
 
     log.debug('make_markup: flags %s state %s memory %r', flags, state, memory)
 
-    # The external state takes precedence even over `ctx.overrides`.
+    # The external state takes precedence even over `ctx.overrides`, but the existing
+    # buttons should occur before in the order.
     if state:
         flags.update(state)
 
-    doc_id = render_ctx._first_doc_id
     if doc_id is not None and not get_env_flag(ctx, 'ref', True):
         doc_id = None
 
-    current_data = render_ctx._callback_data
     if current_data == path:
         current_data = None
 
@@ -223,7 +235,7 @@ def make_markup(
             else:
                 del state[k]
 
-    log.debug('make_markup: final state %s (%s)', state, render_ctx._callback_data)
+    log.debug('make_markup: final state %s (%s)', state, current_data)
 
     if current_data:
         row.append(InlineKeyboardButton('🔄', callback_data=current_data))
@@ -232,7 +244,7 @@ def make_markup(
         row.append(InlineKeyboardButton('🔗', get_msg_url(doc_id)))
 
     if len(row) <= 1:
-        return None
+        return None, None
 
     row[0] = InlineKeyboardButton(
         ('⏪ ' if current_data else '🔄 ') + shorten(path[1:]), callback_data=path
@@ -255,30 +267,32 @@ def make_markup(
 
 type MessageSpec = tuple[str, str | None, InlineKeyboardMarkup | None]
 type UpdateCallback = Callable[[MessageSpec], Awaitable[Message | bool | None]]
+type MarkupState = tuple[dict[str, bool], str]
+
+OVERFLOWED_TEXT = '…\n'
 
 
 class RenderContext:
     def __init__(
         self,
         update: Update,
-        flags: dict[str, bool] | None = None,
+        overrides: dict[str, Value] | None = None,
+        markup_state: MarkupState | None = None,
         doc_id: int | None = None,
-        callback_data: str | None = None,
         path: str | None = None,
         update_callback: UpdateCallback | None = None,
     ):
-        if flags is None:
-            flags = {}
-        self.flags = flags
-        self._callback_data = callback_data
+        self._markup_state = markup_state
+        self._doc_id = doc_id
         self.set_path(path)
         self.set_update_callback(update_callback)
 
-        overrides: dict[str, Value] = dict(flags) if flags is not None else {}
-        source = None
+        if overrides is None:
+            overrides = {}
 
         # We assume content from saved docs and USER_ID is trusted.
         trusted = doc_id
+        source = None
 
         # Existing `overrides` are frozen and immutable in `Engine`, so this is safe.
         if user := update.effective_user:
@@ -302,7 +316,6 @@ class RenderContext:
 
         self._first_doc_id = None
         self._render_time = None
-        self._default_doc_id = doc_id
         self._trusted = trusted
 
         self.data = OverriddenDict({}, overrides)
@@ -326,19 +339,6 @@ class RenderContext:
             async with lock:
                 return await func(spec)
 
-    # Exposed as a callback to Bridge, used for `edit_message`.
-    async def _update_text(self, seg: Segment) -> int | None:
-        if self._update_callback is None:
-            log.info('_update_text: no update_callback')
-            return
-
-        self._render_time = int(time.time())
-        spec = self._format_response(seg)
-        r = await self._invoke_update_callback(spec)
-        log.debug('_update_text: %s', r)
-        if isinstance(r, Message):
-            return r.message_id
-
     def _doc_loader(self, name: str) -> str | None:
         row = db.get_doc(name)
         if row is None:
@@ -359,17 +359,26 @@ class RenderContext:
         log.debug('render_text: %r', val)
         result = to_segment(val)
         self._render_time = int(time.time())
-
         log.info(
             'rendered %d -> %s (%s)',
             len(text),
             type(result).__name__,
             self._first_doc_id,
         )
-        if self._first_doc_id is None:
-            self._first_doc_id = self._default_doc_id
-
         return result
+
+    # Exposed as a callback to Bridge, used for `edit_message`.
+    async def _update_text(self, seg: Segment) -> int | None:
+        if self._update_callback is None:
+            log.info('_update_text: no update_callback')
+            return
+
+        self._render_time = int(time.time())
+        spec = self._format_response(seg)
+        r = await self._invoke_update_callback(spec)
+        log.debug('_update_text: %s', r)
+        if isinstance(r, Message):
+            return r.message_id
 
     async def render(
         self,
@@ -401,71 +410,33 @@ class RenderContext:
 
         if get_env_flag(ctx, 'fold'):
             seg = BlockQuote(seg, expandable=True)
-        elif get_env_flag(ctx, 'pre', True) and text_only:
+        elif (r := get_env_flag(ctx, 'pre', None)) or (r is None and text_only):
+            # Skip wrapping in `Pre` if it's explicitly unset or the content is
+            # styled (contains `Element`).
             seg = Pre(seg)
 
-        fmt = Formatter()
-        if not (
-            fmt.try_extend(seg)
-            if isinstance(seg, (list, tuple))
-            else fmt.try_append(seg)
-        ):
-            log.info('_format_response: segment overflow: %r', seg)
-
-        if not fmt.length:
-            fmt.append('[empty?]')
-
-        if errors := self.engine.errors:
-            fmt.try_append('\n\n---\n')
-            for e in errors:
-                fmt.try_push('\n', e)
-
-        if ret := make_markup(self._path, self):
-            markup, current_state = ret
+        if self._path is None:
+            markup = state = None
         else:
-            markup = current_state = None
-
-        footers = []
-
-        if footer := get_env(ctx, 'footer'):
-            footers.append(to_segment(footer))
-
-        if get_env_flag(ctx, 'show_state', True) and current_state:
-            footers.append(current_state)
-
-        if get_env_flag(ctx, 'show_source') and (source := self.engine.get_doc_text()):
-            footers.append(Pre(source, lang='c'))
-
-        if get_env_flag(ctx, 'show_stats', True) and (unix := self._render_time):
-            gas = self.engine.gas_used()
-            seg = (
-                Time(str(unix), unix, format='wdt'),
-                ' (',
-                Time('now', unix, format='r'),
-                f') | {gas}',
-            )
-            footers.append(seg)
-
-        if footers:
-            is_first = True
-            ends_with_block = fmt.segments and isinstance(
-                fmt.segments[-1], (Pre, BlockQuote)
-            )
-            for part in footers:
-                if not (is_first and ends_with_block):
-                    fmt.try_append('\n')
-                fmt.try_append(part)
-                is_first = False
+            if (doc_id := self._first_doc_id) is None:
+                doc_id = self._doc_id
+            markup, state = make_markup(self._path, ctx, self._markup_state, doc_id)
 
         if get_env_flag(ctx, 'plain'):
-            result = fmt.plain()
             parse_mode = None
         elif get_env_flag(ctx, 'html'):
-            result = fmt.html()
             parse_mode = 'HTML'
         else:
-            result = fmt.md()
             parse_mode = 'MarkdownV2'
+
+        func = get_renderer(parse_mode)
+        out = []
+
+        with Formatter() as fmt:
+            for seg in self._format_seg(seg, fmt, state):
+                func(seg, out)
+
+        result = ''.join(out)
 
         if get_env_flag(ctx, 'raw'):
             # Markup characters are counted in length when `parse_mode` is unset.
@@ -475,10 +446,71 @@ class RenderContext:
         if do_cleanup:
             result = cleanup_text(result)
 
-        if is_debug:
-            log.debug('_format_response: final: %r\n%s', fmt.segments, result)
-
+        log.debug('_format_response: final: %r\n%s', fmt.segments, result)
         return result, parse_mode, markup
+
+    def _format_seg(
+        self, body: Segment, fmt: Formatter, state: str | None
+    ) -> Iterable[Segment]:
+        # Keep space for the overflow indicator.
+        length = to_length(body)
+        fmt.limit -= len(str(length)) + len(OVERFLOWED_TEXT)
+
+        # Render the footers first, so we can truncate the body if overflowed.
+        if errors := self.engine.errors:
+            fmt.try_append('\n\n---\n')
+            for e in errors:
+                fmt.try_push('\n', e)
+
+        is_first = True
+        if not fmt.full:
+            for seg in self._format_footers(state):
+                if is_first:
+                    fmt.try_append(seg)
+                    is_first = False
+                else:
+                    fmt.try_push('\n', seg)
+
+        sep = len(fmt.segments)
+        footer_len = fmt.length
+
+        if fmt.try_append(body):
+            omitted = 0
+        else:
+            omitted = length + footer_len - fmt.length
+
+        if footer_len == fmt.length:
+            fmt.try_append('[empty?]')
+        elif not is_first and not isinstance(fmt.segments[-1], (Pre, BlockQuote)):
+            # Add a newline between the body and the footers, unless the body ends
+            # with a block (which already implies a line break).
+            fmt.try_append('\n')
+
+        # Rotate the body before the footers!
+        yield from itertools.islice(fmt.segments, sep, None)
+        if fmt.full:
+            yield f'{omitted}{OVERFLOWED_TEXT}' if omitted else OVERFLOWED_TEXT
+        yield from itertools.islice(fmt.segments, sep)
+
+    def _format_footers(self, state: str | None) -> Iterable[Segment]:
+        ctx = self.data
+
+        if footer := get_env(ctx, 'footer'):
+            yield to_segment(footer)
+
+        if get_env_flag(ctx, 'show_state', True) and state:
+            yield state
+
+        if get_env_flag(ctx, 'show_source') and (source := self.engine.get_doc_text()):
+            yield Pre(source, lang='c')
+
+        if get_env_flag(ctx, 'show_stats', True) and (unix := self._render_time):
+            yield (
+                Time(str(unix), unix, format='wdt'),
+                ' (',
+                Time('now', unix, format='r'),
+                f') | {self.engine.gas_used()}',
+            )
 
 
 REG_DOC_REF = re.compile(r'[*:]\s*(\w+)\s*;')
@@ -667,9 +699,9 @@ async def handle_render_callback(update: Update, query: CallbackQuery, data: str
 
     ctx = RenderContext(
         update,
-        flags,
+        overrides=dict(flags),
+        markup_state=(flags, data),
         doc_id=doc_id,
-        callback_data=data,
         path=path,
         update_callback=edit_callback_message,
     )
