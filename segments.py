@@ -2,6 +2,7 @@ import functools
 from contextvars import ContextVar
 from typing import Callable, Sequence
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, replace
 
 from render_core import Box
 from util import log, escape, html_escape, escape_pre, MAX_TEXT_LENGTH
@@ -9,10 +10,9 @@ from util import log, escape, html_escape, escape_pre, MAX_TEXT_LENGTH
 type Segment = Sequence[Segment] | str | Element
 
 
+@dataclass(frozen=True)
 class Element(Box, ABC):
-    def __init__(self, inner: Segment) -> None:
-        super().__init__()
-        self.inner = inner
+    inner: Segment
 
     def __str__(self) -> str:
         return render_segment(self.inner)
@@ -27,11 +27,10 @@ class Element(Box, ABC):
     def md(self, out: list[str]) -> None: ...
 
 
+@dataclass(frozen=True)
 class Style(Element):
-    def __init__(self, inner: Segment, tag: str, sym: str) -> None:
-        super().__init__(inner)
-        self.tag = tag
-        self.sym = sym
+    tag: str
+    sym: str
 
     def __repr__(self) -> str:
         return f'Style[{self.tag}]({self.inner!r})'
@@ -47,10 +46,9 @@ class Style(Element):
         out.append(self.sym)
 
 
+@dataclass(frozen=True)
 class Pre(Element):
-    def __init__(self, inner: Segment, lang: str = '') -> None:
-        super().__init__(inner)
-        self.lang = lang
+    lang: str = ''
 
     def __repr__(self) -> str:
         if self.lang:
@@ -86,10 +84,9 @@ Code = functools.partial(Style, tag='code', sym='`')
 Spoiler = functools.partial(Style, tag='tg-spoiler', sym='||')
 
 
+@dataclass(frozen=True)
 class Link(Element):
-    def __init__(self, inner: Segment, url: str) -> None:
-        super().__init__(inner)
-        self.url = url
+    url: str
 
     def __repr__(self) -> str:
         return f'Link[{self.url}]({self.inner!r})'
@@ -108,10 +105,9 @@ class Link(Element):
         out.append(f']({escape(self.url)})')
 
 
+@dataclass(frozen=True)
 class BlockQuote(Element):
-    def __init__(self, inner: Segment, expandable: bool = False) -> None:
-        super().__init__(inner)
-        self.expandable = expandable
+    expandable: bool = False
 
     def __repr__(self) -> str:
         return f'BlockQuote{"[expandable]" if self.expandable else ""}({self.inner!r})'
@@ -142,11 +138,10 @@ class BlockQuote(Element):
                 out.append(f'>{line}\n')
 
 
+@dataclass(frozen=True)
 class Time(Element):
-    def __init__(self, inner: Segment, unix: int, format: str = '') -> None:
-        super().__init__(inner)
-        self.unix = unix
-        self.format = format
+    unix: int
+    format: str = ''
 
     def __repr__(self) -> str:
         return f'Time[{self.unix}|{self.format}]({self.inner!r})'
@@ -168,10 +163,9 @@ class Time(Element):
             out.append(f'](tg://time?unix={self.unix})')
 
 
+@dataclass(frozen=True)
 class Raw(Element):
-    def __init__(self, inner: str) -> None:
-        super().__init__(inner)
-        self.inner: str
+    inner: str
 
     def __repr__(self) -> str:
         return f'Raw({self.inner!r})'
@@ -248,6 +242,15 @@ def to_plain(seg: Segment, out: list[str]) -> None:
             to_plain(item, out)
 
 
+def get_renderer(parse_mode: str | None) -> Callable[[Segment, list[str]], None]:
+    if parse_mode == 'HTML':
+        return to_html
+    elif parse_mode == 'MarkdownV2':
+        return to_md
+    else:
+        return to_plain
+
+
 def render_segment(
     seg: Segment, func: Callable[[Segment, list[str]], None] = to_plain
 ) -> str:
@@ -257,10 +260,16 @@ def render_segment(
 
 
 class Formatter:
-    def __init__(self, *, strict: bool = False) -> None:
+    def __init__(
+        self,
+        limit: int = MAX_TEXT_LENGTH,
+        *,
+        strict: bool = False,
+    ) -> None:
         self.segments: list[Segment] = []
         self.length = 0
         self.full = False
+        self.limit = limit
         self._best_effort = not strict
 
     def __enter__(self):
@@ -270,31 +279,44 @@ class Formatter:
     def __exit__(self, exc_type, exc_val, exc_tb):
         ctx_length_cache.reset(self._token)
 
-    def _append_best_effort(self, seg: Segment, budget: int):
-        '''Precondition: to_length(seg) > budget > 0'''
+    def _append_best_effort(
+        self, seg: Segment, length: int, budget: int, out: list[Segment]
+    ):
+        '''Precondition: to_length(seg) == length > budget > 0'''
         if isinstance(seg, str):
             item = seg[:budget]
             log.debug('_append_best_effort: %r (%d)', item, budget)
-            self.segments.append(item)
+            out.append(item)
             self.length += len(item)
             return
 
         if isinstance(seg, Element):
             item = seg.inner
             if (inc_len := to_length(item)) > budget:
-                return self._append_best_effort(item, budget)
+                if inc_len == length:
+                    # Replace the inner into the outer `Element` if the "padding"
+                    # is "thin".
+                    buf = []
+                    self._append_best_effort(item, inc_len, budget, buf)
+                    if buf:
+                        seg = replace(seg, inner=buf[0] if len(buf) == 1 else buf)
+                        log.debug('_append_best_effort: %r (%d)', seg, budget)
+                        out.append(seg)
+                    return
+
+                return self._append_best_effort(item, inc_len, budget, out)
 
             log.debug('_append_best_effort: %r (%d)', item, budget)
-            self.segments.append(item)
+            out.append(item)
             self.length += inc_len
             return
 
         for item in seg:
             if (inc_len := to_length(item)) > budget:
-                return self._append_best_effort(item, budget)
+                return self._append_best_effort(item, inc_len, budget, out)
 
             log.debug('_append_best_effort: %r (%d)', item, budget)
-            self.segments.append(item)
+            out.append(item)
             self.length += inc_len
             budget -= inc_len
             if budget <= 0:
@@ -312,23 +334,21 @@ class Formatter:
 
         inc_len = to_length(seg)
         new_len = self.length + inc_len
-        if new_len <= MAX_TEXT_LENGTH:
+        if new_len <= self.limit:
             self.segments.append(seg)
             self.length = new_len
             return True
 
         self.full = True
+        desc = repr(seg)
+        if len(desc) > 100:
+            desc = desc[:50] + '...' + desc[-47:]
         log.info(
-            'segment truncated: %r (%d + %d = %d)', seg, self.length, inc_len, new_len
+            'segment truncated: %s (%d + %d = %d)', desc, self.length, inc_len, new_len
         )
 
-        if self._best_effort and (budget := MAX_TEXT_LENGTH - self.length - 2) > 0:
-            self._append_best_effort(seg, budget)
-
-        if (t := MAX_TEXT_LENGTH - self.length) > 0:
-            text = '[truncated]'[:t]
-            self.segments.append(text)
-            self.length += len(text)
+        if self._best_effort and (budget := self.limit - self.length) > 0:
+            self._append_best_effort(seg, inc_len, budget, self.segments)
 
         return False
 
