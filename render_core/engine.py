@@ -3,6 +3,7 @@ import sys
 import functools
 import traceback
 from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from typing import (
     Any,
     Callable,
@@ -122,21 +123,15 @@ class Exit(Abort):
 # A SubDoc defined with `↦` runs in the caller's current scope when invoked.
 # A SubDoc defined with `⇒` captures the `scope` from its definition site, where
 # it should be invoked later.
+@dataclass(frozen=True, slots=True, repr=False, eq=False, match_args=False)
 class SubDoc(Box):
-    def __init__(
-        self,
-        tree: Tree,
-        params: tuple[str, ...] | None,
-        engine: 'Engine',
-        scope: str | None = None,
-    ):
-        self.tree = tree
-        self.params = params
-        self.engine = engine
-        self.scope = scope
+    tree: Tree
+    params: tuple[str, ...] | None
+    engine: Engine
+    scope: str | None
 
     def bind(self) -> SubDoc:
-        return SubDoc(self.tree, self.params, self.engine, self.engine._scope.current())
+        return replace(self, scope=self.engine._scope.current())
 
     def __call__(self, *args, **kwargs) -> Value | None:
         # Called from Python side.
@@ -160,6 +155,22 @@ class SubDoc(Box):
 
 
 class Engine(Interpreter, ContextCallbacks):
+    __slots__ = (
+        '_ctx',
+        '_doc_src',
+        '_doc_text',
+        'errors',
+        'doc_name',
+        '_output',
+        '_root_output',
+        '_depth',
+        '_dirty',
+        '_tco',
+        '_tree',
+        '_gas',
+        '_scope',
+    )
+
     def __init__(
         self,
         ctx: Context,

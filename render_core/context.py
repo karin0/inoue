@@ -20,6 +20,8 @@ trace = log.debug if is_tracing else lambda *_: None
 
 
 class Box:
+    __slots__ = ()
+
     def __str__(self) -> str:
         return ''
 
@@ -109,6 +111,8 @@ EVAL_FUNCS = {
 
 class Fragment(Box, Sequence[Value]):
     '''An immutable fragment of values.'''
+
+    __slots__ = ('_inner', '_flattened')
 
     def __init__(self, inner: list[Value]):
         self._inner = inner
@@ -212,6 +216,8 @@ def trim_output(s: str, keep_newline: bool = True) -> str:
 
 
 class ScopeProxy:
+    __slots__ = ('_ctx', '_prefix')
+
     def __init__(self, ctx: 'ScopedContext', prefix: str):
         self._ctx = ctx
         self._prefix = prefix
@@ -223,6 +229,8 @@ class ScopeProxy:
 
 
 class ContextCallbacks(ABC):
+    __slots__ = ()
+
     @abstractmethod
     def _error(self, msg: str):
         pass
@@ -233,6 +241,8 @@ class ContextCallbacks(ABC):
 
 
 class Context(MutableMapping[str, Value]):
+    __slots__ = ()
+
     def setitem_with(self, key: str, val: Value, op: str) -> None:
         self[key] = val
 
@@ -243,6 +253,17 @@ def parse_ast(expr: str):
 
 
 class ScopedContext:
+    __slots__ = (
+        '_scopes',
+        '_prefixes',
+        '_data',
+        '_cb',
+        '_funcs',
+        '_eval',
+        '_eval_str',
+        '_eval_node',
+    )
+
     def __init__(
         self,
         ctx: Context,
