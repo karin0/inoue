@@ -1,11 +1,11 @@
 import os
 import asyncio
-import dataclasses
 import json
 import mmap
 import itertools
 from typing import Iterable, Sequence
 from subprocess import DEVNULL, PIPE
+from dataclasses import dataclass, field
 
 from telegram import (
     Update,
@@ -33,7 +33,7 @@ SECTION_SEP_OFFSET = 2
 SECTION_GAP = 24
 
 
-@dataclasses.dataclass
+@dataclass(frozen=True, slots=True, eq=False, match_args=False)
 class Section:
     start: int
     end: int
@@ -81,7 +81,7 @@ class Section:
         return self.end + SECTION_GAP
 
 
-@dataclasses.dataclass
+@dataclass(frozen=True, slots=True, eq=False, match_args=False)
 class RGMatch:
     text: str
     line_number: int
@@ -127,7 +127,7 @@ class RGMatch:
         )
 
 
-@dataclasses.dataclass
+@dataclass(frozen=True, slots=True, eq=False, match_args=False)
 class RGFile:
     matches: list[RGMatch]
     path: str
@@ -145,13 +145,13 @@ class RGFile:
                 return
 
 
-@dataclasses.dataclass
+@dataclass(slots=True, eq=False, match_args=False)
 class RGQuery:
     files: Sequence[RGFile]
     cwd: str
     match_cnt: int = 0
     page_num: int = 0
-    page_offsets: list[tuple[int, int, int]] = dataclasses.field(default_factory=list)
+    page_offsets: list[tuple[int, int, int]] = field(default_factory=list)
     message: Message | None = None
 
     def render(

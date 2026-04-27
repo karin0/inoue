@@ -49,6 +49,8 @@ async def _chained[T, U](
 
 
 class Promise[T: Value | None](Box):
+    __slots__ = ('_task',)
+
     def __init__(self, coro: Awaitable[T]):
         super().__init__()
         self._task = asyncio.create_task(_run(coro))
@@ -123,6 +125,8 @@ def trusted(method):
 
 
 class Bridge(Box):
+    __slots__ = ('_ctx', '_update_text', '_trusted', 'funcs')
+
     def __init__(
         self,
         ctx: MutableMapping[str, Value],
@@ -269,7 +273,7 @@ class Bridge(Box):
         return hitokoto()
 
 
-@dataclass
+@dataclass(frozen=True, slots=True, eq=False, match_args=False)
 class ProcessResult(Box):
     stdout: str
     stderr: str

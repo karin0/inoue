@@ -261,6 +261,18 @@ OVERFLOWED_TEXT = '…\n'
 
 
 class RenderContext:
+    __slots__ = (
+        '_markup_state',
+        '_doc_id',
+        '_path',
+        '_update_callback',
+        '_first_doc_id',
+        '_render_time',
+        '_trusted',
+        'data',
+        'engine',
+    )
+
     def __init__(
         self,
         update: Update,

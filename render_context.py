@@ -41,6 +41,8 @@ def decode_value(s: str) -> Value:
 
 
 class LRUDict[K, V](MutableMapping[K, V]):
+    __slots__ = ('_data',)
+
     def __init__(self):
         self._data = OrderedDict()
 
@@ -74,6 +76,8 @@ class LRUDict[K, V](MutableMapping[K, V]):
 
 
 class PersistentStorage(MutableMapping[str, Value]):
+    __slots__ = ('_cache',)
+
     def __init__(self) -> None:
         super().__init__()
         self._cache = LRUDict[str, Value]()
@@ -112,6 +116,8 @@ def get_pm_key(key: str) -> str | None:
 
 
 class OverriddenDict(UserDict[str, Value], Context):
+    __slots__ = ('overrides',)
+
     def __init__(self, data: Mapping[str, Value], overrides: dict[str, Value]):
         for val in data.values():
             if not is_value_type(val):

@@ -184,6 +184,8 @@ def media_duration(duration: float) -> int | None:
 
 
 class Output:
+    __slots__ = ('info', 'path', 'size', 'duration', 'thumbnail_path')
+
     def __init__(self, info: dict[str, Any]):
         self.info = info
         self.path = path = _get_download_path(info)

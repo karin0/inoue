@@ -8,7 +8,7 @@ from util import log, escape, html_escape, escape_pre, MAX_TEXT_LENGTH
 type Segment = Sequence[Segment] | str | Element
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True, repr=False, eq=False, match_args=False)
 class Element(Box):
     inner: Segment
 
@@ -25,7 +25,7 @@ class Element(Box):
         to_md(self.inner, out)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True, repr=False, eq=False, match_args=False)
 class Style(Element):
     tag: str
     sym: str
@@ -44,7 +44,7 @@ class Style(Element):
         out.append(self.sym)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True, repr=False, eq=False, match_args=False)
 class Pre(Element):
     lang: str = ''
 
@@ -82,7 +82,7 @@ Code = functools.partial(Style, tag='code', sym='`')
 Spoiler = functools.partial(Style, tag='tg-spoiler', sym='||')
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True, repr=False, eq=False, match_args=False)
 class Link(Element):
     url: str
 
@@ -100,7 +100,7 @@ class Link(Element):
         out.append(f']({escape(self.url)})')
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True, repr=False, eq=False, match_args=False)
 class BlockQuote(Element):
     expandable: bool = False
 
@@ -133,7 +133,7 @@ class BlockQuote(Element):
                 out.append(f'>{line}\n')
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True, repr=False, eq=False, match_args=False)
 class Time(Element):
     unix: int
     format: str = ''
@@ -155,7 +155,7 @@ class Time(Element):
             out.append(f'](tg://time?unix={self.unix})')
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True, repr=False, eq=False, match_args=False)
 class Raw(Element):
     inner: str
 
@@ -236,6 +236,8 @@ def _to_length(cache: dict[int, int], s: Element | Sequence[Segment]) -> int:
 
 
 class Formatter:
+    __slots__ = ('segments', 'length', 'full', '_best_effort', '_lengths')
+
     limit = MAX_TEXT_LENGTH
 
     def __init__(

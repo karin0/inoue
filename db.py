@@ -17,6 +17,8 @@ ALLOWED_GUEST_DOC_PREFIXES = tuple(
 
 
 class DataStore:
+    __slots__ = ('conn',)
+
     def __init__(self):
         self.conn = cast(Connection, None)
 
