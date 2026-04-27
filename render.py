@@ -285,19 +285,19 @@ class RenderContext:
 
         # Existing `overrides` are frozen and immutable in `Engine`, so this is safe.
         if user := update.effective_user:
-            overrides['_user_id'] = str(user.id)
+            overrides['_user_id'] = user.id
             overrides['_user_name'] = source = user.full_name
         if chat := update.effective_chat:
             if trusted is None and chat.id == USER_ID:
                 trusted = USER_ID
-            overrides['_chat_id'] = str(chat.id)
+            overrides['_chat_id'] = chat.id
             if title := chat.title:
                 overrides['_chat_title'] = title
                 source = f'{title} @ {source}' if source else title
         if source:
             overrides['_source'] = source
         if msg := update.effective_message:
-            overrides['_msg_id'] = str(msg.message_id)
+            overrides['_msg_id'] = msg.message_id
         if trusted is not None:
             overrides['_trusted'] = trusted
 
