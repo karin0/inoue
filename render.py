@@ -42,6 +42,7 @@ from segments import (
     Time,
     BlockQuote,
     Formatter,
+    Bold,
     get_renderer,
     render_segment,
 )
@@ -603,7 +604,9 @@ async def handle_render_group(msg: Message, origin_id: int):
         preview_cache.clear()
 
 
-async def handle_render_inline_query(update: Update, query: InlineQuery, text: str):
+async def handle_render_inline_query(
+    update: Update, bot_ctx: ContextTypes.DEFAULT_TYPE, query: InlineQuery, text: str
+):
     if doc_ref := is_doc_ref(text):
         path, row = doc_ref
         if path is None:
@@ -624,6 +627,9 @@ async def handle_render_inline_query(update: Update, query: InlineQuery, text: s
         doc_id = path = None
 
     ctx = RenderContext(update, doc_id=doc_id, path=path)
+    ctx.data['_env.footer'] = Element(
+        (Bold('via '), '@', bot_ctx.bot.username, ' ', text)
+    )
     rendered = ctx.render_text(text)
     result, parse_mode, markup = await ctx.to_response(rendered)
 

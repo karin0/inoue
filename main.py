@@ -262,7 +262,7 @@ async def handle_inline_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if (parsed := extract_url(data)) is not None:
             await handle_yt_inline_query(query, parsed)
         else:
-            await handle_render_inline_query(update, query, data)
+            await handle_render_inline_query(update, ctx, query, data)
 
 
 async def handle_chosen_inline(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
