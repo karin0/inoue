@@ -116,6 +116,8 @@ class Fragment(Box, Sequence[Value]):
     __slots__ = ('_inner', '_flattened')
 
     def __init__(self, inner: list[Value]):
+        '''Caller must not mutate `inner` after passing it in, unless they have
+        called `_flatten()`.'''
         self._inner = inner
         self._flattened = False
 

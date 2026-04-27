@@ -153,6 +153,23 @@ class SubDoc(Box):
         return f'{{{self.params}{scope} ↦ {Engine.debug_node(self.tree)}}}'
 
 
+def _trim_str(val: str, trim: int) -> str:
+    return trim_output(val, trim is True) if trim else val
+
+
+def _trim_fragment(val: Fragment, trim: int) -> Value:
+    return val._trim(trim is True) if trim else val
+
+
+def _trim_val(val: Value, trim: int) -> Value:
+    if trim:
+        if isinstance(val, str):
+            return trim_output(val, trim is True)
+        if isinstance(val, Fragment):
+            return val._trim(trim is True)
+    return val
+
+
 class Engine(Interpreter, ContextCallbacks):
     __slots__ = (
         '_ctx',
@@ -211,8 +228,12 @@ class Engine(Interpreter, ContextCallbacks):
                 return self._print_func
             case 'exit':
                 return self._exit_func
+            case 'output':
+                return self._output_func
             case 'eval':
                 return self._eval_func
+            case 'prefix':
+                return self._prefix_func
             case _:
                 return None
 
@@ -275,6 +296,13 @@ class Engine(Interpreter, ContextCallbacks):
         as_str: bool = False,
         trim: int = False,
     ) -> Value | T:
+        '''We may construct and keep a `Fragment` that references `out`, so the caller
+        must ensure either of the following:
+        - Set `trim` > 0 to copy the `Fragment`, or
+        - Never mutate `out`/`self._output` after this call, which generally
+          means to use this as the final result inside a `with self._push()` block.
+        '''
+
         if out is None:
             out = self._output
 
@@ -285,26 +313,12 @@ class Engine(Interpreter, ContextCallbacks):
                 # Keep the original type for single output as possible.
                 val = out[0]
                 if as_str:
-                    val = to_str(val)
-                    return trim_output(val, trim is True) if trim else val
-                else:
-                    return self._trim_value(val, trim)
+                    return _trim_str(to_str(val), trim)
+                return _trim_val(val, trim)
             case _:
                 if as_str:
-                    val = ''.join(to_str(x) for x in out)
-                    return trim_output(val, trim is True) if trim else val
-
-                val = Fragment(out)
-                return self._trim_value(val, trim)
-
-    @staticmethod
-    def _trim_value(val: Value, trim: int) -> Value:
-        if trim:
-            if isinstance(val, str):
-                return trim_output(val, trim is True)
-            if isinstance(val, Fragment):
-                return val._trim(trim is True)
-        return val
+                    return _trim_str(''.join(to_str(x) for x in out), trim)
+                return _trim_fragment(Fragment(out), trim)
 
     def _render_tree(self, tree: Tree, fragment: str, root: bool):
         # Entry of the syntax: '{ ... }', or '...;' in a single line.
@@ -1314,6 +1328,14 @@ class Engine(Interpreter, ContextCallbacks):
         with self._push():
             self._render(doc)
             return self._gather_output(trim=True)
+
+    def _output_func(self) -> Value:
+        '''Useful for capturing text fragments outside any code blocks.'''
+        # We must `trim` here, or a `Fragment` referencing the current `self._output`
+        # might be leaked. See `self._gather_output()`.
+        val = self._gather_output(trim=True)
+        self._output.clear()
+        return val
 
     def _create_block_env(
         self, sub_doc: SubDoc, args: tuple, kwargs: dict[str, Any]
