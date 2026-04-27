@@ -2,7 +2,7 @@ import os
 import re
 import time
 import asyncio
-from itertools import islice
+from itertools import chain, islice
 from typing import Container, Iterable, Mapping, Callable, Awaitable, cast
 
 from telegram import (
@@ -21,7 +21,6 @@ from telegram.constants import ReactionEmoji
 
 from db import db
 from util import (
-    MAX_TEXT_LENGTH,
     USER_ID,
     DOC_SEARCH_PATH,
     log,
@@ -38,6 +37,7 @@ from util import (
 )
 from segments import (
     Segment,
+    Element,
     Pre,
     Time,
     BlockQuote,
@@ -442,17 +442,18 @@ class RenderContext:
         return result, parse_mode, markup
 
     def _format_seg(self, body: Segment, state: str | None) -> Iterable[Segment]:
-        # Reserve space for the overflow indicator.
         fmt = Formatter()
+
+        # Reserve space for the overflow indicator.
         length = fmt.to_length(body)
-        fmt.reserve(str(length))
-        fmt.reserve(OVERFLOWED_TEXT)
+        overflow_line = [str(length), OVERFLOWED_TEXT]
+        fmt.try_append(Element(overflow_line))
 
         # Render the footers first, so we can truncate the body if overflowed.
         if errors := self.engine.errors:
-            fmt.try_append('\n\n---\n')
+            fmt.try_append('\n\n---\n\n')
             for e in errors:
-                fmt.try_push('\n', e)
+                fmt.try_push(e, '\n')
 
         is_first = True
         if not fmt.full:
@@ -478,6 +479,14 @@ class RenderContext:
             # with a block (which already implies a line break).
             fmt.try_append('\n')
 
+        if fmt.full:
+            if omitted:
+                overflow_line[0] = str(omitted)
+            else:
+                overflow_line.pop(0)
+        else:
+            overflow_line.clear()
+
         log.debug(
             '_format_seg: sep=%d body=%d footer=%d fmt=%d omitted=%d full=%s',
             sep,
@@ -487,11 +496,9 @@ class RenderContext:
             omitted,
             fmt.full,
         )
+
         # Rotate the body before the footers!
-        yield from islice(fmt.segments, sep, None)
-        if fmt.full:
-            yield f'{omitted}{OVERFLOWED_TEXT}' if omitted else OVERFLOWED_TEXT
-        yield from islice(fmt.segments, sep)
+        return chain(islice(fmt.segments, sep, None), islice(fmt.segments, sep))
 
     def _format_footers(self, state: str | None) -> Iterable[Segment]:
         ctx = self.data

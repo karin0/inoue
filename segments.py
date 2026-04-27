@@ -1,6 +1,5 @@
 import functools
 from typing import Callable, Sequence
-from abc import ABC, abstractmethod
 from dataclasses import dataclass, replace
 
 from render_core import Box
@@ -10,17 +9,20 @@ type Segment = Sequence[Segment] | str | Element
 
 
 @dataclass(frozen=True)
-class Element(Box, ABC):
+class Element(Box):
     inner: Segment
+
+    def __repr__(self) -> str:
+        return f'{type(self).__name__}({self.inner!r})'
 
     def __str__(self) -> str:
         return render_segment(self.inner)
 
-    @abstractmethod
-    def html(self, out: list[str]) -> None: ...
+    def html(self, out: list[str]) -> None:
+        to_html(self.inner, out)
 
-    @abstractmethod
-    def md(self, out: list[str]) -> None: ...
+    def md(self, out: list[str]) -> None:
+        to_md(self.inner, out)
 
 
 @dataclass(frozen=True)
@@ -157,9 +159,6 @@ class Time(Element):
 class Raw(Element):
     inner: str
 
-    def __repr__(self) -> str:
-        return f'Raw({self.inner!r})'
-
     def html(self, out: list[str]) -> None:
         out.append(self.inner)
 
@@ -252,13 +251,6 @@ class Formatter:
 
     def to_length(self, s: Segment) -> int:
         return len(s) if isinstance(s, str) else _to_length(self._lengths, s)
-
-    def reserve(self, seg: Segment):
-        '''Reserve its space, but not appending it.
-
-        Note that this is unconditional, which can cause `length > limit`.
-        '''
-        self.length += self.to_length(seg)
 
     def _append_best_effort(self, seg: Segment, budget: int, out: list[Segment]):
         '''Precondition: to_length(seg) > budget > 0'''
