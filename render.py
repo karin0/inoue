@@ -397,7 +397,11 @@ class RenderContext:
         else:
             text_only = False
 
-        if get_env_flag(ctx, 'fold'):
+        if get_env_flag(ctx, 'dom'):
+            from pprint import pformat
+
+            seg = Pre(pformat(seg))
+        elif get_env_flag(ctx, 'fold'):
             seg = BlockQuote(seg, expandable=True)
         elif (r := get_env_flag(ctx, 'pre', None)) or (r is None and text_only):
             # Skip wrapping in `Pre` if it's explicitly unset or the content is
