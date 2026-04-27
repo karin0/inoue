@@ -206,17 +206,6 @@ def make_markup(
 
         hide_flags = get_env_flag(ctx, 'hide_flags')
         for k, v in flags.items():
-            if not v:
-                # Hide conflicting options.
-                if (
-                    k == '_pre'
-                    and get_env_flag(ctx, 'fold')
-                    or k == '_fold'
-                    and get_env_flag(ctx, 'pre', True)
-                ):
-                    log.debug('make_markup: hiding conflicting flag %s', k)
-                    continue
-
             old = k in state
             log.debug('make_markup: flag %s in=%s new=%s s=%s', k, old, v, state)
             state[k] = not v
