@@ -201,11 +201,16 @@ def lex(text: str, *, block: bool = False) -> Iterable[tuple[bool, str | None]]:
                 # We only handles escaping '\' chars inside quotes (as such inside blocks)
                 # or outside any blocks (to escape '{', '}', ';' and '\' in text fragments).
                 # The latter ones here must be removed from the output fragments.
-                elif c == '\\':
+                # A '\' before any other char has no outer-level meaning, so we leave
+                # both chars as-is.
+                elif c == '\\' and p + 1 < len(text) and text[p + 1] in '{};\\':
                     escape = True
                     escaping_indices.append(p)
                 elif c == '\n':
                     if (stem := test_naked(text[naked_start:p])) is not None:
+                        # We're about to bypass `text_fragments` for this region.
+                        # Clear `escaping_indices` to maintain its invariant for
+                        # the next text fragment.
                         naked_buf.clear()
                         escaping_indices.clear()
 

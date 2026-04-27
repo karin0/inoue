@@ -26,6 +26,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from render_core import Value, Engine
 from render_core.context import trace
+from render_core.lex import lex
 
 import render_context as render_ctx
 from render_context import OverriddenDict
@@ -650,10 +651,41 @@ Write the following sentence twice, the second time within quotes.
         text = 'Line1\nLine2 with \"quote\" and \u2665 and 🥮🥮月饼🥮🥮 and \\t tab.\rLine3'
         self.render_it(repr(text) + ';', eq=text)
 
+    def test_text_escape_only_for_special_chars(self):
+        # Outside blocks only `\{`, `\}`, `\;`, `\\` are escapes; any other
+        # `\X` is preserved verbatim (both `\` and X remain in the output).
+        self.render_it(r'a\nb\rc\tx', eq=r'a\nb\rc\tx')
+        self.render_it(r'mix \\ and \n and \;', eq='mix \\ and \\n and ;')
+        # Trailing `\` with nothing to escape stays as text.
+        self.render_it('end\\', eq='end\\')
+
+    def test_lex_naked_block_after_text_escape(self):
+        # Regression: when a line with an unconsumed `\` in its text region
+        # is identified as a naked block, escaping_indices must be cleared.
+        # Otherwise the trailing `text_fragments()` call sees a stale index
+        # below cursor and trips `assert start == i` in lex.py.
+
+        # 7 chars: \, \, ;, \n, f, o, o. The first '\' is recorded in
+        # escaping_indices; test_naked accepts the line ('\\;' ends in a
+        # real ';'); after the recursive lex of the naked block, 'foo'
+        # still has to flush as a text fragment.
+        self.assertEqual(
+            list(lex('\\\\;\nfoo')),
+            [(False, ''), (True, '\\\\;'), (False, None), (False, 'foo')],
+        )
+
+        # Same shape, with escaped braces in the text region.
+        self.assertEqual(
+            list(lex('\\{a\\};\nrest')),
+            [(False, ''), (True, '\\{a\\};'), (False, None), (False, 'rest')],
+        )
+
     def test_unclosed(self):
         text = r"""{ text = `Raw backslash: \ and quote: '`; text }"""
         result = self.render_it(text, e='Unclosed')
-        self.assertEqual(result, text.replace('\\', ''))
+        # The lone '\' here is followed by ' ', which is not one of the
+        # outer-level escape targets ('{', '}', ';', '\'), so it survives.
+        self.assertEqual(result, text)
 
         text = r''' { another = unclosed = block = "123" '''
         result = self.render_it(text, e='Unclosed')
