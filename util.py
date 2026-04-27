@@ -12,7 +12,6 @@ from contextvars import ContextVar
 
 from telegram import Message, Bot, MessageEntity, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction, MessageLimit
-from telegram.helpers import escape_markdown
 from telegram.error import BadRequest
 
 from db import db
@@ -388,13 +387,22 @@ def truncate_text(s: str) -> str:
     return s
 
 
+def _create_escape_trans(chars: str) -> dict[int, str]:
+    return {ord(c): '\\' + c for c in chars}
+
+
+# `telegram.helpers.escape_markdown` implements this with `re.sub`, which might
+# be slower than us.
+_MD2_TRANS = _create_escape_trans(r'\_*[]()~`>#+-=|{}.!')
+
+
 def escape(s: str) -> str:
-    return escape_markdown(s, version=2)
+    return s.translate(_MD2_TRANS)
 
 
 def escape_pre(s: str) -> str:
-    # Equals to `escape_markdown(s, version=2, entity_type=MessageEntity.PRE)`
-    return s.replace('`', '\\`')
+    # `replace` is faster for small charset.
+    return s.replace('\\', '\\\\').replace('`', '\\`')
 
 
 type Content = tuple[str, str | None]
