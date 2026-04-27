@@ -1,5 +1,4 @@
 import functools
-from contextvars import ContextVar
 from typing import Callable, Sequence
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, replace
@@ -16,9 +15,6 @@ class Element(Box, ABC):
 
     def __str__(self) -> str:
         return render_segment(self.inner)
-
-    def __len__(self) -> int:
-        return to_length(self.inner)
 
     @abstractmethod
     def html(self, out: list[str]) -> None: ...
@@ -72,7 +68,7 @@ class Pre(Element):
             out.append(escape_pre(self.inner).rstrip())
         else:
             to_md(self.inner, out)
-        out.append('\n```')
+        out.append('```')
 
 
 # https://core.telegram.org/bots/api#markdownv2-style
@@ -90,9 +86,6 @@ class Link(Element):
 
     def __repr__(self) -> str:
         return f'Link[{self.url}]({self.inner!r})'
-
-    def __len__(self) -> int:
-        return to_length(self.inner) + len(self.url)
 
     def html(self, out: list[str]) -> None:
         out.append(f'<a href="{html_escape(self.url)}">')
@@ -146,9 +139,6 @@ class Time(Element):
     def __repr__(self) -> str:
         return f'Time[{self.unix}|{self.format}]({self.inner!r})'
 
-    def __len__(self) -> int:
-        return to_length(self.inner) + len(str(self.unix)) + len(self.format)
-
     def html(self, out: list[str]) -> None:
         out.append(f'<tg-time unix="{self.unix}" format="{self.format}">')
         to_html(self.inner, out)
@@ -175,41 +165,6 @@ class Raw(Element):
 
     def md(self, out: list[str]) -> None:
         out.append(self.inner)
-
-
-ctx_length_cache: ContextVar[dict[int, int] | None] = ContextVar(
-    'length_cache', default=None
-)
-
-
-def _to_length(s: Element | Sequence[Segment], cache: dict[int, int]) -> int:
-    '''Cache lengths for non-leaf segments.'''
-    # Use `id` so that lists can be cached.
-    # This means that the formatted lists must not be mutated in the same `Formatter` context.
-    id_s = id(s)
-    if (r := cache.get(id_s)) is not None:
-        return r
-
-    r = (
-        len(s)
-        if isinstance(s, Element)
-        else sum(
-            len(item) if isinstance(item, str) else _to_length(item, cache)
-            for item in s
-        )
-    )
-    cache[id_s] = r
-    return r
-
-
-def to_length(s: Segment) -> int:
-    if isinstance(s, str):
-        return len(s)
-
-    if (cache := ctx_length_cache.get()) is not None:
-        return _to_length(s, cache)
-
-    return len(s) if isinstance(s, Element) else sum(to_length(item) for item in s)
 
 
 def to_html(seg: Segment, out: list[str]) -> None:
@@ -243,10 +198,10 @@ def to_plain(seg: Segment, out: list[str]) -> None:
 
 
 def get_renderer(parse_mode: str | None) -> Callable[[Segment, list[str]], None]:
-    if parse_mode == 'HTML':
-        return to_html
-    elif parse_mode == 'MarkdownV2':
+    if parse_mode == 'MarkdownV2':
         return to_md
+    elif parse_mode == 'HTML':
+        return to_html
     else:
         return to_plain
 
@@ -259,30 +214,54 @@ def render_segment(
     return ''.join(out)
 
 
+def _to_length(cache: dict[int, int], s: Element | Sequence[Segment]) -> int:
+    '''Cache lengths for non-leaf segments.'''
+    # Use `id` so that lists can be cached.
+    # This means that the formatted lists must not be mutated in the same `Formatter` context.
+    id_s = id(s)
+    if (r := cache.get(id_s)) is not None:
+        return r
+
+    if isinstance(s, Element):
+        # Telegram does not count tags/urls from the entities in the text length,
+        # so we can always keep the outer style even truncated.
+        r = _to_length(cache, s.inner)
+    else:
+        r = sum(
+            len(item) if isinstance(item, str) else _to_length(cache, item)
+            for item in s
+        )
+
+    cache[id_s] = r
+    return r
+
+
 class Formatter:
+    limit = MAX_TEXT_LENGTH
+
     def __init__(
         self,
-        limit: int = MAX_TEXT_LENGTH,
         *,
         strict: bool = False,
     ) -> None:
         self.segments: list[Segment] = []
         self.length = 0
         self.full = False
-        self.limit = limit
         self._best_effort = not strict
+        self._lengths: dict[int, int] = {}
 
-    def __enter__(self):
-        self._token = ctx_length_cache.set({})
-        return self
+    def to_length(self, s: Segment) -> int:
+        return len(s) if isinstance(s, str) else _to_length(self._lengths, s)
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        ctx_length_cache.reset(self._token)
+    def reserve(self, seg: Segment):
+        '''Reserve its space, but not appending it.
 
-    def _append_best_effort(
-        self, seg: Segment, length: int, budget: int, out: list[Segment]
-    ):
-        '''Precondition: to_length(seg) == length > budget > 0'''
+        Note that this is unconditional, which can cause `length > limit`.
+        '''
+        self.length += self.to_length(seg)
+
+    def _append_best_effort(self, seg: Segment, budget: int, out: list[Segment]):
+        '''Precondition: to_length(seg) > budget > 0'''
         if isinstance(seg, str):
             item = seg[:budget]
             log.debug('_append_best_effort: %r (%d)', item, budget)
@@ -291,29 +270,17 @@ class Formatter:
             return
 
         if isinstance(seg, Element):
-            item = seg.inner
-            if (inc_len := to_length(item)) > budget:
-                if inc_len == length:
-                    # Replace the inner into the outer `Element` if the "padding"
-                    # is "thin".
-                    buf = []
-                    self._append_best_effort(item, inc_len, budget, buf)
-                    if buf:
-                        seg = replace(seg, inner=buf[0] if len(buf) == 1 else buf)
-                        log.debug('_append_best_effort: %r (%d)', seg, budget)
-                        out.append(seg)
-                    return
-
-                return self._append_best_effort(item, inc_len, budget, out)
-
-            log.debug('_append_best_effort: %r (%d)', item, budget)
-            out.append(item)
-            self.length += inc_len
+            # Replace the inner into the outer `Element`.
+            self._append_best_effort(seg.inner, budget, buf := [])
+            if buf:
+                seg = replace(seg, inner=buf[0] if len(buf) == 1 else buf)
+                log.debug('_append_best_effort: %r (%d)', seg, budget)
+                out.append(seg)
             return
 
         for item in seg:
-            if (inc_len := to_length(item)) > budget:
-                return self._append_best_effort(item, inc_len, budget, out)
+            if (inc_len := self.to_length(item)) > budget:
+                return self._append_best_effort(item, budget, out)
 
             log.debug('_append_best_effort: %r (%d)', item, budget)
             out.append(item)
@@ -332,7 +299,7 @@ class Formatter:
         if self._best_effort and isinstance(seg, (list, tuple)):
             return self.try_extend(seg)
 
-        inc_len = to_length(seg)
+        inc_len = self.to_length(seg)
         new_len = self.length + inc_len
         if new_len <= self.limit:
             self.segments.append(seg)
@@ -348,7 +315,7 @@ class Formatter:
         )
 
         if self._best_effort and (budget := self.limit - self.length) > 0:
-            self._append_best_effort(seg, inc_len, budget, self.segments)
+            self._append_best_effort(seg, budget, self.segments)
 
         return False
 

@@ -2,7 +2,7 @@ import os
 import re
 import time
 import asyncio
-import itertools
+from itertools import islice
 from typing import Container, Iterable, Mapping, Callable, Awaitable, cast
 
 from telegram import (
@@ -44,7 +44,6 @@ from segments import (
     Formatter,
     get_renderer,
     render_segment,
-    to_length,
 )
 from render_core import Engine, Value
 from render_bridge import Bridge, to_segment
@@ -403,7 +402,7 @@ class RenderContext:
             seg = Pre(pformat(seg))
         elif get_env_flag(ctx, 'fold'):
             seg = BlockQuote(seg, expandable=True)
-        elif (r := get_env_flag(ctx, 'pre', None)) or (r is None and text_only):
+        elif get_env_flag(ctx, 'pre', text_only):
             # Skip wrapping in `Pre` if it's explicitly unset or the content is
             # styled (contains `Element`).
             seg = Pre(seg)
@@ -425,9 +424,9 @@ class RenderContext:
         func = get_renderer(parse_mode)
         out = []
 
-        with Formatter() as fmt:
-            for seg in self._format_seg(seg, fmt, state):
-                func(seg, out)
+        for seg in self._format_seg(seg, state):
+            log.debug('_format_response: seg: %r', seg)
+            func(seg, out)
 
         result = ''.join(out)
 
@@ -439,15 +438,15 @@ class RenderContext:
         if do_cleanup:
             result = cleanup_text(result)
 
-        log.debug('_format_response: final: %r\n%s', fmt.segments, result)
+        log.debug('_format_response: final: %r (%d)', result, len(result))
         return result, parse_mode, markup
 
-    def _format_seg(
-        self, body: Segment, fmt: Formatter, state: str | None
-    ) -> Iterable[Segment]:
-        # Keep space for the overflow indicator.
-        length = to_length(body)
-        fmt.limit -= len(str(length)) + len(OVERFLOWED_TEXT)
+    def _format_seg(self, body: Segment, state: str | None) -> Iterable[Segment]:
+        # Reserve space for the overflow indicator.
+        fmt = Formatter()
+        length = fmt.to_length(body)
+        fmt.reserve(str(length))
+        fmt.reserve(OVERFLOWED_TEXT)
 
         # Render the footers first, so we can truncate the body if overflowed.
         if errors := self.engine.errors:
@@ -479,11 +478,20 @@ class RenderContext:
             # with a block (which already implies a line break).
             fmt.try_append('\n')
 
+        log.debug(
+            '_format_seg: sep=%d body=%d footer=%d fmt=%d omitted=%d full=%s',
+            sep,
+            length,
+            footer_len,
+            fmt.length,
+            omitted,
+            fmt.full,
+        )
         # Rotate the body before the footers!
-        yield from itertools.islice(fmt.segments, sep, None)
+        yield from islice(fmt.segments, sep, None)
         if fmt.full:
             yield f'{omitted}{OVERFLOWED_TEXT}' if omitted else OVERFLOWED_TEXT
-        yield from itertools.islice(fmt.segments, sep)
+        yield from islice(fmt.segments, sep)
 
     def _format_footers(self, state: str | None) -> Iterable[Segment]:
         ctx = self.data

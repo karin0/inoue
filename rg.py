@@ -358,12 +358,12 @@ def render_page(
     offset: tuple[int, int] = (-1, -1)
     total = total_offset - 1
 
-    with Formatter(strict=True) as fmt:
-        for offset in itertools.islice(
-            query.render(fmt, idx, *render_offset), PAGE_LIMIT + 1
-        ):
-            total += 1
-        result = fmt.html()
+    fmt = Formatter(strict=True)
+    for offset in itertools.islice(
+        query.render(fmt, idx, *render_offset), PAGE_LIMIT + 1
+    ):
+        total += 1
+    result = fmt.html()
 
     assert total >= total_offset
 
