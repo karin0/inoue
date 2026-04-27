@@ -1175,15 +1175,17 @@ a[k] = '11';
         def foo(a: int, b: str):
             return f'{a} {b} {' '.join(ctx)} {' '.join(str(s) for s in ctx.values())}'
 
-        engine = Engine(ctx, funcs={'foo': foo})
+        engine = Engine(ctx, funcs=lambda name: foo if name == 'foo' else None)
         text = r'''
 a=3;
+d=7;
 d:=6;
 c=4;
+d=1;
 b=5;
 "foo(42, 'Test')";
 '''
-        self.render_it(text, engine, eq='42 Test a c b d 3 4 5 6')
+        self.render_it(text, engine, eq='42 Test a d c b 3 6 4 5')
 
     def test_if_clause(self):
         text = r'''

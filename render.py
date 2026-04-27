@@ -325,7 +325,7 @@ class RenderContext:
         # so `os` is safe.
         self.data['os'] = self.data['sys'] = bridge
 
-        self.engine = Engine(self.data, self._doc_loader, funcs=bridge.funcs)
+        self.engine = Engine(self.data, self._doc_loader, funcs=bridge._get_func)
 
     def set_path(self, path: str | None) -> None:
         self._path = path

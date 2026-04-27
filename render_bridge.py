@@ -2,8 +2,11 @@ import os
 import sys
 import time
 import asyncio
+import inspect
 import subprocess
 
+from functools import wraps
+from types import MethodType
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Concatenate, Coroutine, cast
 from collections.abc import MutableMapping
@@ -101,31 +104,69 @@ def to_segment(val: Value | None) -> Segment:
     return to_str(val)
 
 
-def create_style[**P, T: Element](
-    text: Value | None,
-    factory: Callable[Concatenate[Segment, P], T],
-    *args: P.args,
-    **kwargs: P.kwargs,
-) -> T | str:
-    return factory(seg, *args, **kwargs) if (seg := to_segment(text)) else ''
+_funcs: dict[str, Callable] = {}
+_methods: dict[str, Callable | None] = {}
 
 
-_PUBLIC: set[str] = set()
-_TRUSTED: set[str] = set()
+def _inspect(func: Callable, name: str | None = None) -> tuple[str, bool]:
+    if name is None:
+        name = func.__name__.strip('_')
+
+    sig = inspect.signature(func)
+    is_method = 'self' in sig.parameters
+
+    if name in _funcs or name in _methods:
+        raise ValueError(f'{func} is already registered')
+
+    return name, is_method
 
 
-def public(method):
-    _PUBLIC.add(method.__name__)
-    return method
+def public[**P, R](func: Callable[P, R]) -> Callable[P, R]:
+    name, is_method = _inspect(func)
+    if is_method:
+        _methods[name] = None
+    else:
+        _funcs[name] = func
+    return func
 
 
-def trusted(method):
-    _TRUSTED.add(method.__name__)
-    return method
+def trusted[**P, R](
+    func: Callable[Concatenate['Bridge', P], R] | Callable[P, R],
+    *,
+    name: str | None = None,
+) -> Callable[Concatenate['Bridge', P], R]:
+    name, is_method = _inspect(func, name=name)
+
+    if is_method:
+        func = cast(Callable[Concatenate['Bridge', P], R], func)
+
+        @wraps(func)
+        def wrapper(self: 'Bridge', *args: P.args, **kwargs: P.kwargs) -> R:
+            if self._trusted is None:
+                log.warning('Bridge: unauthorized access to %s', name)
+                raise PermissionError('unauthorized')
+            log.debug('Bridge: authorized %s for %s', self._trusted, name)
+            return func(self, *args, **kwargs)
+
+        _methods[name] = None
+        return wrapper
+    else:
+        func = cast(Callable[P, R], func)
+
+        @wraps(func)
+        def wrapper2(self: 'Bridge', *args: P.args, **kwargs: P.kwargs) -> R:
+            if self._trusted is None:
+                log.warning('Bridge: unauthorized access to %s', name)
+                raise PermissionError('unauthorized')
+            log.debug('Bridge: authorized %s for %s', self._trusted, name)
+            return func(*args, **kwargs)
+
+        _methods[name] = wrapper2
+        return wrapper2
 
 
 class Bridge(Box):
-    __slots__ = ('_ctx', '_update_text', '_trusted', 'funcs')
+    __slots__ = ('_ctx', '_update_text', '_trusted')
 
     def __init__(
         self,
@@ -138,139 +179,70 @@ class Bridge(Box):
         self._update_text = update_text
         self._trusted = trusted
 
-        funcs: dict[str, Callable[..., Value | None]] = {
-            name: getattr(self, name) for name in _PUBLIC
-        }
-        for name in _TRUSTED:
-            funcs[name] = self._auth(name, getattr(self, name))
-
-        self.funcs = funcs
-
     def __repr__(self) -> str:
-        return f'<Bridge signature={self._trusted}>'
+        return f'Bridge({self._trusted})'
 
-    def _auth[**P, R](self, name: str, func: Callable[P, R]) -> Callable[P, R]:
-        def wrapper(*args: P.args, **kwargs: P.kwargs):
-            if self._trusted is None:
-                log.warning('Bridge: unauthorized access to %s', name)
-                raise PermissionError('unauthorized')
-            log.debug('Bridge: authorized %s for %s', self._trusted, name)
-            return func(*args, **kwargs)
+    def _get_func(self, name: str) -> Callable[..., Value | None] | None:
+        if name.startswith('_') or name.endswith('_'):
+            return None
+        if (val := Bridge.__dict__.get(name)) is not None:
+            return MethodType(val, self)
+        return _funcs.get(name)
 
-        return wrapper
-
-    def __getattr__(self, name: str) -> Callable[..., Value | None]:
-        funcs = self.__dict__.get('funcs')
-        if funcs is not None and name in funcs:
-            return funcs[name]
-        raise AttributeError(f'bad bridge call: {name}')
-
-    @trusted
-    def system(self, cmd: str) -> str:
-        result = subprocess.check_output(
-            cmd,
-            shell=True,
-            text=True,
-            stderr=subprocess.STDOUT,
-            timeout=0.1,
-            env={'LANG': 'C', 'LC_ALL': 'C'},
-        )
-        return result.strip()
-
-    @trusted
-    def eval(self, expr: str):
-        return eval(expr)
-
-    @trusted
-    def uname(self) -> str:
-        r = os.uname()
-        return f'{r.sysname} {r.nodename} {r.release} {r.version} {r.machine}'
-
-    @trusted
-    def version(self) -> str:
-        return sys.version
-
-    @trusted
-    def write_file(self, path, text) -> None:
-        if not isinstance(path, str):
-            raise TypeError(f'write_file: path must be a str, got {path!r}')
-
-        with open(path, 'w', encoding='utf-8') as fp:
-            fp.write(str(text))
+    def __getattr__(self, name: str) -> Any:
+        if (val := _funcs.get(name)) is not None:
+            return val
+        raise AttributeError(name)
 
     @trusted
     def edit_message(self, text) -> Promise:
         log.debug('Bridge: edit_message: %r', text)
         return Promise(self._update_text(to_segment(text)))
 
-    @trusted
-    def communicate(self, cmd: str, input: str | None = None) -> Promise[ProcessResult]:
-        return Promise(_communicate(cmd, input))
-
-    @trusted
-    def sleep(self, seconds: float) -> Promise[None]:
-        return Promise(asyncio.sleep(seconds))
-
     @public
     def dbg(self) -> str:
         return '\n'.join(f'{k}={v!r}' for k, v in self._ctx.items())
 
-    @public
-    def escape(self, text) -> str:
-        return escape(str(text))
 
-    @public
-    def html_escape(self, text) -> str:
-        return html_escape(str(text))
+@trusted
+def uname() -> str:
+    r = os.uname()
+    return f'{r.sysname} {r.nodename} {r.release} {r.version} {r.machine}'
 
-    @public
-    def pre(self, text) -> Pre | str:
-        return create_style(text, Pre)
 
-    @public
-    def quote(self, text, expandable=True) -> BlockQuote | str:
-        return create_style(text, BlockQuote, bool(expandable))
+@trusted
+def version() -> str:
+    return sys.version
 
-    @public
-    def link(self, text, url) -> Link | str:
-        return create_style(text, Link, url)
 
-    @public
-    def code(self, text) -> Style | str:
-        return create_style(text, Code)
+@trusted
+def write_file(path, text) -> None:
+    if not isinstance(path, str):
+        raise TypeError(f'write_file: path must be a str, got {path!r}')
 
-    @public
-    def bold(self, text) -> Style | str:
-        return create_style(text, Bold)
+    with open(path, 'w', encoding='utf-8') as fp:
+        fp.write(str(text))
 
-    @public
-    def italic(self, text) -> Style | str:
-        return create_style(text, Italic)
 
-    @public
-    def uline(self, text) -> Style | str:
-        return create_style(text, Underline)
+trusted(eval, name='evil')
 
-    @public
-    def strike(self, text) -> Style | str:
-        return create_style(text, Strikethrough)
 
-    @public
-    def spoiler(self, text) -> Style | str:
-        return create_style(text, Spoiler)
+@trusted
+def system(cmd: str) -> str:
+    result = subprocess.check_output(
+        cmd,
+        shell=True,
+        text=True,
+        stderr=subprocess.STDOUT,
+        timeout=0.1,
+        env={'LANG': 'C', 'LC_ALL': 'C'},
+    )
+    return result.strip()
 
-    @public
-    def raw(self, text) -> Raw | str:
-        text = str(text)
-        return Raw(text) if text else ''
 
-    @public
-    def cleanup(self, text) -> str:
-        return cleanup_text(str(text))
-
-    @public
-    def hitokoto(self):
-        return hitokoto()
+@trusted
+def sleep(seconds: float) -> Promise[None]:
+    return Promise(asyncio.sleep(seconds))
 
 
 @dataclass(frozen=True, slots=True, eq=False, match_args=False)
@@ -318,3 +290,92 @@ async def _communicate(cmd: str, input: str | None = None) -> ProcessResult:
     stdout = stdout.decode(errors='replace').strip()
     stderr = stderr.decode(errors='replace').strip()
     return ProcessResult(stdout, stderr, returncode, elapsed)
+
+
+@trusted
+def communicate(cmd: str, input: str | None = None) -> Promise[ProcessResult]:
+    return Promise(_communicate(cmd, input))
+
+
+@public
+def escape_(text) -> str:
+    return escape(str(text))
+
+
+@public
+def html_escape_(text) -> str:
+    return html_escape(str(text))
+
+
+def create_style[**P, T: Element](
+    text: Value | None,
+    factory: Callable[Concatenate[Segment, P], T],
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> T | str:
+    return factory(seg, *args, **kwargs) if (seg := to_segment(text)) else ''
+
+
+@public
+def pre(text) -> Pre | str:
+    return create_style(text, Pre)
+
+
+@public
+def quote(text, expandable=True) -> BlockQuote | str:
+    return create_style(text, BlockQuote, bool(expandable))
+
+
+@public
+def link(text, url) -> Link | str:
+    return create_style(text, Link, url)
+
+
+@public
+def code(text) -> Style | str:
+    return create_style(text, Code)
+
+
+@public
+def bold(text) -> Style | str:
+    return create_style(text, Bold)
+
+
+@public
+def italic(text) -> Style | str:
+    return create_style(text, Italic)
+
+
+@public
+def uline(text) -> Style | str:
+    return create_style(text, Underline)
+
+
+@public
+def strike(text) -> Style | str:
+    return create_style(text, Strikethrough)
+
+
+@public
+def spoiler(text) -> Style | str:
+    return create_style(text, Spoiler)
+
+
+@public
+def raw(text) -> Raw | str:
+    text = str(text)
+    return Raw(text) if text else ''
+
+
+@public
+def cleanup(text) -> str:
+    return cleanup_text(str(text))
+
+
+public(hitokoto)
+
+for name, func in _methods.items():
+    if func is not None:
+        setattr(Bridge, name, func)
+
+del _methods

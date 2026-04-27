@@ -102,6 +102,7 @@ def today_func() -> str:
 
 
 EVAL_FUNCS = {
+    **DEFAULT_FUNCTIONS,
     'time': time.time,
     'date': date_func,
     'today': today_func,
@@ -239,6 +240,10 @@ class ContextCallbacks(ABC):
     def _consume_gas(self):
         pass
 
+    @abstractmethod
+    def _get_func(self, name: str) -> Callable | None:
+        pass
+
 
 class Context(MutableMapping[str, Value]):
     __slots__ = ()
@@ -258,7 +263,6 @@ class ScopedContext:
         '_prefixes',
         '_data',
         '_cb',
-        '_funcs',
         '_eval',
         '_eval_str',
         '_eval_node',
@@ -268,21 +272,22 @@ class ScopedContext:
         self,
         ctx: Context,
         callbacks: ContextCallbacks,
-        funcs: dict[str, Callable],
     ):
         self._scopes: list[str] = ['']
         self._prefixes = {}
         self._data = ctx
         self._cb = callbacks
-        self._funcs = dict(
-            DEFAULT_FUNCTIONS, **EVAL_FUNCS, prefix=self._prefix_func, **funcs
-        )
         self._eval = SimpleEval(names=self)
         self._eval_str = self._eval.eval
         self._eval_node = self._eval._eval
         assert self._eval.nodes
         self._eval.nodes[ast.Call] = self._eval_call
         self._eval.nodes[ast.Subscript] = self._eval_subscript
+
+    def _get_func(self, name: str) -> Callable | None:
+        if (val := self._cb._get_func(name)) is not None:
+            return val
+        return EVAL_FUNCS.get(name)
 
     def push(self, name: str):
         new = self._scopes[-1] + name + '.'
@@ -326,9 +331,6 @@ class ScopedContext:
         _, val = self.resolve_raw(name, '', as_str=as_str)
         assert val is not None
         return val
-
-    def _prefix_func(self) -> str:
-        return self._scopes[-1]
 
     def current(self) -> str:
         return self._scopes[-1]
@@ -377,7 +379,7 @@ class ScopedContext:
         if (prefix := self._prefixes.get(name)) is not None:
             return ScopeProxy(self, prefix)
 
-        if (func := self._funcs.get(name)) is not None:
+        if (func := self._get_func(name)) is not None:
             # Call the function without arguments implicitly.
             r = func()
             if r is None or is_value_type(r):
@@ -403,7 +405,9 @@ class ScopedContext:
             if isinstance(func, Box) and callable(func):
                 # A SubDoc.
                 return func(*args, **kwargs)
-            func = self._funcs[name]
+            func = self._get_func(name)
+            if func is None:
+                raise KeyError(name)
         else:
             raise NotImplementedError('unsupported call: ' + str(type(func_node)))
 

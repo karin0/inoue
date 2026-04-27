@@ -7,7 +7,6 @@ from dataclasses import dataclass, replace
 from typing import (
     Any,
     Callable,
-    Mapping,
     Sequence,
     Type,
     TypeVar,
@@ -158,6 +157,7 @@ class Engine(Interpreter, ContextCallbacks):
     __slots__ = (
         '_ctx',
         '_doc_src',
+        '_funcs_src',
         '_doc_text',
         'errors',
         'doc_name',
@@ -176,11 +176,12 @@ class Engine(Interpreter, ContextCallbacks):
         ctx: Context,
         doc_loader: Callable[[str], str | None] | None = None,
         *,
-        funcs: Mapping[str, Callable[..., Value | None]] | None = None,
+        funcs: Callable[[str], Callable[..., Value | None] | None] | None = None,
     ):
         super().__init__()
         self._ctx = ctx
         self._doc_src = doc_loader or (lambda _: None)
+        self._funcs_src = funcs or (lambda _: None)
         self._doc_text = ''
 
         self.errors: list[str] = []
@@ -195,17 +196,25 @@ class Engine(Interpreter, ContextCallbacks):
 
         self._tree: Tree | None = None
         self._gas: int = 0
+        self._scope = ScopedContext(ctx, self)
 
-        eval_funcs = {
-            '__file__': self.get_doc_text,
-            'print': self._print_func,
-            'exit': self._exit_func,
-            'eval': self._eval_func,
-        }
-        if funcs:
-            eval_funcs.update(funcs)
-        self._scope = ScopedContext(ctx, self, eval_funcs)
         trace('Engine initialized: %s', ctx)
+
+    @override
+    def _get_func(self, name: str) -> Callable[..., Value | None] | None:
+        if (val := self._funcs_src(name)) is not None:
+            return val
+        match name:
+            case '__file__':
+                return self.get_doc_text
+            case 'print':
+                return self._print_func
+            case 'exit':
+                return self._exit_func
+            case 'eval':
+                return self._eval_func
+            case _:
+                return None
 
     @override
     def _consume_gas(self):
@@ -591,6 +600,9 @@ class Engine(Interpreter, ContextCallbacks):
 
     def _exit_func(self):
         raise Exit()
+
+    def _prefix_func(self):
+        return self._scope.current()
 
     # Nested block: {{ ... }}
     # With scope: {@name {...}} (name optional, defaults to '')
