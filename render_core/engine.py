@@ -108,11 +108,13 @@ else:
 
 
 # Abort the entire rendering, until the "root" document.
+# All remaining fragments and all outer docs are skipped.
 class Abort(Exception):
     pass
 
 
-# "exit()", stop rendering the current fragment only.
+# "exit()" called, stop rendering the current document only, including all
+# remaining fragments. Outer docs will continue rendering.
 class Exit(Abort):
     pass
 
@@ -328,27 +330,6 @@ class Engine(Interpreter, ContextCallbacks):
                     return _trim_str(''.join(to_str(x) for x in out), trim)
                 return _trim_fragment(Fragment(out), trim)
 
-    def _render_tree(self, tree: Tree, fragment: str, root: bool):
-        # Entry of the syntax: '{ ... }', or '...;' in a single line.
-        # Works like a simpler `_code_block` without scope modifier.
-        sub_doc_token = self._scan_block(tree, root=root)
-        if sub_doc_token is not None:
-            self._sub_doc(tree, sub_doc_token)
-            return
-
-        try:
-            self._run_block(tree)
-        except Exit:
-            # "exit()" called: stop rendering, but only for *this fragment*.
-            # Fragments afterwards and outer docs will continue rendering.
-            trace('Rendering exited at fragment: %s', shorten(fragment))
-        except Abort:
-            # More serious "exit": stop the entire rendering, skipping all fragments,
-            # this and all outer docs.
-            if is_not_quiet:
-                log.warning('Rendering aborted at fragment: %s', shorten(fragment))
-            raise
-
     def _render(self, text: str, *, root: bool = False):
         clause = ClauseState()
 
@@ -359,7 +340,18 @@ class Engine(Interpreter, ContextCallbacks):
 
             if is_block:
                 assert fragment is not None
-                self._render_block(fragment, root, clause)
+                try:
+                    self._render_block(fragment, root, clause)
+                except Exit:
+                    # "exit()" called, skipping the current document.
+                    if is_tracing:
+                        trace(
+                            'Exited at block: %s\nResult: %r',
+                            shorten(fragment),
+                            self._output,
+                        )
+                    return
+
             elif not clause.falses:
                 if is_not_quiet:
                     trace('Appending text fragment: %r', fragment)
@@ -375,6 +367,9 @@ class Engine(Interpreter, ContextCallbacks):
             self._error('unclosed if clause')
         trace('Rendered result: %r', self._output)
 
+    # Entry of the syntax: '{ ... }', or '...;' in a single line.
+    # Works like a simpler `_code_block` without scope modifier.
+    # Conditional clauses are also parsed here.
     def _render_block(self, fragment: str, root: bool, clause: ClauseState):
         if is_not_quiet:
             trace(
@@ -435,7 +430,11 @@ class Engine(Interpreter, ContextCallbacks):
 
         assert tree.data == 'block_inner', tree
         if if_kind is None:
-            self._render_tree(tree, fragment, root)
+            sub_doc_token = self._scan_block(tree, root=root)
+            if sub_doc_token is not None:
+                self._sub_doc(tree, sub_doc_token)
+            else:
+                self._run_block(tree)
             return
 
         if (
