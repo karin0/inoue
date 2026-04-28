@@ -7,6 +7,7 @@ import subprocess
 
 from functools import wraps
 from types import MethodType
+from datetime import datetime
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Concatenate, Coroutine, cast
 from collections.abc import MutableMapping
@@ -121,8 +122,8 @@ def _inspect(func: Callable, name: str | None = None) -> tuple[str, bool]:
     return name, is_method
 
 
-def public[**P, R](func: Callable[P, R]) -> Callable[P, R]:
-    name, is_method = _inspect(func)
+def public[**P, R](func: Callable[P, R], name: str | None = None) -> Callable[P, R]:
+    name, is_method = _inspect(func, name=name)
     if is_method:
         _methods[name] = None
     else:
@@ -258,7 +259,7 @@ class ProcessResult(Box):
 
 
 async def _communicate(cmd: str, input: str | None = None) -> ProcessResult:
-    t0 = time.monotonic()
+    t0 = time.perf_counter()
     proc = await asyncio.create_subprocess_shell(
         cmd,
         stdin=asyncio.subprocess.PIPE if input else None,
@@ -287,7 +288,7 @@ async def _communicate(cmd: str, input: str | None = None) -> ProcessResult:
             if not returncode:
                 returncode = 124  # Timed out
 
-    elapsed = time.monotonic() - t0
+    elapsed = time.perf_counter() - t0
     stdout = stdout.decode(errors='replace').strip()
     stderr = stderr.decode(errors='replace').strip()
     return ProcessResult(stdout, stderr, returncode, elapsed)
@@ -296,6 +297,20 @@ async def _communicate(cmd: str, input: str | None = None) -> ProcessResult:
 @trusted
 def communicate(cmd: str, input: str | None = None) -> Promise[ProcessResult]:
     return Promise(_communicate(cmd, input))
+
+
+public(time.time, name='time')
+public(time.perf_counter, name='perf')
+
+
+@public
+def date() -> str:
+    return datetime.now().isoformat()
+
+
+@public
+def today() -> str:
+    return datetime.now().strftime('%c')
 
 
 @public
