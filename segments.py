@@ -1,3 +1,6 @@
+# pyright: reportIncompatibleMethodOverride=false
+# https://github.com/microsoft/pyright/issues/2678
+
 import functools
 from typing import Callable, Sequence
 from dataclasses import dataclass, replace
@@ -5,11 +8,11 @@ from dataclasses import dataclass, replace
 from render_core import Box
 from util import log, escape, html_escape, escape_pre, MAX_TEXT_LENGTH
 
-type Segment = Sequence[Segment] | str | Element
+type Segment = Sequence[Segment] | str | BaseElement
 
 
-@dataclass(frozen=True, slots=True, repr=False, eq=False, match_args=False)
-class Element(Box):
+class BaseElement:
+    __slots__ = ()
     inner: Segment
 
     def __repr__(self) -> str:
@@ -23,6 +26,11 @@ class Element(Box):
 
     def md(self, out: list[str]) -> None:
         to_md(self.inner, out)
+
+
+@dataclass(frozen=True, slots=True, repr=False, eq=False, match_args=False)
+class Element(Box, BaseElement):
+    inner: Segment
 
 
 @dataclass(frozen=True, slots=True, repr=False, eq=False, match_args=False)
@@ -167,7 +175,7 @@ class Raw(Element):
 
 
 def to_html(seg: Segment, out: list[str]) -> None:
-    if isinstance(seg, Element):
+    if isinstance(seg, BaseElement):
         seg.html(out)
     elif isinstance(seg, str):
         out.append(html_escape(seg))
@@ -177,7 +185,7 @@ def to_html(seg: Segment, out: list[str]) -> None:
 
 
 def to_md(seg: Segment, out: list[str]) -> None:
-    if isinstance(seg, Element):
+    if isinstance(seg, BaseElement):
         seg.md(out)
     elif isinstance(seg, str):
         out.append(escape(seg))
@@ -187,7 +195,7 @@ def to_md(seg: Segment, out: list[str]) -> None:
 
 
 def to_plain(seg: Segment, out: list[str]) -> None:
-    if isinstance(seg, Element):
+    if isinstance(seg, BaseElement):
         to_plain(seg.inner, out)
     elif isinstance(seg, str):
         out.append(seg)
@@ -213,7 +221,7 @@ def render_segment(
     return ''.join(out)
 
 
-def _to_length(cache: dict[int, int], s: Element | Sequence[Segment]) -> int:
+def _to_length(cache: dict[int, int], s: BaseElement | Sequence[Segment]) -> int:
     '''Cache lengths for non-leaf segments.'''
     # Use `id` so that lists can be cached.
     # This means that the formatted lists must not be mutated in the same `Formatter` context.
@@ -221,7 +229,7 @@ def _to_length(cache: dict[int, int], s: Element | Sequence[Segment]) -> int:
     if (r := cache.get(id_s)) is not None:
         return r
 
-    if isinstance(s, Element):
+    if isinstance(s, BaseElement):
         # Telegram does not count tags/urls from the entities in the text length,
         # so we can always keep the outer style even truncated.
         r = _to_length(cache, s.inner)
@@ -263,11 +271,18 @@ class Formatter:
             self.length += len(item)
             return
 
-        if isinstance(seg, Element):
-            # Replace the inner into the outer `Element`.
+        if isinstance(seg, BaseElement):
+            # Replace the inner into the outer `BaseElement`.
             self._append_best_effort(seg.inner, budget, buf := [])
             if buf:
-                seg = replace(seg, inner=buf[0] if len(buf) == 1 else buf)
+                new_inner = buf[0] if len(buf) == 1 else buf
+                if isinstance(seg, Element):
+                    seg = replace(seg, inner=new_inner)
+                else:
+                    # Have to drop its special semantics, since we can only
+                    # replace the inner safely for dataclasses.
+                    seg = Element(new_inner)
+
                 log.debug('_append_best_effort: %r (%d)', seg, budget)
                 out.append(seg)
             return

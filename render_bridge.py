@@ -17,6 +17,7 @@ from render_core import Box, Value, Fragment, to_str
 from util import log, escape, html_escape, cleanup_text
 from motto import hitokoto
 from segments import (
+    BaseElement,
     Segment,
     Element,
     Style,
@@ -76,15 +77,16 @@ def to_segment(val: Value | None) -> Segment:
     if val is None:
         return ''
 
-    if isinstance(val, Element):
+    if isinstance(val, BaseElement):
         return val
 
     if isinstance(val, Fragment):
         out = []
         parts = []
         for v in val:
-            # Fragment is flattened when iterated, so returned seg must be either Element or str.
-            if s := cast(Element | str, to_segment(v)):
+            # Fragment is flattened when iterated, so returned seg cannot be
+            # another Sequence.
+            if s := cast(BaseElement | str, to_segment(v)):
                 # Exclude empty strings and sequences.
                 if isinstance(s, str):
                     # Join consecutive strings.
