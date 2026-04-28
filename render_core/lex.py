@@ -5,6 +5,11 @@ if not is_not_quiet:
     trace = lambda *_: None
 
 
+type Code = tuple[Literal[True], str]
+type Text = tuple[Literal[False], str | None]
+type Chunk = Code | Text
+
+
 class Chunker:
     r'''
     Chunks the input `text` into code blocks and text fragments.
@@ -27,12 +32,10 @@ class Chunker:
     '''
 
     __slots__ = (
-        'text',
-        'block',
         'errors',
+        '_text',
+        '_block',
         '_escaping_indices',
-        '_naked_buf',
-        '_naked_start',
     )
 
     def __init__(
@@ -42,12 +45,10 @@ class Chunker:
         block: bool = False,
         errors: list[str] | None = None,
     ):
-        self.text = text
-        self.block = block
         self.errors: list[str] = [] if errors is None else errors
+        self._text = text
+        self._block = block
         self._escaping_indices: list[int] = []
-        self._naked_buf: list[tuple[bool, str]] = []
-        self._naked_start = 0
 
     def _text_fragments(
         self, start: int, end: int
@@ -57,27 +58,27 @@ class Chunker:
         self._escaping_indices.append(end)
         for i in self._escaping_indices:
             if start < i:
-                yield False, self.text[start:i]
+                yield False, self._text[start:i]
             else:
                 assert start == i, (start, i, end)
             start = i + 1
         self._escaping_indices.clear()
 
-    def _test_naked(self, chunk: str) -> str | None:
+    def _test_naked(self, naked_start: int, chunk: str) -> str | None:
         trace('test_naked: %r', chunk)
         stem = chunk.rstrip()
         if not stem.endswith(';'):
             return None
-        escape_pos = self._naked_start + len(stem) - 2
+        escape_pos = naked_start + len(stem) - 2
         if escape_pos in self._escaping_indices:
             trace('test_naked: escaped at %s', escape_pos)
             return None
-        trace('test_naked: Naked block: %r\n  Dropped: %s', chunk, self._naked_buf)
+        trace('test_naked: Naked block: %r', chunk)
         return stem
 
-    def __iter__(self) -> Iterator[tuple[bool, str | None]]:
-        text = self.text
-        block = self.block
+    def __iter__(self) -> Iterator[Chunk]:
+        text = self._text
+        block = self._block
         errors = self.errors
         trace('Chunking text (block=%s): %s', block, text)
 
@@ -90,7 +91,8 @@ class Chunker:
         escape = False
 
         # Lexical states that are only valid inside blocks.
-        comment: int = False
+        # `comment` is 0 (none), 1 (line `// ... \n` or `# ...`), 2 (block `/* ... */`).
+        comment = 0
         quote = None
         raw = False
 
@@ -100,25 +102,29 @@ class Chunker:
         # The next position we should yield from.
         cursor = 0
 
+        # Tracking the naked block candidate.
+        _naked_start = 0
+        _naked_buf: list[Chunk] = []
+
         for p, c in enumerate(text):
             if escape:
                 escape = False
                 continue
 
-            if comment == 2:
-                # /* ... */
-                if c == '/' and p and text[p - 1] == '*':
-                    comment = False
-                cursor = p + 1
-                continue
-
             if comment:
+                if comment == 2:
+                    # /* ... */ — ends only at a closing `*/`.
+                    if c == '/' and p and text[p - 1] == '*':
+                        comment = 0
+                    cursor = p + 1
+                    continue
+                # Line comment — runs until '\n', which then falls through so
+                # the rest of the loop can act on the newline (naked-block
+                # detection, etc.).
                 if c != '\n':
                     cursor = p + 1
                     continue
-
-                # Skip the comment.
-                comment = False
+                comment = 0
 
             if quote:
                 # The escaping char `\` in string literals is rehandled by the
@@ -132,11 +138,11 @@ class Chunker:
 
             # Raw literals starting with '`' are NOT enclosed and consumes all the
             # rest of the statement, i.e., until the next statement boundary.
+            # Statement boundaries ';' and '{' and '}' terminate raw literals,
+            # but they are escaped in (and only in) quotes.
+            # Escaping char `\` is NOT special in raw literals.
             if raw:
-                if c != ';' and c != '{' and c != '}':
-                    # Statement boundaries ';' and '{' and '}' terminate raw literals,
-                    # but they are escaped in (and only in) quotes.
-                    # Escaping char `\` is NOT special in raw literals.
+                if c not in ';{}':
                     if c == '"' or c == "'":
                         quote = c
                     continue
@@ -148,127 +154,116 @@ class Chunker:
                 buf.append('\'')
                 cursor = p
 
-            match c:
-                case '{':
-                    if not block_starts:
-                        for fragment in self._text_fragments(cursor, p):
-                            self._naked_buf.append(fragment)
-                        cursor = p
+            if c == '{':
+                if not block_starts:
+                    for fragment in self._text_fragments(cursor, p):
+                        _naked_buf.append(fragment)
+                    cursor = p
 
-                    block_starts.append(p)
-                    trace('Block starts: %s', block_starts)
+                block_starts.append(p)
+                trace('Block starts: %s', block_starts)
 
-                case '}':
-                    if not block_starts or (block and len(block_starts) == 1):
-                        # An plain '}' as text, when no block is open.
-                        # But, when `block` is set, we cannot close the first (pretended) block here,
-                        # or stuff afterwards would be "leaked" as text fragments and injected into
-                        # our output.
-                        # We leave it to cause a Lark parse error later.
-                        continue
-                    trace('Block ends: %s', block_starts)
-                    block_starts.pop()
-                    if not block_starts:
-                        chunk = text[cursor:p]
+            elif c == '}':
+                if not block_starts or (block and len(block_starts) == 1):
+                    # An plain '}' as text, when no block is open.
+                    # But, when `block` is set, we cannot close the first (pretended) block here,
+                    # or stuff afterwards would be "leaked" as text fragments and injected into
+                    # our output.
+                    # We leave it to cause a Lark parse error later.
+                    continue
+                trace('Block ends: %s', block_starts)
+                block_starts.pop()
+                if not block_starts:
+                    buf.append(text[cursor:p])
+
+                    # Remove the block start '{'.
+                    # We cannot save `p+1` directly when '{' is found, in case of
+                    # unclosed blocks that are recovered as final texts later.
+                    # The '{' must exist there, as we cannot reach here if `block` is set.
+                    chunk = ''.join(buf)[1:].strip()
+                    buf.clear()
+                    if chunk:
+                        trace('Chunked block: %r', chunk)
+                        _naked_buf.append((True, chunk))
+                    cursor = p + 1
+
+            elif block_starts:
+                # Inside a block: track string literals, comments, raw literals.
+                # `\n` is intentionally NOT handled here, so a naked block can
+                # contain multi-line nested blocks.
+                if c == "'" or c == '"':
+                    quote = c
+                elif c == '#':
+                    comment = 1
+                    if chunk := text[cursor:p]:
                         buf.append(chunk)
+                elif c == '/' and p + 1 < len(text):
+                    ch = text[p + 1]
+                    if ch == '/':
+                        comment = 1
+                    elif ch == '*':
+                        comment = 2
+                    else:
+                        continue
+                    if chunk := text[cursor:p]:
+                        buf.append(chunk)
+                elif c == '`':
+                    trace('Raw literal starts at %s', p)
+                    raw = True
+                    if chunk := text[cursor:p]:
+                        buf.append(chunk)
+                    cursor = p
 
-                        # Remove the block start '{'.
-                        # We cannot save `p+1` directly when '{' is found, in case of
-                        # unclosed blocks that are recovered as final texts later.
-                        # The '{' must exist there, as we cannot reach here if `block` is set.
-                        chunk = ''.join(buf)[1:].strip()
-                        buf.clear()
-                        if chunk:
-                            trace('Chunked block: %r', chunk)
-                            self._naked_buf.append((True, chunk))
-                        cursor = p + 1
+            # Below: outside any block. We only handle escaping '\' chars
+            # outside blocks (escaping '{', '}', ';', '\' in text fragments) —
+            # inside blocks, '\' in quotes is rehandled by the parser later
+            # and elsewhere has no outer-level meaning.
+            elif c == '\\' and p + 1 < len(text) and text[p + 1] in '{};\\':
+                escape = True
+                self._escaping_indices.append(p)
+            elif c == '\n':
+                if (
+                    stem := self._test_naked(_naked_start, text[_naked_start:p])
+                ) is not None:
+                    # We're about to bypass `_text_fragments` for this region.
+                    # Clear `_escaping_indices` to maintain its invariant for
+                    # the next text fragment.
+                    _naked_buf.clear()
+                    self._escaping_indices.clear()
 
-                case _:
-                    if block_starts:
-                        match c:
-                            case "'" | '"':
-                                quote = c
+                    yield False, text[cursor:_naked_start]
+                    cursor = p + 1
+                    yield from Chunker(stem, block=True, errors=errors)
 
-                            case '#':
-                                comment = True
-                                # Flush up before the comment.
-                                if chunk := text[cursor:p]:
-                                    buf.append(chunk)
+                    # We are actually consuming the line break here, but yielding a `\n`
+                    # each time would result in too many empty lines for consecutive
+                    # inline naked blocks (`a = 1;\nb = 2;\n...`).
+                    # `None` hints the implicit line break after the naked block here,
+                    # so the caller can decide smartly.
+                    yield False, None
 
-                            case '/':
-                                if p + 1 < len(text):
-                                    ch = text[p + 1]
-                                    if ch == '/':
-                                        comment = True
-                                    elif ch == '*':
-                                        comment = 2
-                                    else:
-                                        continue
+                    _naked_start = p + 1
+                    continue
 
-                                    # Flush up before the comment.
-                                    if chunk := text[cursor:p]:
-                                        buf.append(chunk)
+                if _naked_buf:
+                    yield from _naked_buf
+                    _naked_buf.clear()
 
-                            case '`':
-                                trace('Raw literal starts at %s', p)
-                                raw = True
-                                # Flush up before the raw literal.
-                                if chunk := text[cursor:p]:
-                                    buf.append(chunk)
-                                cursor = p
-                            # We do not handle '\n' inside blocks, so a naked block
-                            # can contain multi-line blocks.
-
-                    # We only handles escaping '\' chars inside quotes (as such inside blocks)
-                    # or outside any blocks (to escape '{', '}', ';' and '\' in text fragments).
-                    # The latter ones here must be removed from the output fragments.
-                    # A '\' before any other char has no outer-level meaning, so we leave
-                    # both chars as-is.
-                    elif c == '\\' and p + 1 < len(text) and text[p + 1] in '{};\\':
-                        escape = True
-                        self._escaping_indices.append(p)
-                    elif c == '\n':
-                        if (
-                            stem := self._test_naked(text[self._naked_start : p])
-                        ) is not None:
-                            # We're about to bypass `_text_fragments` for this region.
-                            # Clear `_escaping_indices` to maintain its invariant for
-                            # the next text fragment.
-                            self._naked_buf.clear()
-                            self._escaping_indices.clear()
-
-                            yield False, text[cursor : self._naked_start]
-                            cursor = p + 1
-                            yield from Chunker(stem, block=True, errors=errors)
-
-                            # We are actually consuming the line break here, but yielding a `\n`
-                            # each time would result in too many empty lines for consecutive
-                            # inline naked blocks (`a = 1;\nb = 2;\n...`).
-                            # `None` hints the implicit line break after the naked block here,
-                            # so the caller can decide smartly.
-                            yield False, None
-
-                            self._naked_start = p + 1
-                            continue
-
-                        if self._naked_buf:
-                            yield from self._naked_buf
-                            self._naked_buf.clear()
-
-                        yield from self._text_fragments(cursor, p + 1)
-                        cursor = self._naked_start = p + 1
+                yield from self._text_fragments(cursor, p + 1)
+                cursor = _naked_start = p + 1
 
         # Flush final line buffer, pretending a EOF.
         if (
             not block
-            and (stem := self._test_naked(text[self._naked_start :])) is not None
+            and (stem := self._test_naked(_naked_start, text[_naked_start:]))
+            is not None
         ):
-            yield False, text[cursor : self._naked_start]
+            yield False, text[cursor:_naked_start]
             yield from Chunker(stem, block=True, errors=errors)
             return
 
-        if self._naked_buf:
-            yield from self._naked_buf
+        if _naked_buf:
+            yield from _naked_buf
 
         if block:
             # Pretend a final `}` to close the "virtual" block opened at the start.
