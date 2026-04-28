@@ -170,6 +170,14 @@ def _trim_val(val: Value, trim: int) -> Value:
     return val
 
 
+class ClauseState:
+    __slots__ = ('depth', 'falses')
+
+    def __init__(self):
+        self.depth = 0
+        self.falses = 0
+
+
 class Engine(Interpreter, ContextCallbacks):
     __slots__ = (
         '_ctx',
@@ -342,8 +350,7 @@ class Engine(Interpreter, ContextCallbacks):
             raise
 
     def _render(self, text: str, *, root: bool = False):
-        clause_depth = 0
-        clause_falses = 0
+        clause = ClauseState()
 
         for is_block, fragment in lex(text):
             if lex_errors:
@@ -352,96 +359,8 @@ class Engine(Interpreter, ContextCallbacks):
 
             if is_block:
                 assert fragment is not None
-                if is_not_quiet:
-                    trace(
-                        '[%s %s] Rendering block: %r',
-                        clause_depth,
-                        clause_falses,
-                        fragment,
-                    )
-
-                fragment = fragment.strip()
-                if clause_depth:
-                    if fragment == ':':
-                        trace('Else matched: %s %s', clause_depth, clause_falses)
-                        if clause_falses < 2:
-                            clause_falses ^= 1
-                        continue
-
-                    if fragment == '!':
-                        trace('End-if matched: %s %s', clause_depth, clause_falses)
-                        clause_depth -= 1
-                        if clause_falses:
-                            clause_falses -= 1
-                        continue
-
-                if fragment.endswith('?'):
-                    # { cond ? }
-                    if_kind = False
-                    # { cond ?: } means { "not cond" ? }
-                elif fragment.endswith(':') and fragment[:-1].strip().endswith('?'):
-                    if_kind = True
-                else:
-                    if_kind = None
-
-                if if_kind is not None:
-                    # Push the stack before skipping parsing.
-                    # Actual condition evaluation is deferred.
-                    trace(
-                        'If matched: %s, %s %s', fragment, clause_depth, clause_falses
-                    )
-                    clause_depth += 1
-                    if clause_falses:
-                        clause_falses += 1
-
-                if clause_falses:
-                    continue
-
-                misses = parse_fragment.cache_info().misses
-                try:
-                    tree = parse_fragment(fragment)
-                except LarkError as e:
-                    self._error(f'parse: {fragment}: {type(e).__name__}: {e}')
-                    continue
-
-                if is_tracing:
-                    new_misses = parse_fragment.cache_info().misses
-                    if new_misses > misses:
-                        trace('Parsed tree (%s): %s', len(fragment), tree.pretty())
-                    else:
-                        trace('Cached tree (%s)', len(fragment))
-
-                assert tree.data == 'block_inner', tree
-                if if_kind is not None:
-                    if (
-                        len(chs := tree.children) == 2
-                        and chs[0] is None
-                        and (br := narrow(chs[1], Tree)).data == 'branch'
-                        and (
-                            (len(br_chs := br.children) == 2)
-                            if not if_kind
-                            else (
-                                len(br_chs := br.children) == 3
-                                and self._is_empty_stmt(narrow(br_chs[2], Tree))
-                            )
-                        )
-                        and self._is_empty_stmt(narrow(br_chs[1], Tree))
-                    ):
-                        expr = narrow(br_chs[0], Tree)
-                        test = self._condition(expr) ^ if_kind
-                        if is_tracing:
-                            trace(
-                                'If clause evaluated: %s %s',
-                                self.debug_node(expr),
-                                test,
-                            )
-                        if not test:
-                            clause_falses = 1
-                    else:
-                        self._error('invalid if clause')
-                else:
-                    self._render_tree(tree, fragment, root)
-            elif not clause_falses:
+                self._render_block(fragment, root, clause)
+            elif not clause.falses:
                 if is_not_quiet:
                     trace('Appending text fragment: %r', fragment)
                 if fragment is None:
@@ -452,9 +371,99 @@ class Engine(Interpreter, ContextCallbacks):
                 else:
                     self._put(fragment)
 
-        if clause_depth:
+        if clause.depth:
             self._error('unclosed if clause')
         trace('Rendered result: %r', self._output)
+
+    def _render_block(self, fragment: str, root: bool, clause: ClauseState):
+        if is_not_quiet:
+            trace(
+                '[%s %s] Rendering block: %r',
+                clause.depth,
+                clause.falses,
+                fragment,
+            )
+
+        fragment = fragment.strip()
+        if clause.depth:
+            if fragment == ':':
+                trace('Else matched: %s %s', clause.depth, clause.falses)
+                if clause.falses < 2:
+                    clause.falses ^= 1
+                return
+
+            if fragment == '!':
+                trace('End-if matched: %s %s', clause.depth, clause.falses)
+                clause.depth -= 1
+                if clause.falses:
+                    clause.falses -= 1
+                return
+
+        if fragment.endswith('?'):
+            # { cond ? }
+            if_kind = False
+            # { cond ?: } means { "not cond" ? }
+        elif fragment.endswith(':') and fragment[:-1].strip().endswith('?'):
+            if_kind = True
+        else:
+            if_kind = None
+
+        if if_kind is not None:
+            # Push the stack before skipping parsing.
+            # Actual condition evaluation is deferred.
+            trace('If matched: %s, %s %s', fragment, clause.depth, clause.falses)
+            clause.depth += 1
+            if clause.falses:
+                clause.falses += 1
+
+        if clause.falses:
+            return
+
+        misses = parse_fragment.cache_info().misses
+        try:
+            tree = parse_fragment(fragment)
+        except LarkError as e:
+            self._error(f'parse: {fragment}: {type(e).__name__}: {e}')
+            return
+
+        if is_tracing:
+            new_misses = parse_fragment.cache_info().misses
+            if new_misses > misses:
+                trace('Parsed tree (%s): %s', len(fragment), tree.pretty())
+            else:
+                trace('Cached tree (%s)', len(fragment))
+
+        assert tree.data == 'block_inner', tree
+        if if_kind is None:
+            self._render_tree(tree, fragment, root)
+            return
+
+        if (
+            len(chs := tree.children) == 2
+            and chs[0] is None
+            and (br := narrow(chs[1], Tree)).data == 'branch'
+            and (
+                (len(br_chs := br.children) == 2)
+                if not if_kind
+                else (
+                    len(br_chs := br.children) == 3
+                    and self._is_empty_stmt(narrow(br_chs[2], Tree))
+                )
+            )
+            and self._is_empty_stmt(narrow(br_chs[1], Tree))
+        ):
+            expr = narrow(br_chs[0], Tree)
+            test = self._condition(expr) ^ if_kind
+            if is_tracing:
+                trace(
+                    'If clause evaluated: %s %s',
+                    self.debug_node(expr),
+                    test,
+                )
+            if not test:
+                clause.falses = 1
+        else:
+            self._error('invalid if clause')
 
     def _trace_result(self, r: Value):
         trace('Final rendered result: %r\nGas cost: %s', r, self._gas)
