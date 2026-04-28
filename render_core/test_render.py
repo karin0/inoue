@@ -1,6 +1,5 @@
 import os
 import sys
-import time
 import math
 import logging
 import warnings
@@ -264,8 +263,7 @@ class TestRender(unittest.TestCase):
         self.assertEqual(self.render_it('"None";'), '')
         self.assertEqual(self.render_it('"\'s\'.encode()";'), 's')
         self.assertEqual(self.render_it('"\'s\'.encode";'), '')
-
-        self.assertAlmostEqual(float(self.render_it('"time";')), time.time(), delta=2)
+        self.assertEqual(self.render_it('aa=bbbb; cc=aa; "len(aa)"; "len(cc)";'), '42')
 
         self.render_it('"100 ** 100 ** 100 ** 100";', e='Sorry')
         self.render_it('"\'qwq\' * int(1e9)";', e='Sorry')
@@ -314,8 +312,8 @@ class TestRender(unittest.TestCase):
             '__import__',
             'vars',
         ):
-            self.render_it(f'a="{s}";', e='not defined')
-            self.render_it(f'a="{s}()";', e='KeyError')
+            self.render_it(f'a="{s}";', e='NameError')
+            self.render_it(f'a="{s}()";', e='NameError')
         for p in (
             '__class__',
             '__bases__',
@@ -330,7 +328,7 @@ class TestRender(unittest.TestCase):
             '__dict__',
             '__call__',
         ):
-            self.render_it(f'a="{p}";', e='not defined')
+            self.render_it(f'a="{p}";', e='NameError')
             self.render_it(f'a="int.{p}";', e='Sorry')
             self.render_it(f'a="(1).{p}";', e='Sorry')
             self.render_it(f'a="(1,).{p}";', e='Sorry')

@@ -1,10 +1,8 @@
 import os
 import ast
-import time
 import logging
 import functools
 
-from datetime import datetime
 from abc import ABC, abstractmethod
 from collections.abc import MutableMapping, Sequence
 from typing import Any, Callable, Iterator, Literal, TypeGuard, Iterable, overload
@@ -93,21 +91,7 @@ def try_to_value_or_none(val: Any) -> Value | None:
     return fix_to_str(val)
 
 
-def date_func() -> str:
-    return datetime.today().isoformat()
-
-
-def today_func() -> str:
-    return datetime.today().strftime('%c')
-
-
-EVAL_FUNCS = {
-    **DEFAULT_FUNCTIONS,
-    'time': time.time,
-    'date': date_func,
-    'today': today_func,
-    'len': len,
-}
+EVAL_FUNCS = {**DEFAULT_FUNCTIONS, 'len': len}
 
 
 class Fragment(Box, Sequence[Value]):
