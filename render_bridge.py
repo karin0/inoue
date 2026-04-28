@@ -225,6 +225,7 @@ def write_file(path, text) -> None:
 
 
 trusted(eval, name='evil')
+trusted(repr)
 
 
 @trusted
