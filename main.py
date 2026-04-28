@@ -234,25 +234,18 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     callback = update.callback_query
     assert callback
     data = callback.data
-    fut = None
     if data:
         if data.startswith('rg_'):
-            fut = handle_rg_callback(data)
+            await handle_rg_callback(data)
         elif data[0] in CALLBACK_SPECIAL:
-            fut = handle_render_callback(update, callback, data)
+            await handle_render_callback(update, callback, data)
+            return
         elif data != 'noop':
             log.warning('bad callback: %s', data)
     else:
         log.warning('empty callback')
 
-    if fut:
-        try:
-            await asyncio.gather(fut, callback.answer())
-        except Exception:
-            await callback.answer()
-            raise
-    else:
-        await callback.answer()
+    await callback.answer()
 
 
 async def handle_inline_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

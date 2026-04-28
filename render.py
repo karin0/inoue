@@ -93,9 +93,7 @@ def get_env[T](ctx: Mapping[str, Value], key: str, default: T = None) -> Value |
     return v
 
 
-def get_env_flag[T](
-    ctx: Mapping[str, Value], key: str, default: T = False
-) -> Value | T:
+def get_env_flag[T](ctx: Mapping[str, Value], key: str, default: T = False) -> bool | T:
     v = get_env(ctx, key)
     if v is None:
         return default
@@ -103,7 +101,7 @@ def get_env_flag[T](
         return False
     if v == '1':
         return True
-    return v
+    return bool(v)
 
 
 def make_markup(
@@ -653,7 +651,7 @@ async def handle_render_inline_query(
     await query.answer((r,))
 
 
-async def handle_render_callback(update: Update, query: CallbackQuery, data: str):
+async def handle_render_callback(update: Update, callback: CallbackQuery, data: str):
     flags = {}
     clicked_button = None
 
@@ -710,11 +708,15 @@ async def handle_render_callback(update: Update, query: CallbackQuery, data: str
         case _:
             raise ValueError('bad render callback: ' + data)
 
+    query: CallbackQuery | None = callback
+
     async def edit_callback_message(spec: MessageSpec):
+        nonlocal query
+
         text, parse_mode, markup = spec
         try:
-            return await try_send_text(
-                query.edit_message_text,
+            r = await try_send_text(
+                callback.edit_message_text,
                 text,
                 parse_mode=parse_mode,
                 reply_markup=markup,
@@ -722,6 +724,21 @@ async def handle_render_callback(update: Update, query: CallbackQuery, data: str
         except BadRequest as e:
             if 'Message is not modified' not in str(e):
                 raise
+            r = None
+
+        if (query is not None) and (answer := get_env(ctx.data, 'answer')):
+            q = query
+            query = None
+
+            answer = render_segment(to_segment(answer))
+            if len(answer) > CallbackQuery.MAX_ANSWER_TEXT_LENGTH:
+                answer = answer[: CallbackQuery.MAX_ANSWER_TEXT_LENGTH - 1] + '…'
+
+            show_alert = get_env_flag(ctx.data, 'answer_alert')
+            log.info('handle_render_callback: answer: %s, %s', answer, show_alert)
+            await q.answer(answer, show_alert=show_alert)
+
+        return r
 
     ctx = RenderContext(
         update,
