@@ -91,9 +91,6 @@ def try_to_value_or_none(val: Any) -> Value | None:
     return fix_to_str(val)
 
 
-EVAL_FUNCS = {**DEFAULT_FUNCTIONS, 'len': len}
-
-
 class Fragment(Box, Sequence[Value]):
     '''An immutable fragment of values.'''
 
@@ -243,13 +240,16 @@ def parse_ast(expr: str):
     return SimpleEval.parse(expr)
 
 
+EVAL_FUNCS = {**DEFAULT_FUNCTIONS, 'len': len}
+EMPTY = {}
+
+
 class ScopedContext:
     __slots__ = (
         '_scopes',
         '_prefixes',
         '_data',
         '_cb',
-        '_eval',
         '_eval_str',
         '_eval_node',
     )
@@ -263,12 +263,16 @@ class ScopedContext:
         self._prefixes = {}
         self._data = ctx
         self._cb = callbacks
-        self._eval = SimpleEval(names=self)
-        self._eval_str = self._eval.eval
-        self._eval_node = self._eval._eval
-        assert self._eval.nodes
-        self._eval.nodes[ast.Call] = self._eval_call
-        self._eval.nodes[ast.Subscript] = self._eval_subscript
+
+        # Pass empty dicts to prevent the internal copy. We have taken care of
+        # all name lookups.
+        eval = SimpleEval(names=EMPTY, functions=EMPTY)
+        self._eval_str = eval.eval
+        self._eval_node = eval._eval
+        assert eval.nodes
+        eval.nodes[ast.Name] = self._eval_name
+        eval.nodes[ast.Call] = self._eval_call
+        eval.nodes[ast.Subscript] = self._eval_subscript
 
     def _get_func(self, name: str) -> Callable | None:
         if (val := self._cb._get_func(name)) is not None:
@@ -347,12 +351,12 @@ class ScopedContext:
         else:
             self._data[key] = val
 
-    # For `simpleeval` usage.
-    def __getitem__(self, name: str) -> Value | ScopeProxy | None:
+    def _eval_name(self, node: ast.Name) -> Value | ScopeProxy | None:
+        name = node.id
         trace('eval: get: %s', name)
         self._cb._consume_gas()
         if (r := self._get_eval_name(name)) is Tco:
-            raise KeyError(name)
+            raise NameError(name)
         return r
 
     def _get_eval_name(self, name: str) -> Value | ScopeProxy | None | TCO:
@@ -373,6 +377,7 @@ class ScopedContext:
                 return r
             log.error('Unsafe function result: %s() -> %r (%r)', name, r, type(r))
 
+        # `Tco` only indicates "not found", since `None` is a valid value here.
         return Tco
 
     def _eval_call(self, node: ast.Call):
@@ -393,7 +398,7 @@ class ScopedContext:
                 return func(*args, **kwargs)
             func = self._get_func(name)
             if func is None:
-                raise KeyError(name)
+                raise NameError(name)
         else:
             raise NotImplementedError('unsupported call: ' + str(type(func_node)))
 
@@ -436,7 +441,7 @@ class ScopedContext:
                 raw_key, val = self.resolve_raw(key)
                 trace('_eval_subscript: %s -> %s = %r', key, raw_key, val)
                 if val is None:
-                    raise KeyError(key)
+                    raise NameError(key)
                 return val
         else:
             container = self._eval_node(container_node)
