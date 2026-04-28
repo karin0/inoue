@@ -9,7 +9,7 @@ from functools import wraps
 from types import MethodType
 from datetime import datetime
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Concatenate, Coroutine, cast
+from typing import Any, Awaitable, Callable, Concatenate, Coroutine, Sequence, cast
 from collections.abc import MutableMapping
 
 from render_core import Box, Value, Fragment, to_str
@@ -41,16 +41,19 @@ async def _run[T](coro: Awaitable[T]) -> T | None:
         log.exception('Promise: coroutine failed')
 
 
-async def _chained[T, U](
-    prev: Awaitable[T], callback: Callable[[T], U | Coroutine[Any, Any, U]]
-) -> U:
-    result = await prev
-    log.debug('Promise: calling callback %r with result %r', callback, result)
-    out = callback(result)
-    if asyncio.iscoroutine(out):
-        log.debug('Promise: awaiting callback result %r', out)
-        out = await out
-    return cast(U, out)
+type Then[T, U] = Callable[[T], U | Coroutine[Any, Any, U]]
+
+
+async def _chained(prev: Awaitable, callbacks: Sequence[Then]) -> Any:
+    out = await prev
+    for callback in callbacks:
+        log.debug('then: got %r, calling %r', out, callback)
+        out = callback(out)
+        if isinstance(out, Promise):
+            log.debug('then: awaiting task %r', out._task)
+            out = await out._task
+    log.debug('then: final result %r', out)
+    return out
 
 
 class Promise[T: Value | None](Box):
@@ -60,14 +63,14 @@ class Promise[T: Value | None](Box):
         super().__init__()
         self._task = asyncio.create_task(_run(coro))
 
-    def then[U: Value | None](
-        self, callback: Callable[[T | None], U | Coroutine[Any, Any, U]]
-    ) -> Promise[U]:
+    def then(self, *callbacks: Then) -> Promise:
         # `callback` is expected to be a `SubDoc` with a `scope`, so we can call
         # it safely while not rendering.
-        if not callable(callback):
-            raise TypeError(f'Promise.then: callback must be callable, got {callback}')
-        return Promise(_chained(self._task, callback))
+        if not callbacks:
+            return self
+        if not all(callable(f) for f in callbacks):
+            raise TypeError(f'Promise.then: callback must be callable, got {callbacks}')
+        return Promise(_chained(self._task, callbacks))
 
     def __repr__(self) -> str:
         return f'<Promise task={self._task!r}>'
