@@ -25,7 +25,7 @@ from lark import Lark, Token, Tree
 from lark.visitors import Interpreter, Transformer
 from lark.exceptions import LarkError
 
-from .lex import lex, lex_errors
+from .lex import Chunker
 from .context import (
     is_tracing,
     is_not_quiet,
@@ -333,10 +333,11 @@ class Engine(Interpreter, ContextCallbacks):
     def _render(self, text: str, *, root: bool = False):
         clause = ClauseState()
 
-        for is_block, fragment in lex(text):
-            if lex_errors:
-                self.errors.extend(lex_errors)
-                lex_errors.clear()
+        chunker = Chunker(text)
+        for is_block, fragment in chunker:
+            if chunker.errors:
+                self.errors.extend(chunker.errors)
+                chunker.errors.clear()
 
             if is_block:
                 assert fragment is not None

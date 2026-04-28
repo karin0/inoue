@@ -26,7 +26,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from render_core import Value, Engine
 from render_core.context import trace
-from render_core.lex import lex
+from render_core.lex import Chunker
 
 import render_context as render_ctx
 from render_context import OverriddenDict
@@ -670,13 +670,13 @@ Write the following sentence twice, the second time within quotes.
         # real ';'); after the recursive lex of the naked block, 'foo'
         # still has to flush as a text fragment.
         self.assertEqual(
-            list(lex('\\\\;\nfoo')),
+            list(Chunker('\\\\;\nfoo')),
             [(False, ''), (True, '\\\\;'), (False, None), (False, 'foo')],
         )
 
         # Same shape, with escaped braces in the text region.
         self.assertEqual(
-            list(lex('\\{a\\};\nrest')),
+            list(Chunker('\\{a\\};\nrest')),
             [(False, ''), (True, '\\{a\\};'), (False, None), (False, 'rest')],
         )
 
