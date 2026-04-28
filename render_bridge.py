@@ -303,6 +303,7 @@ def communicate(cmd: str, input: str | None = None) -> Promise[ProcessResult]:
 
 public(time.time, name='time')
 public(time.perf_counter, name='perf')
+public(hitokoto)
 
 
 @public
@@ -390,7 +391,26 @@ def cleanup(text) -> str:
     return cleanup_text(str(text))
 
 
-public(hitokoto)
+class Deferred(Box, BaseElement):
+    __slots__ = ('_func',)
+
+    def __init__(self, func: Callable[[], Value]):
+        self._func = func
+
+    @property
+    def inner(self) -> Segment:  # type: ignore
+        r = to_segment(self._func())
+        log.debug('fc: got %r from %r', r, self._func)
+        return r
+
+
+@public
+def fc(thunk: Callable) -> Deferred:
+    '''A "functional component".
+    Note that this may exceed the length limit in `Formatter`.
+    '''
+    return Deferred(thunk)
+
 
 for name, func in _methods.items():
     if func is not None:
