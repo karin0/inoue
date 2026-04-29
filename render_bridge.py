@@ -222,6 +222,15 @@ def version() -> str:
 
 
 @trusted
+def read_file(path) -> str:
+    if not isinstance(path, str):
+        raise TypeError(f'path must be a str, got {path!r}')
+
+    with open(path, encoding='utf-8') as fp:
+        return fp.read()
+
+
+@trusted
 def write_file(path, text) -> None:
     if not isinstance(path, str):
         raise TypeError(f'write_file: path must be a str, got {path!r}')
