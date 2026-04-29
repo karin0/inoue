@@ -40,7 +40,6 @@ from .context import (
     trim_output,
     Context,
     ScopedContext,
-    ContextCallbacks,
 )
 from .tco import TCO, MaybeTCO, Tco, TCOContext
 
@@ -180,7 +179,7 @@ class ClauseState:
         self.falses = 0
 
 
-class Engine(Interpreter, ContextCallbacks):
+class Engine(Interpreter):
     __slots__ = (
         '_ctx',
         '_doc_src',
@@ -227,7 +226,6 @@ class Engine(Interpreter, ContextCallbacks):
 
         trace('Engine initialized: %s', ctx)
 
-    @override
     def _get_func(self, name: str) -> Callable[..., Value | None] | None:
         if (val := self._funcs_src(name)) is not None:
             return val
@@ -247,7 +245,6 @@ class Engine(Interpreter, ContextCallbacks):
             case _:
                 return None
 
-    @override
     def _consume_gas(self):
         if self._gas >= MAX_GAS:
             self._error('out of gas')
@@ -549,7 +546,6 @@ class Engine(Interpreter, ContextCallbacks):
             return 'unknown'
         return self.debug_node(self._tree)
 
-    @override
     def _error(self, msg: str):
         ctx = self._tree_ctx()
         log.debug('Error: %s: %s', msg, ctx)
@@ -579,6 +575,7 @@ class Engine(Interpreter, ContextCallbacks):
                 sys_depth,
             )
 
+        # Recursion is allowed up to a limit.
         if self._depth >= MAX_DEPTH:
             self._error('stack overflow')
             raise Abort()

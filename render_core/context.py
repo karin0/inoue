@@ -3,9 +3,17 @@ import ast
 import logging
 import functools
 
-from abc import ABC, abstractmethod
 from collections.abc import MutableMapping, Sequence
-from typing import Any, Callable, Iterator, Literal, TypeGuard, Iterable, overload
+from typing import (
+    Any,
+    Callable,
+    Iterator,
+    Literal,
+    TypeGuard,
+    Iterable,
+    Protocol,
+    overload,
+)
 
 from simpleeval import SimpleEval, DEFAULT_FUNCTIONS, DISALLOW_FUNCTIONS
 
@@ -212,20 +220,12 @@ class ScopeProxy:
         return self._ctx._data[self._prefix + name]
 
 
-class ContextCallbacks(ABC):
+class ContextCallbacks(Protocol):
     __slots__ = ()
 
-    @abstractmethod
-    def _error(self, msg: str):
-        pass
-
-    @abstractmethod
-    def _consume_gas(self):
-        pass
-
-    @abstractmethod
-    def _get_func(self, name: str) -> Callable | None:
-        pass
+    def _error(self, msg: str): ...
+    def _consume_gas(self): ...
+    def _get_func(self, name: str) -> Callable | None: ...
 
 
 class Context(MutableMapping[str, Value]):
@@ -254,11 +254,7 @@ class ScopedContext:
         '_eval_node',
     )
 
-    def __init__(
-        self,
-        ctx: Context,
-        callbacks: ContextCallbacks,
-    ):
+    def __init__(self, ctx: Context, callbacks: ContextCallbacks):
         self._scopes: list[str] = ['']
         self._prefixes = {}
         self._data = ctx
