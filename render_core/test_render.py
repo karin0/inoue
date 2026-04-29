@@ -1268,6 +1268,34 @@ safe = 1;
         assert callable(cb)
         self.assertEqual(cb(3), 15)
 
+    def test_output_func(self):
+        def get_doc(name):
+            if name == 'doc':
+                return '*f;\nD'
+            if name == 'doc2':
+                return 'the\ne="output";\nis\ne;'
+            return None
+
+        mock_db(get_doc)
+
+        text = r'''text{
+'A';
+{ 'B' };
+{ f ↦ 'C' };
+*f;
+*doc;
+t=*doc;
+c=*doc2;
+d="output";
+'header';
+c;
+'of';
+d;
+'end';
+t
+}1'''
+        self.render_it(text, eq='headeris\nthe\noftextABCC\nDendC\nD1')
+
 
 if __name__ == '__main__':
     unittest.main()
