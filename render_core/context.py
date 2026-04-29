@@ -389,7 +389,9 @@ class ScopedContext:
         elif isinstance(func_node, ast.Name):
             name = func_node.id
             func = self.get(name, allow_undef=True)
-            if isinstance(func, Box) and callable(func):
+            if callable(func):
+                if not isinstance(func, Box):
+                    raise RuntimeError(f'{name}: expected Box, got {func}')
                 # A SubDoc.
                 return func(*args, **kwargs)
             func = self._get_func(name)
