@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 from typing import (
     Any,
     Callable,
+    Iterable,
     Sequence,
     Type,
     TypeVar,
@@ -84,18 +85,36 @@ parser = Lark.open(
 )
 
 
+def _iter_tokens(tree: Tree) -> Iterable[Token]:
+    for ch in tree.children:
+        if isinstance(ch, Token):
+            yield ch
+        else:
+            yield from _iter_tokens(ch)
+
+
 @functools.lru_cache
 def parse_fragment(text: str) -> Tree:
-    tree: Tree = BranchNormalizer().transform(parser.parse(text))
-    for sub in tree.iter_subtrees_topdown():
-        if sub.data == 'python':
+    root: Tree = BranchNormalizer().transform(parser.parse(text))
+    for tree in root.iter_subtrees_topdown():
+        if tree.data == 'python':
+            out = []
+            last = tree.meta.start_pos
+            for token in _iter_tokens(tree):
+                if token.type == 'LOGIC_OP':
+                    # Translate `&&` and `||` to Python.
+                    out.append(text[last : token.start_pos])
+                    out.append('and' if token.value == '&&' else 'or')
+                    last = token.end_pos
+            out.append(text[last : tree.meta.end_pos])
+
             # Keep the source and remove all children.
-            sub.children = [text[sub.meta.start_pos : sub.meta.end_pos]]
+            tree.children = [''.join(out)] if len(out) > 1 else out
         try:
-            delattr(sub, '_meta')
+            delattr(tree, '_meta')
         except AttributeError:
             pass
-    return tree
+    return root
 
 
 T = TypeVar('T', bound=Tree | Token)

@@ -356,6 +356,8 @@ class TestRender(unittest.TestCase):
             ('{16 >> 2}', '4'),
             ('{1 != 2}', '1'),
             ('{1 == 1}', '1'),
+            ('{a=5; a && 2}', '2'),
+            ('{a=5;  a || 0}', '5'),
         ):
             self.render_it(src, eq=expected)
 

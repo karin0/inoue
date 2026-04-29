@@ -82,13 +82,14 @@ python: py_term (py_op py_term)+ | py_call
 ?py_term: lvalue | py_call | literal | "(" python ")" | py_term "." iden
 ?py_call: py_term "(" (py_expr "," )* py_expr? ")"
 
-// Operators excluded for conflicts: `/`, `//` (repl, line comment), `|` (repl),
-// `^` (swap).
+// Operators excluded for conflicts: `/`, `|` (repl), `^` (swap), `//` (comment).
 PY_OP: "**" | "%" | "&" | "<<" | ">>"
      | "<=" | ">=" | "<" | ">" | "!=" | "=="
      | "+=" | "-=" | "*=" | "/=" | "**=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>="
 
-?py_op: COMMON_OP | PY_OP
+LOGIC_OP.1: "&&" | "||"
+
+?py_op: COMMON_OP | PY_OP | LOGIC_OP
 
 ?literal: ESCAPED_STRING  -> dq_lit
         | SQ_STRING       -> sq_lit
