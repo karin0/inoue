@@ -272,20 +272,19 @@ class ProcessResult(Box):
         return self.stdout
 
 
-async def _communicate(cmd: str, input: str | None = None) -> ProcessResult:
-    t0 = time.perf_counter()
-    proc = await asyncio.create_subprocess_shell(
+async def _communicate(cmd: str, input: str | None) -> ProcessResult:
+    fut = asyncio.create_subprocess_shell(
         cmd,
         stdin=asyncio.subprocess.PIPE if input else None,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
+    buf = input.encode('utf-8') if input else None
 
+    t0 = time.perf_counter()
+    proc = await fut
     try:
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(input.encode('utf-8') if input else None),
-            timeout=10,
-        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(buf), timeout=10)
         returncode = proc.returncode
     except asyncio.TimeoutError:
         proc.terminate()
