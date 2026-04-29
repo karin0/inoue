@@ -1359,6 +1359,11 @@ class Engine(Interpreter):
                     last_scope + key, as_str=as_str, allow_undef=True
                 )
 
+            # Negation: {~name}
+            case '~':
+                val = self._scope.get(key, allow_undef=allow_undef)
+                return '0' if val and val != '0' else '1'
+
             # Increment: {++name}
             case '++':
                 self._scope.do_augassign(key, operator.add, 1)

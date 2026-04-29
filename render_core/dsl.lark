@@ -71,7 +71,7 @@ ASSIGN_OP: "=" | ":=" | "?="
 
 // Unary operators. Some are shared with 'py_op' to avoid conflicts.
 COMMON_OP: "+" | "-" | "*"
-UNARY_OP: "$" | "::"  | "++" | "--"
+UNARY_OP: "$" | "::" | "~" | "++" | "--"
 
 !unary: (COMMON_OP | UNARY_OP) lvalue
 !unary_chain: unary+
