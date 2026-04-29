@@ -233,10 +233,11 @@ def read_file(path) -> str:
 @trusted
 def write_file(path, text) -> None:
     if not isinstance(path, str):
-        raise TypeError(f'write_file: path must be a str, got {path!r}')
+        raise TypeError(f'path must be a str, got {path!r}')
 
+    text = to_str(text)
     with open(path, 'w', encoding='utf-8') as fp:
-        fp.write(str(text))
+        fp.write(text)
 
 
 trusted(eval, name='evil')
@@ -308,8 +309,8 @@ async def _communicate(cmd: str, input: str | None) -> ProcessResult:
 
 
 @trusted
-def communicate(cmd: str, input: str | None = None) -> Promise[ProcessResult]:
-    return Promise(_communicate(cmd, input))
+def communicate(cmd, input='') -> Promise[ProcessResult]:
+    return Promise(_communicate(to_str(cmd), to_str(input)))
 
 
 public(time.time, name='time')
@@ -329,12 +330,12 @@ def today() -> str:
 
 @public
 def escape_(text) -> str:
-    return escape(str(text))
+    return escape(to_str(text))
 
 
 @public
 def html_escape_(text) -> str:
-    return html_escape(str(text))
+    return html_escape(to_str(text))
 
 
 def create_style[**P, T: Element](
@@ -393,13 +394,13 @@ def spoiler(text) -> Style | str:
 
 @public
 def raw(text) -> Raw | str:
-    text = str(text)
+    text = to_str(text)
     return Raw(text) if text else ''
 
 
 @public
 def cleanup(text) -> str:
-    return cleanup_text(str(text))
+    return cleanup_text(to_str(text))
 
 
 class Deferred(Box, BaseElement):
