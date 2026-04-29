@@ -79,12 +79,22 @@ parser = Lark.open(
     os.path.join(os.path.dirname(__file__), 'dsl.lark'),
     parser='lalr',
     start='block_inner',
+    propagate_positions=True,  # For `_python`.
 )
 
 
 @functools.lru_cache
 def parse_fragment(text: str) -> Tree:
-    return BranchNormalizer().transform(parser.parse(text))
+    tree: Tree = BranchNormalizer().transform(parser.parse(text))
+    for sub in tree.iter_subtrees_topdown():
+        if sub.data == 'python':
+            # Keep the source and remove all children.
+            sub.children = [text[sub.meta.start_pos : sub.meta.end_pos]]
+        try:
+            delattr(sub, '_meta')
+        except AttributeError:
+            pass
+    return tree
 
 
 T = TypeVar('T', bound=Tree | Token)
@@ -494,7 +504,7 @@ class Engine(Interpreter):
 
     @classmethod
     def debug_node(
-        cls, node: Tree | Token | tuple[Tree, str] | None, *, depth: int = 0
+        cls, node: Tree | Token | tuple[Tree, str] | str | None, *, depth: int = 0
     ) -> str:
         if node is None:
             return '/'
@@ -503,6 +513,9 @@ class Engine(Interpreter):
         if isinstance(node, tuple):
             # Cached node from `_scan_code_block`.
             return f'Cached({node[0].data}, {node[1]})'
+        if isinstance(node, str):
+            # Python source. See `parse_fragment`.
+            return f'[{node}]'
         assert isinstance(node, Tree), node
         nr = len(node.children)
         if nr > 1:
@@ -971,6 +984,9 @@ class Engine(Interpreter):
                     # Optimize: chance to TCO.
                     val = self._dq_lit(inner, allow_tco=allow_tco)
                     return self._put_val(val)
+                case 'python':
+                    val = self._python(inner, allow_tco=allow_tco)
+                    return self._put_val(val)
 
         val = self._expr(tree, permissive=not direct_branch)
         self._put_val(val)
@@ -1068,13 +1084,6 @@ class Engine(Interpreter):
             case 'assign_or_equal':
                 return self._equal(ch, allow_undef=allow_undef)
 
-            # Equality check: {key == val} (by string representation!)
-            # `a==b` means `$a == 'b'`, and `a==$b` means `$a == $b`.
-            case 'compare':
-                left = self._evaluate(ch.children[0], permissive=True)
-                right = self._evaluate(ch.children[1])
-                return '1' if left == right else '0'
-
             # Nested block: {{ ... }}
             case 'code_block':
                 inner, sub_doc_token = self._scan_code_block(ch)
@@ -1093,6 +1102,10 @@ class Engine(Interpreter):
             # This should be non-mutating, i.e. side-effect free.
             case 'dq_lit':
                 return self._dq_lit(ch, as_str=as_str)
+
+            # Naked Python expression: {1 + 1}, {f(x)}, ...
+            case 'python':
+                return self._python(ch, as_str=as_str)
 
             # Literal: {'single quoted'}
             case 'sq_lit':
@@ -1141,18 +1154,57 @@ class Engine(Interpreter):
         self, tree: Tree, *, as_str: bool = False, allow_tco: bool = False
     ) -> Value | TCO:
         value: str = narrow(tree.children[0], Token).value
+        # Strip the quotes and unescape.
         expr = value[1:-1].strip().replace('\\"', '"').replace('\\\\', '\\')
+        return self._eval_py(expr, as_str=as_str, allow_tco=allow_tco)
+
+    @overload
+    def _python(
+        self, tree: Tree, *, as_str: Literal[True], allow_tco: Literal[False] = False
+    ) -> str: ...
+
+    @overload
+    def _python(
+        self, tree: Tree, *, as_str: Literal[True], allow_tco: Literal[True]
+    ) -> str | TCO: ...
+
+    @overload
+    def _python(
+        self,
+        tree: Tree,
+        *,
+        as_str: Literal[False] = False,
+        allow_tco: Literal[False] = False,
+    ) -> Value: ...
+
+    @overload
+    def _python(
+        self, tree: Tree, *, as_str: Literal[False] = False, allow_tco: Literal[True]
+    ) -> Value | TCO: ...
+
+    def _python(
+        self, tree: Tree, *, as_str: bool = False, allow_tco: bool = False
+    ) -> Value | TCO:
+        if is_tracing:
+            trace('_python_source: %r, %s', tree, self.debug_node(tree))
+        # Extract the source saved by `parse_fragment`.
+        text = tree.children[0]
+        assert isinstance(text, str), text
+        return self._eval_py(text, as_str=as_str, allow_tco=allow_tco)
+
+    def _eval_py(
+        self, expr: str, *, as_str: bool = False, allow_tco: bool = False
+    ) -> Value | TCO:
         try:
             val = self._scope.eval(expr, allow_tco=allow_tco)
         except Abort as e:
             # This includes `Exit`.
-            trace(f'_dq_lit: %r', e)
+            trace('_eval_py: %r', e)
             raise
         except Exception as e:
             self._error(f'evaluate: {expr!r}: {type(e).__name__}: {e}')
             if is_tracing:
-                s = traceback.format_exc()
-                trace('%s', s)
+                trace('%s', traceback.format_exc())
             return ''
 
         if isinstance(val, tuple):

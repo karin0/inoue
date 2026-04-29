@@ -201,7 +201,9 @@ class TestRender(unittest.TestCase):
         self.assertEqual(self.render_it("{status=404?OK:ERR}", ctx), "ERR")
         self.assertEqual(self.render_it("{status==404?OK:ERR}", ctx), "ERR")
         self.assertEqual(self.render_it("{status={ b=200; b } ? OK : ERR}", ctx), "OK")
-        self.assertEqual(self.render_it("{status=={ b=200; b } ? OK : ERR}", ctx), "OK")
+        self.assertEqual(
+            self.render_it("{b={ b=200; b }; status==b ? OK : ERR}", ctx), "OK"
+        )
 
     def test_assign_or_equal(self):
         ctx = {'status': '200'}
@@ -334,6 +336,57 @@ class TestRender(unittest.TestCase):
             self.render_it(f'a="(1,).{p}";', e='Sorry')
             self.render_it(f'a="\'\'.{p}";', e='Sorry')
             self.render_it(f'a="None.{p}";', e='Sorry')
+
+    def test_python(self):
+        for src, expected in (
+            ('{1 + 2}', '3'),
+            ('{5 - 2}', '3'),
+            ('{3 * 4}', '12'),
+            ('{2 ** 10}', '1024'),
+            ('{7 % 3}', '1'),
+            ('{6 & 5}', '4'),
+            ('{1 < 2}', '1'),
+            ('{2 > 1}', '1'),
+            ('{2 <= 2}', '1'),
+            ('{2 >= 2}', '1'),
+            ('{1 << 4}', '16'),
+            ('{16 >> 2}', '4'),
+            ('{1 != 2}', '1'),
+            ('{1 == 1}', '1'),
+        ):
+            self.render_it(src, eq=expected)
+
+        self.render_it('{1 + 2 * 3}', eq='7')
+        self.render_it('{(1 + 2) * 3}', eq='9')
+        self.render_it('{1 + 2 == "3"}', eq='1')
+
+        self.render_it('{1 < 2 == 2 < 3}', eq='1')
+        self.render_it('{1 < 2 == 3 < 4}', eq='0')
+
+        self.render_it('{a = 5; a + 1}', eq='6')
+        self.render_it('{a = 3; b = 4; a * a + b * b}', eq='25')
+        self.render_it('{a = 3; a << 2}', eq='12')
+
+        self.render_it('{s = qwq; len(s)}', eq='3')
+        self.render_it('{n = 5; str(n)}', eq='5')
+        self.render_it('{int(s) + 1}', {'s': '4'}, eq='5')
+        self.render_it('{s = qwq; len(str(s))}', eq='3')
+
+        self.render_it("{a = hi; a + ' there'}", eq='hi there')
+        self.render_it('{1 + (2 * 3)}', eq='7')
+        self.render_it('{"1" + "2 * 3"}', eq='12 * 3')
+
+        self.render_it('{a.k = 7; a[k] + 1}', {'k': 'k'}, eq='8')
+
+        self.render_it(
+            "{price=100; tax='0.08';"
+            ' float(price) * (1 + float(tax)) > 105 ? Expensive : Cheap}',
+            eq='Expensive',
+        )
+        self.render_it('{1 + 1 == 2 ? yes : no}', eq='yes')
+
+        self.render_it('{1 + undefined_var}', e='NameError')
+        self.render_it('{f ⇒ x ? f(x - 1) : done}\nf(50);', eq='done')
 
     def test_context_assignment(self):
         text = "{target=World}Hello {target}!"
@@ -574,7 +627,7 @@ Write the following sentence twice, the second time within quotes.
         self.assertEqual(self.render_it('{ a={b="1"; b}; "a+1" }'), '2')
         self.assertEqual(self.render_it('{ a={d={{"1"}}; +b-c$d}; "a+1" }'), '2')
         self.assertEqual(
-            self.render_it(r'''{ a={d={{"1"}}; {d=="1"?q}; +b-c$d}; "a+'1'" }'''),
+            self.render_it(r'''{ a={d={{"1"}}; {d==1?q}; +b-c$d}; "a+1" }'''),
             'q11',
         )
 
@@ -783,7 +836,7 @@ iter: ;
 "m * m > n" ? $n; n="n > 2 and n+2 or 3"; m="2" :;
 ''' + '*iter4;' * 100 + '*prime2;'
         result = self.render_it(text, e='out of gas')
-        ans = '\n'.join(str(v) for v in self.iter_prime(59))
+        ans = '\n'.join(str(v) for v in self.iter_prime(53))
         self.assertTrue(result.startswith(ans), result)
 
     @staticmethod

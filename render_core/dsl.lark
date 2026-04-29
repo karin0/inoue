@@ -54,9 +54,9 @@ repl_pair: [expr] "/" [expr]                      -> repl_pair_plain
 !expr: literal
      | unary_chain
      | code_block
-     | compare
      | assign_or_equal
      | lvalue
+     | python
 
 subscript: lvalue "[" expr "]"
 
@@ -69,17 +69,26 @@ subscript: lvalue "[" expr "]"
 assign_or_equal: lvalue ASSIGN_OP [expr]
 ASSIGN_OP: "=" | ":=" | "?="
 
-// Not arithmetic operators!
-UNARY_OP: "+" | "-" | "*" | "$" | "::"
+// Unary operators. Some are shared with 'py_op' to avoid conflicts.
+COMMON_OP: "+" | "-" | "*"
+UNARY_OP: "$" | "::"
 
-!unary: UNARY_OP lvalue
+!unary: (COMMON_OP | UNARY_OP) lvalue
 !unary_chain: unary+
 
-// Even more equality! Expressions cannot be empty here either.
-compare: expr _EQUAL expr
+// Limited Python expressions. Single term is disallowed to avoid ambiguity.
+python: py_term (py_op py_term)+ | py_call
+?py_expr: py_term (py_op py_term)*
+?py_term: lvalue | py_call | literal | "(" python ")" | py_term "." iden
+?py_call: py_term "(" (py_expr "," )* py_expr? ")"
 
-// Higher than ASSIGN_OP.
-_EQUAL.10: "=="
+// Operators excluded for conflicts: `/`, `//` (repl, line comment), `|` (repl),
+// `^` (swap).
+PY_OP: "**" | "%" | "&" | "<<" | ">>"
+     | "<=" | ">=" | "<" | ">" | "!=" | "=="
+
+?py_op: COMMON_OP | PY_OP
+
 ?literal: ESCAPED_STRING  -> dq_lit
         | SQ_STRING       -> sq_lit
 
@@ -87,9 +96,10 @@ _EQUAL.10: "=="
 
 // Terminals.
 
-// Exclude all punctuations except '_', '<', '>', '.', ',' from naked literals.
+// Exclude all punctuations except '_', '.', ',' from naked literals.
+// `<` and `>` are also excluded for `python` ops.
 // U+21A6 (↦) and U+21D2 (⇒) are also excluded for slick sub-doc markers.
-LITERAL.-100: /[^\"#$%&'()*+\-\/:;=?!@[\\\]^`{|}~↦⇒]+/
+LITERAL.-100: /[^\"#$%&'()*+\-\/:;<>=?!@[\\\]^`{|}~↦⇒]+/
 
 SQ_STRING: /'([^'\\]|\\.)*'/
 

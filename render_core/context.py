@@ -15,7 +15,12 @@ from typing import (
     overload,
 )
 
-from simpleeval import SimpleEval, DEFAULT_FUNCTIONS, DISALLOW_FUNCTIONS
+from simpleeval import (
+    SimpleEval,
+    DEFAULT_FUNCTIONS,
+    DEFAULT_OPERATORS,
+    DISALLOW_FUNCTIONS,
+)
 
 from .tco import Tco, TCO
 
@@ -251,7 +256,7 @@ class ScopedContext:
         '_data',
         '_cb',
         '_eval_str',
-        '_eval_node',
+        '_eval',
     )
 
     def __init__(self, ctx: Context, callbacks: ContextCallbacks):
@@ -264,11 +269,12 @@ class ScopedContext:
         # all name lookups.
         eval = SimpleEval(names=EMPTY, functions=EMPTY)
         self._eval_str = eval.eval
-        self._eval_node = eval._eval
+        self._eval = eval._eval
         assert eval.nodes
         eval.nodes[ast.Name] = self._eval_name
         eval.nodes[ast.Call] = self._eval_call
         eval.nodes[ast.Subscript] = self._eval_subscript
+        eval.nodes[ast.Compare] = self._eval_compare
 
     def _get_func(self, name: str) -> Callable | None:
         if (val := self._cb._get_func(name)) is not None:
@@ -380,12 +386,12 @@ class ScopedContext:
         if is_tracing:
             trace('_eval_call: %s', ast.dump(node))
         self._cb._consume_gas()
-        args = (self._eval_node(a) for a in node.args)
-        kwargs = dict(self._eval_node(k) for k in node.keywords)
+        args = (self._eval(a) for a in node.args)
+        kwargs = dict(self._eval(k) for k in node.keywords)
 
         func_node = node.func
         if isinstance(func_node, ast.Attribute):
-            func = self._eval_node(func_node)
+            func = self._eval(func_node)
         elif isinstance(func_node, ast.Name):
             name = func_node.id
             func = self.get(name, allow_undef=True)
@@ -434,7 +440,7 @@ class ScopedContext:
         if isinstance(container_node, ast.Name):
             container = self._get_eval_name(container_node.id)
             if container is Tco:
-                slice = self._eval_node(node.slice)
+                slice = self._eval(node.slice)
                 key = container_node.id + '.' + str(slice)
                 raw_key, val = self.resolve_raw(key)
                 trace('_eval_subscript: %s -> %s = %r', key, raw_key, val)
@@ -442,12 +448,32 @@ class ScopedContext:
                     raise NameError(key)
                 return val
         else:
-            container = self._eval_node(container_node)
+            container = self._eval(container_node)
 
-        slice = self._eval_node(node.slice)
+        slice = self._eval(node.slice)
         r = container[slice]  # type: ignore[index]
         trace('_eval_subscript: %r[%r] = %r', container, slice, r)
         return r
+
+    def _eval_compare(self, node: ast.Compare):
+        if is_tracing:
+            trace('_eval_compare: %s', ast.dump(node))
+        self._cb._consume_gas()
+        right = self._eval(node.left)
+        for operation, comp in zip(node.ops, node.comparators):
+            left = right
+            right = self._eval(comp)
+
+            # Emulate a weak typing comparison.
+            if isinstance(left, str):
+                if not isinstance(right, str):
+                    right = to_str(right)
+            elif isinstance(right, str):
+                left = to_str(left)
+
+            if not DEFAULT_OPERATORS[type(operation)](left, right):
+                return False
+        return True
 
     @overload
     def eval(
@@ -480,8 +506,8 @@ class ScopedContext:
                             key,
                             val,
                         )
-                    args = tuple(self._eval_node(a) for a in node.args)
-                    kwargs = dict(self._eval_node(k) for k in node.keywords)
+                    args = tuple(self._eval(a) for a in node.args)
+                    kwargs = dict(self._eval(k) for k in node.keywords)
                     return val, args, kwargs
 
         if is_tracing:
