@@ -558,11 +558,14 @@ class Engine(Interpreter):
             self.errors.append('too many errors, aborting')
             raise Abort()
 
-    # Note that this is only used for output capturing before entering a block.
-    # Scopes are completely separated from this mechanism.
     @contextmanager
     def _push(self):
-        # Recursion is allowed up to a limit.
+        '''This *must* be used along with `_gather_output()` before entering
+        *any* logical block (including doc and sub-doc refs), even if its output
+        is not captured, so we can properly trim it and isolate the `_output_func()`
+        calls.
+
+        This is for output capturing only. Scopes are not handled here.'''
         old_output = self._output
         old_dirty = self._dirty
         if is_tracing:
