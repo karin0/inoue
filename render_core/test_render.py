@@ -388,6 +388,14 @@ class TestRender(unittest.TestCase):
         self.render_it('{1 + undefined_var}', e='NameError')
         self.render_it('{f ⇒ x ? f(x - 1) : done}\nf(50);', eq='done')
 
+    def test_python_augassign(self):
+        self.render_it('{a = 1; a += 2; a /= 0.5; a}', eq='6.0')
+        self.render_it('{a = 10; a -= 3; a *= 2; a}', eq='14')
+        self.render_it('{a = 5; a **= 3; a}', eq='125')
+        self.render_it('{a = 1; a <<= 4; a}', eq='16')
+        self.render_it('{a = 16; a >>= 2; a}', eq='4')
+        self.render_it('{a = 16; a >>= "2"; a}', e='TypeError')
+
     def test_context_assignment(self):
         text = "{target=World}Hello {target}!"
         result, ctx = self.render_it_all(text)

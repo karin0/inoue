@@ -1099,7 +1099,6 @@ class Engine(Interpreter):
                 return self._scope.get(key, as_str=as_str, allow_undef=allow_undef)
 
             # Python expression: {"1 + 1"}
-            # This should be non-mutating, i.e. side-effect free.
             case 'dq_lit':
                 return self._dq_lit(ch, as_str=as_str)
 

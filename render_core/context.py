@@ -275,6 +275,7 @@ class ScopedContext:
         eval.nodes[ast.Call] = self._eval_call
         eval.nodes[ast.Subscript] = self._eval_subscript
         eval.nodes[ast.Compare] = self._eval_compare
+        eval.nodes[ast.AugAssign] = self._eval_augassign
 
     def _get_func(self, name: str) -> Callable | None:
         if (val := self._cb._get_func(name)) is not None:
@@ -474,6 +475,40 @@ class ScopedContext:
             if not DEFAULT_OPERATORS[type(operation)](left, right):
                 return False
         return True
+
+    def _eval_augassign(self, node: ast.AugAssign):
+        if is_tracing:
+            trace('_eval_augassign: %s', ast.dump(node))
+        self._cb._consume_gas()
+
+        if not isinstance(node.target, ast.Name):
+            self._cb._error(f'invalid augassign to {ast.dump(node.target)}')
+            return
+
+        # Only modifying variables in the current scope is allowed.
+        key = self.current_key(node.target.id)
+        if (left := self._data.get(key)) is None:
+            self._cb._error(f'undefined: {key}')
+            return
+
+        right = self._eval(node.value)
+        val = DEFAULT_OPERATORS[type(node.op)](left, right)
+        trace('_eval_augassign: %s: %r %s %r = %r', key, left, node.op, right, val)
+
+        if not is_value_type(val):
+            log.error(
+                'Unsafe augassign result: %s: %r %s %r = %r (%r)',
+                key,
+                left,
+                node.op,
+                right,
+                val,
+                type(val),
+            )
+            self._cb._error('bad augassign')
+            return
+
+        self._data[key] = val
 
     @overload
     def eval(
