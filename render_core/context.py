@@ -485,22 +485,26 @@ class ScopedContext:
             self._cb._error(f'invalid augassign to {ast.dump(node.target)}')
             return
 
+        right = self._eval(node.value)
+        op = DEFAULT_OPERATORS[type(node.op)]
+        self.do_augassign(node.target.id, op, right)
+
+    def do_augassign(self, key: str, op: Callable[[Value, Value], Value], right: Value):
         # Only modifying variables in the current scope is allowed.
-        key = self.current_key(node.target.id)
+        key = self.current_key(key)
         if (left := self._data.get(key)) is None:
             self._cb._error(f'undefined: {key}')
             return
 
-        right = self._eval(node.value)
-        val = DEFAULT_OPERATORS[type(node.op)](left, right)
-        trace('_eval_augassign: %s: %r %s %r = %r', key, left, node.op, right, val)
+        val = op(left, right)
+        trace('_eval_augassign: %s: %r %s %r = %r', key, left, op, right, val)
 
         if not is_value_type(val):
             log.error(
                 'Unsafe augassign result: %s: %r %s %r = %r (%r)',
                 key,
                 left,
-                node.op,
+                op,
                 right,
                 val,
                 type(val),

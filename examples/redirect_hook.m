@@ -50,7 +50,7 @@ Redirecting {
   cnt = { stat ? 0 : 2 };
   view = { msg ⇒
     cnt < 3 ? {
-      cnt = cnt + 1;
+      ++cnt;
       body;
       stat ? {
         t3 = perf();

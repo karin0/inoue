@@ -13,7 +13,7 @@ n = $0;
 
 { init ↦ i = 0 };
 { cond ↦ i<n };
-{ step ↦ i = i+1 };
+{ step ↦ ++i };
 { body ↦ a[i] = randint(10000) };
 *for;
 
@@ -23,7 +23,7 @@ body = {@; ↦
   t = 0; flag ^ t;
   { init ↦ j = 0 };
   { cond ↦ j < n-i-1 };
-  { step ↦ j = j+1 };
+  { step ↦ ++j };
   { body ↦
     a[j]>a[j+1] ? a[j] ^ a[j+1]; t = 1 :
   };

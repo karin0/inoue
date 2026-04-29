@@ -1,5 +1,6 @@
 import os
 import sys
+import operator
 import functools
 import traceback
 from contextlib import contextmanager
@@ -1339,8 +1340,18 @@ class Engine(Interpreter):
                     last_scope + key, as_str=as_str, allow_undef=True
                 )
 
+            # Increment: {++name}
+            case '++':
+                self._scope.do_augassign(key, operator.add, 1)
+                return ''
+
+            # Decrement: {--name}
+            case '--':
+                self._scope.do_augassign(key, operator.sub, 1)
+                return ''
+
             case _:
-                raise ValueError(f'Bad deref op: {op}')
+                raise ValueError(f'Bad unary op: {op}')
 
     def _get_doc(self, key: str) -> str | None:
         # Allow self-reference in when current doc is not saved yet.

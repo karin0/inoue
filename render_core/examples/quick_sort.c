@@ -5,8 +5,8 @@
 n = $0;
 
 i = 0;
-{ cond ↦ i<n };
-{ step ↦ i = i+1 };
+{ cond ↦ i < n };
+{ step ↦ i += 1 };
 { body ↦ a[i] = randint(10000) };
 *for;
 
@@ -16,8 +16,8 @@ qs = { @; l, r ↦
     p = l-1;
 
     j = $l;
-    { cond ↦ j<r };
-    { step ↦ j = j+1 };
+    { cond ↦ j < r };
+    { step ↦ j += 1 };
     { body ↦
       val = a[j];
       val < pivot ? {

@@ -193,6 +193,9 @@ class TestRender(unittest.TestCase):
 '''
         self.render_it(text, eq='5\n632\n332')
 
+        self.render_it('{a = 16; ++a; a}', eq='17')
+        self.render_it('{a = 16; --a; a}', eq='15')
+
     def test_compare(self):
         ctx = {'status': '200'}
 
