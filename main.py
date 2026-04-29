@@ -179,7 +179,7 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if msg.chat.type != ChatType.PRIVATE:
         return
 
-    if await try_handle_voice(update, ctx):
+    if await try_handle_voice(update):
         return
 
     # ID Bot

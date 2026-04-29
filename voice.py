@@ -162,13 +162,13 @@ def extract_media(
         return media, media.duration
 
 
-async def try_handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
+async def try_handle_voice(update: Update, *, parse_url: bool = False) -> bool:
     msg, arg = get_msg_arg(update)
     info = extract_media(msg) or (
         msg.reply_to_message and extract_media(msg.reply_to_message)
     )
     parsed = None
-    if not info and (parsed := extract_url(arg)) is None:
+    if not info and (not parse_url or (parsed := extract_url(arg)) is None):
         return False
 
     with keep_chat_action(msg, ChatAction.RECORD_VOICE):
@@ -197,7 +197,7 @@ async def try_handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bo
 
 
 async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not await try_handle_voice(update, ctx):
+    if not await try_handle_voice(update, parse_url=True):
         await reply_text(
             update,
             r'Send or reply to a media message with `/voice [q]`, or use `/voice <url>`\.',
