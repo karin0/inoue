@@ -76,10 +76,11 @@ UNARY_OP: "$" | "::" | "++" | "--"
 !unary: (COMMON_OP | UNARY_OP) lvalue
 !unary_chain: unary+
 
-// Limited Python expressions. Single term is disallowed to avoid ambiguity.
-python: py_term (py_op py_term)+ | py_call | NEGATE_OP py_term
+// Limited Python expressions. Single term is restricted to avoid ambiguity.
+python: py_term (py_op py_term)+ | py_term_safe
 ?py_expr: py_term (py_op py_term)*
-?py_term: lvalue | py_call | literal | "(" python ")" | py_term "." iden | NEGATE_OP py_term
+?py_term: lvalue | literal | "(" python ")" | py_term "." iden | py_term_safe
+?py_term_safe: py_call | NEGATE_OP py_term | py_term "[" py_expr "]"
 ?py_call: py_term "(" (py_expr "," )* py_expr? ")"
 
 // Operators excluded for conflicts: `/`, `|` (repl), `^` (swap), `//` (comment).
