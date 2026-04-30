@@ -27,7 +27,7 @@ from lark import Lark, Token, Tree
 from lark.visitors import Interpreter, Transformer
 from lark.exceptions import LarkError
 
-from .lex import Chunker
+from .lex import Chunker, collapse_blank_lines
 from .context import (
     is_tracing,
     is_not_quiet,
@@ -286,8 +286,11 @@ class Engine(Interpreter):
 
     def _put(self, text: str):
         if text:
-            if not (self._dirty or text.isspace()):
-                self._dirty = True
+            # Does the current line contain non-space chars?
+            if (p := text.rfind('\n')) >= 0:
+                self._dirty = p + 1 < len(text) and not text[p + 1 :].isspace()
+            elif not self._dirty:
+                self._dirty = not text.isspace()
             self._output.append(text)
 
     # Keep the original type to preserve types in code_block as expression when possible.
@@ -361,7 +364,8 @@ class Engine(Interpreter):
         clause = ClauseState()
 
         chunker = Chunker(text)
-        for is_block, fragment in chunker:
+        for is_block, fragment in collapse_blank_lines(chunker):
+            trace('Fragment: %r %r', is_block, fragment)
             if chunker.errors:
                 self.errors.extend(chunker.errors)
                 chunker.errors.clear()

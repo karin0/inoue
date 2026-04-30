@@ -664,7 +664,7 @@ Write the following sentence twice, the second time within quotes.
 
         engine = self.start()
         result = self.render_it(test_text, engine)
-        answer = 'Hello World\n\n\n\n\nDefault: N/A N/A\nUser: Alice\n\n\nAlice\nAlice\nAlice\nN/AAlice\nThis is naked`included!the!b`ac`kti`cks! \n\nb \nthatthisisnaked\nhello\n  the\n    wonderful\n     美丽新   world.\nthat\nis alsonaked\nis alsoddDEF1xThis is naked`included!the!b`ac`kti`cks! \n\nThis is doc1:\nis alsod\nd\n\nThis is doc2:\nthat\n\n\nExpensive'
+        answer = 'Hello World\nDefault: N/A N/A\nUser: Alice\nAlice\nAlice\nAlice\nN/AAlice\nThis is naked`included!the!b`ac`kti`cks! \nb\nthatthisisnaked\nhello\n  the\n    wonderful\n     美丽新   world.\nthat\nis alsonaked\nis alsoddDEF1xThis is naked`included!the!b`ac`kti`cks! \nThis is doc1:\nis alsod\nd\n\nThis is doc2:\nthat\n\nExpensive'
         self.assertEqual(result, answer)
         self.assertEqual(engine.doc_name, 'doc3')
 
@@ -1263,7 +1263,7 @@ ERR
 {!}
 REST
 '''
-        self.render_it(text, eq='OK\n\nREST')
+        self.render_it(text, eq='OK\nREST')
 
         text = r'''
 a = "0";
@@ -1274,7 +1274,29 @@ OK
 {!}
 REST
 '''
-        self.render_it(text, eq='OK\n\nREST')
+        self.render_it(text, eq='OK\nREST')
+
+    def test_fragment_collapse(self):
+        # Empty-output blocks on their own whitespace-only line should be collapsed.
+        text = '''A=1; B=2;
+text1
+{A?}  {a=1}{}
+   {b=2}{}
+   {}
+   {} {}
+  {B?}
+    text2
+  {!}
+{!}
+
+text3
+'''.replace('{}', '{}  ')
+        self.render_it(text, eq='text1\n    text2\n\ntext3')
+
+        # A blank source line between blocks is preserved.
+        self.render_it('a;\n\nb;\n', {'a': 'A', 'b': 'B'}, eq='A\n\nB')
+
+        self.render_it('x{a?}y{!}\n', {'a': '1'}, eq='xy')
 
     def test_if_clause_2(self):
         text = r'''

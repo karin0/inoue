@@ -182,9 +182,11 @@ class Chunker:
                     # The '{' must exist there, as we cannot reach here if `block` is set.
                     chunk = ''.join(buf)[1:].strip()
                     buf.clear()
-                    if chunk:
-                        trace('Chunked block: %r', chunk)
-                        _naked_buf.append((True, chunk))
+
+                    # Yield the block even it's empty. Even an empty block can
+                    # have its semantics, like in `collapse_blank_lines`.
+                    trace('Chunked block: %r', chunk)
+                    _naked_buf.append((True, chunk))
                     cursor = p + 1
 
             elif block_starts:
@@ -304,3 +306,87 @@ class Chunker:
 
         # Flush final text fragments.
         yield from self._text_fragments(cursor, len(text))
+
+
+def collapse_blank_lines(chunks: Iterable[Chunk]) -> Iterator[Chunk]:
+    '''Suppress whitespace around code-only lines.
+
+    When a line contains only code blocks and whitespaces, the surrounding text
+    fragments are dropped, preventing structural template lines from introducing
+    blank gaps.
+
+    An implicit line break is produced, like after naked blocks, so we can keep
+    a newline if these code blocks produce any non-space outputs.
+
+    Note that we do not check if code blocks contain '\n', so a collapsed line
+    here may span multiple physical lines.
+    '''
+    buf: list[Chunk] = []
+    has_code = False
+    all_blank = True
+
+    def push(text: str):
+        nonlocal all_blank
+        assert text
+        if all_blank and not text.isspace():
+            all_blank = False
+        buf.append((False, text))
+
+    for chunk in chunks:
+        is_block, fragment = chunk
+        trace('Collapse: chunk: %r', chunk)
+
+        if is_block:
+            buf.append(chunk)
+            has_code = True
+            continue
+
+        if fragment is None:
+            trace('Collapse: phantom buf: %r', buf)
+            yield from buf
+            buf.clear()
+            yield chunk
+            has_code = False
+            all_blank = True
+            continue
+
+        if not fragment:
+            continue
+
+        p = fragment.find('\n')
+        trace('Collapse: fragment: %r, p1: %s', fragment, p)
+        if p < 0:
+            push(fragment)
+            continue
+
+        if p:
+            push(fragment[:p])
+
+        fragment = fragment[p + 1 :]
+
+        if has_code and all_blank:
+            trace('Collapse: collapse buf: %r', buf)
+            for c in buf:
+                if c[0]:
+                    yield c
+            yield False, None
+        else:
+            trace('Collapse: keep buf: %r', buf)
+            yield from buf
+            yield False, '\n'
+
+        buf.clear()
+        has_code = False
+        all_blank = True
+
+        p = fragment.rfind('\n')
+        trace('Collapse: fragment: %r, p2: %s', fragment, p)
+
+        if p >= 0:
+            yield False, fragment[: p + 1]
+            fragment = fragment[p + 1 :]
+
+        if fragment:
+            push(fragment)
+
+    yield from buf
