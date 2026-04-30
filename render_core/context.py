@@ -316,14 +316,26 @@ class ScopedContext:
         return key, to_str(val) if as_str else val
 
     def get(
-        self, name: str, *, as_str: bool = False, allow_undef: bool = False
+        self, key: str, *, as_str: bool = False, allow_undef: bool = False
     ) -> Value:
-        if allow_undef:
-            _, val = self.resolve_raw(name, None, as_str=as_str)
-            return '' if val is None else val
-        _, val = self.resolve_raw(name, '', as_str=as_str)
-        assert val is not None
-        return val
+        _, val = self.resolve_raw(key, as_str=as_str)
+        if val is not None:
+            return val
+
+        func = self._get_func(key)
+        if func is not None:
+            # Implicit func call.
+            if is_value_type(val := func()):
+                return val
+            if val is not None:
+                log.error(
+                    'Unsafe function result: %s() -> %r (%r)', key, val, type(val)
+                )
+            return ''
+
+        if not allow_undef:
+            self._cb._error(f'undefined: {key}')
+        return ''
 
     def current(self) -> str:
         return self._scopes[-1]
@@ -395,7 +407,7 @@ class ScopedContext:
             func = self._eval(func_node)
         elif isinstance(func_node, ast.Name):
             name = func_node.id
-            func = self.get(name, allow_undef=True)
+            _, func = self.resolve_raw(name)
             if callable(func):
                 if not isinstance(func, Box):
                     raise RuntimeError(f'{name}: expected Box, got {func}')
