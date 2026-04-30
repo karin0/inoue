@@ -1,4 +1,4 @@
-from typing import Iterable, Iterator, Literal
+from typing import Callable, Iterable, Iterator, Literal
 from .context import trace, is_not_quiet
 
 if not is_not_quiet:
@@ -32,21 +32,25 @@ class Chunker:
     '''
 
     __slots__ = (
-        'errors',
         '_text',
+        '_error',
         '_block',
         '_escaping_indices',
     )
 
+    @staticmethod
+    def _default_on_error(msg: str):
+        raise ValueError(msg)
+
     def __init__(
         self,
         text: str,
+        on_error: Callable[[str]] = _default_on_error,
         *,
         block: bool = False,
-        errors: list[str] | None = None,
     ):
-        self.errors: list[str] = [] if errors is None else errors
         self._text = text
+        self._error = on_error
         self._block = block
         self._escaping_indices: list[int] = []
 
@@ -79,7 +83,7 @@ class Chunker:
     def __iter__(self) -> Iterator[Chunk]:
         text = self._text
         block = self._block
-        errors = self.errors
+        on_error = self._error
         trace('Chunking text (block=%s): %s', block, text)
 
         block_starts: list[int] = []
@@ -235,7 +239,7 @@ class Chunker:
 
                     yield False, text[cursor:_naked_start]
                     cursor = p + 1
-                    yield from Chunker(stem, block=True, errors=errors)
+                    yield from Chunker(stem, on_error, block=True)
 
                     # We are actually consuming the line break here, but yielding a `\n`
                     # each time would result in too many empty lines for consecutive
@@ -261,7 +265,7 @@ class Chunker:
             is not None
         ):
             yield False, text[cursor:_naked_start]
-            yield from Chunker(stem, block=True, errors=errors)
+            yield from Chunker(stem, on_error, block=True)
             return
 
         if _naked_buf:
@@ -277,7 +281,7 @@ class Chunker:
                 # Trying to recover would leak text fragments inside the block, so we
                 # also leave it to cause a Lark parse error later.
                 msg = f'Unbalanced naked block starting at position {block_starts} {cursor}'
-                errors.append(msg)
+                on_error(msg)
                 trace('%s %s', msg, text)
 
             chunk = text[cursor:]
@@ -289,7 +293,7 @@ class Chunker:
         if block_starts:
             # Unclosed block! Reparse the inner of the first unclosed block to recover.
             msg = f'Unclosed block starting at position {block_starts} {cursor}'
-            errors.append(msg)
+            on_error(msg)
             trace('%s', msg)
 
             p = block_starts[0]
@@ -298,7 +302,7 @@ class Chunker:
 
             rest = text[p + 1 :]
             trace('Recovering rest: %s', rest)
-            yield from Chunker(rest, errors=errors)
+            yield from Chunker(rest, on_error)
             return
 
         # `buf` must be empty, since `block_starts` is empty.

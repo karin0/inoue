@@ -363,12 +363,9 @@ class Engine(Interpreter):
     def _render(self, text: str, *, root: bool = False):
         clause = ClauseState()
 
-        chunker = Chunker(text)
+        chunker = Chunker(text, self.errors.append)
         for is_block, fragment in collapse_blank_lines(chunker):
             trace('Fragment: %r %r', is_block, fragment)
-            if chunker.errors:
-                self.errors.extend(chunker.errors)
-                chunker.errors.clear()
 
             if is_block:
                 assert fragment is not None
