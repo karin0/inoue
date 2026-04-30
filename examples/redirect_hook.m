@@ -26,24 +26,24 @@ Redirecting {
   // `⇒` creates "closures" that captures the current scope, which is useful for
   // async callbacks. However, `↦` would also work here, since we are in the initial
   // root scope.
-  rc1 = { r ⇒
+  { rc1 ⇒
     t2 = perf();
     times = {
-      time(t1 - t0); ' + '; time(r.elapsed); ' + '; time(t2 - t1 - r.elapsed)
+      time(t1 - t0); ' + '; time(elapsed); ' + '; time(t2 - t1 - elapsed)
     };
     'Redirected '; info; ' in '; times; ' = '; time(t2 - t0);
 
-    "r.returncode" ? ', status '; bold(r.returncode) !;
+    returncode ? ', status '; bold(returncode) !;
     '\n';
 
-    "r.stdout" ? {
-      "r.stderr" ?: 'stdout:\n';
-      pre(r.stdout)
+    stdout ? {
+      stderr ?: 'stdout:\n';
+      pre(stdout)
     };
 
-    "r.stderr" ? {
-      "r.stdout" ?: 'stderr:\n';
-      pre(r.stderr)
+    stderr ? {
+      stdout ?: 'stderr:\n';
+      pre(stderr)
     }
   };
 

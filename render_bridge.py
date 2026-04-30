@@ -8,7 +8,6 @@ import subprocess
 from functools import wraps
 from types import MethodType
 from datetime import datetime
-from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Concatenate, Coroutine, Sequence, cast
 from collections.abc import MutableMapping
 
@@ -41,22 +40,33 @@ async def _run[T](coro: Awaitable[T]) -> T | None:
         log.exception('Promise: coroutine failed')
 
 
-type Then[T, U] = Callable[[T], U | Coroutine[Any, Any, U]]
+type Then[**P, U] = Callable[P, U | Coroutine[Any, Any, U]]
 
 
 async def _chained(prev: Awaitable, callbacks: Sequence[Then]) -> Any:
     out = await prev
     for callback in callbacks:
         log.debug('then: got %r, calling %r', out, callback)
-        out = callback(out)
+        if out is None:
+            out = callback()
+        elif isinstance(out, (list, tuple)):
+            out = callback(*out)
+        elif isinstance(out, dict):
+            out = callback(*out.values(), **out)
+        else:
+            out = callback(out)
         if isinstance(out, Promise):
             log.debug('then: awaiting task %r', out._task)
             out = await out._task
-    log.debug('then: final result %r', out)
+    if out is not None:
+        log.debug('then: final result %r', out)
     return out
 
 
-class Promise[T: Value | None](Box):
+type PromiseResult = Value | list[Value] | tuple[Value, ...] | dict[str, Value] | None
+
+
+class Promise[T: PromiseResult](Box):
     __slots__ = ('_task',)
 
     def __init__(self, coro: Awaitable[T]):
@@ -262,18 +272,7 @@ def sleep(seconds: float) -> Promise[None]:
     return Promise(asyncio.sleep(seconds))
 
 
-@dataclass(frozen=True, slots=True, eq=False, match_args=False)
-class ProcessResult(Box):
-    stdout: str
-    stderr: str
-    returncode: int | None
-    elapsed: float
-
-    def __str__(self) -> str:
-        return self.stdout
-
-
-async def _communicate(cmd: str, input: str | None) -> ProcessResult:
+async def _communicate(cmd: str, input: str | None) -> dict[str, Value]:
     fut = asyncio.create_subprocess_shell(
         cmd,
         stdin=asyncio.subprocess.PIPE if input else None,
@@ -305,11 +304,18 @@ async def _communicate(cmd: str, input: str | None) -> ProcessResult:
     elapsed = time.perf_counter() - t0
     stdout = stdout.decode(errors='replace').strip()
     stderr = stderr.decode(errors='replace').strip()
-    return ProcessResult(stdout, stderr, returncode, elapsed)
+    r = {
+        'stdout': stdout,
+        'stderr': stderr,
+        'elapsed': elapsed,
+    }
+    if returncode is not None:
+        r['returncode'] = returncode
+    return r
 
 
 @trusted
-def communicate(cmd, input='') -> Promise[ProcessResult]:
+def communicate(cmd, input='') -> Promise[dict[str, Value]]:
     return Promise(_communicate(to_str(cmd), to_str(input)))
 
 
