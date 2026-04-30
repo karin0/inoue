@@ -108,7 +108,7 @@ def make_markup(
     path: str,
     ctx: Mapping[str, Value],
     current_state: MarkupState | None,
-    doc_id: int | None,
+    doc_ids: dict[int, str] | None,
 ) -> tuple[InlineKeyboardMarkup | None, str | None]:
     # query data:
     #   ('-'|'+' <flag-key>)*
@@ -175,8 +175,8 @@ def make_markup(
     if state:
         flags.update(state)
 
-    if doc_id is not None and not get_env_flag(ctx, 'ref', True):
-        doc_id = None
+    if doc_ids and not get_env_flag(ctx, 'ref', True):
+        doc_ids = None
 
     if current_data == path:
         current_data = None
@@ -229,8 +229,13 @@ def make_markup(
     if current_data:
         row.append(InlineKeyboardButton('🔄', callback_data=current_data))
 
-    if doc_id:
-        row.append(InlineKeyboardButton('🔗', get_msg_url(doc_id)))
+    if doc_ids:
+        if len(doc_ids) == 1:
+            doc_id = next(iter(doc_ids))
+            row.append(InlineKeyboardButton('🔗', get_msg_url(doc_id)))
+        else:
+            for doc_id, doc_name in doc_ids.items():
+                row.append(InlineKeyboardButton(f'🔗{doc_name}', get_msg_url(doc_id)))
 
     if len(row) <= 1:
         return None, None
@@ -267,7 +272,7 @@ class RenderContext:
         '_doc_id',
         '_path',
         '_update_callback',
-        '_first_doc_id',
+        '_doc_refs',
         '_render_time',
         '_trusted',
         'data',
@@ -315,7 +320,7 @@ class RenderContext:
 
         log.info('create_engine: %s', overrides)
 
-        self._first_doc_id = None
+        self._doc_refs = {doc_id: ''} if doc_id is not None else {}
         self._render_time = None
         self._trusted = trusted
 
@@ -351,8 +356,7 @@ class RenderContext:
                         with open(file, encoding='utf-8') as fp:
                             return fp.read()
             return None
-        if self._first_doc_id is None:
-            self._first_doc_id = row[0]
+        self._doc_refs[row[0]] = name
         return row[1]
 
     def render_text(self, text: str) -> Segment:
@@ -361,10 +365,7 @@ class RenderContext:
         result = to_segment(val)
         self._render_time = int(time.time())
         log.info(
-            'rendered %d -> %s (%s)',
-            len(text),
-            type(result).__name__,
-            self._first_doc_id,
+            'rendered %d -> %s (%s)', len(text), type(result).__name__, self._doc_refs
         )
         return result
 
@@ -423,9 +424,9 @@ class RenderContext:
         if self._path is None:
             markup = state = None
         else:
-            if (doc_id := self._first_doc_id) is None:
-                doc_id = self._doc_id
-            markup, state = make_markup(self._path, ctx, self._markup_state, doc_id)
+            markup, state = make_markup(
+                self._path, ctx, self._markup_state, self._doc_refs
+            )
 
         if get_env_flag(ctx, 'plain'):
             parse_mode = None
