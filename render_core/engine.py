@@ -101,11 +101,16 @@ def parse_fragment(text: str) -> Tree:
             out = []
             last = tree.meta.start_pos
             for token in _iter_tokens(tree):
+                # Translate `&&`, `||`, `~` to Python.
                 if token.type == 'LOGIC_OP':
-                    # Translate `&&` and `||` to Python.
-                    out.append(text[last : token.start_pos])
-                    out.append('and' if token.value == '&&' else 'or')
-                    last = token.end_pos
+                    repl = ' and ' if token.value == '&&' else ' or '
+                elif token.type == 'NEGATE_OP':
+                    repl = ' not '
+                else:
+                    continue
+                out.append(text[last : token.start_pos])
+                out.append(repl)
+                last = token.end_pos
             out.append(text[last : tree.meta.end_pos])
 
             # Keep the source and remove all children.
@@ -1365,11 +1370,6 @@ class Engine(Interpreter):
                 return self._get_by_raw_key(
                     last_scope + key, as_str=as_str, allow_undef=True
                 )
-
-            # Negation: {~name}
-            case '~':
-                val = self._scope.get(key, allow_undef=allow_undef)
-                return '0' if val and val != '0' else '1'
 
             # Increment: {++name}
             case '++':
