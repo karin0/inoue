@@ -175,6 +175,11 @@ class OverriddenDict(UserDict[str, Value], Context):
     def setitem_with(self, key: str, val: Value, op: str) -> None:
         self.overrides.setdefault(key, val)
 
+        # Always write back to avoid button order glitches. Otherwise, a clicked
+        # button will jump before untouched ones.
+        if not get_pm_key(key):
+            self.data[key] = val
+
     def _compact(self):
         return dict(self.data, **self.overrides)
 
