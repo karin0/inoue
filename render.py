@@ -46,7 +46,7 @@ from segments import (
     get_renderer,
     render_segment,
 )
-from render_core import Engine, Value
+from render_core import Engine, Value, to_str
 from render_bridge import Bridge, to_segment
 from render_context import OverriddenDict, encode_value, decode_value
 
@@ -208,9 +208,11 @@ def make_markup(
             log.debug('make_markup: flag %s in=%s new=%s s=%s', k, old, v, state)
             state[k] = not v
 
-            if icon := get_env(ctx, 'icon.' + k):
-                label = str(icon)
-                push_flag(label + (':=' if old else '=') + '01'[v])
+            if (icon := get_env(ctx, 'icon.' + k)) is not None:
+                if label := to_str(icon):
+                    push_flag(label + (':=' if old else '=') + '01'[v])
+                else:
+                    log.debug('make_markup: hiding flag %s due to empty icon', k)
             elif not hide_flags:
                 label = SPECIAL_FLAG_ICONS.get(k, k)
                 push_flag(label + (':=' if old else '=') + '01'[v])
