@@ -97,19 +97,20 @@ def to_segment(val: Value | None) -> Segment:
         out = []
         parts = []
         for v in val:
-            # Fragment is flattened when iterated, so returned seg cannot be
-            # another Sequence.
-            if s := cast(BaseElement | str, to_segment(v)):
-                # Exclude empty strings and sequences.
-                if isinstance(s, str):
-                    # Join consecutive strings.
-                    if s:
-                        parts.append(s)
-                else:
-                    if parts:
-                        out.append(''.join(parts))
-                        parts.clear()
-                    out.append(s)
+            s = to_segment(v)
+            # Exclude empty strings and sequences.
+            if isinstance(s, str):
+                # Join consecutive strings.
+                if s:
+                    parts.append(s)
+            else:
+                # Fragment is flattened when iterated, so returned seg cannot be
+                # another Sequence.
+                assert isinstance(s, BaseElement)
+                if parts:
+                    out.append(''.join(parts))
+                    parts.clear()
+                out.append(s)
         if parts:
             out.append(''.join(parts))
 
