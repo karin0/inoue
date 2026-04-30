@@ -230,6 +230,7 @@ class Engine(Interpreter):
         '_tree',
         '_gas',
         '_scope',
+        '_this',
     )
 
     def __init__(
@@ -257,6 +258,7 @@ class Engine(Interpreter):
 
         self._tree: Tree | None = None
         self._gas: int = 0
+        self._this = (False, None)
         self._scope = ScopedContext(ctx, self)
 
         trace('Engine initialized: %s', ctx)
@@ -267,6 +269,10 @@ class Engine(Interpreter):
         match name:
             case '__file__':
                 return self.get_doc_text
+            case '__doc__':
+                return self._doc_func
+            case '__this__':
+                return self._this_func
             case 'print':
                 return self._print_func
             case 'exit':
@@ -365,7 +371,24 @@ class Engine(Interpreter):
                     return _trim_str(''.join(to_str(x) for x in out), trim)
                 return _trim_fragment(Fragment(out), trim)
 
-    def _render(self, text: str, *, root: bool = False):
+    def _render(self, text: str, *, root: bool = False, doc_name: str | None = None):
+        old = self._this
+        self._this = (root, doc_name)
+        try:
+            return self.__render(text, root)
+        finally:
+            self._this = old
+
+    def _this_func(self) -> str:
+        root, doc_name = self._this
+        if root and not doc_name:
+            doc_name = self.doc_name
+        return doc_name or ''
+
+    def _doc_func(self) -> str:
+        return self.doc_name or ''
+
+    def __render(self, text: str, root: bool):
         clause = ClauseState()
 
         chunker = Chunker(text, self.errors.append)
