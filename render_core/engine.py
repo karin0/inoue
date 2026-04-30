@@ -1350,6 +1350,12 @@ class Engine(Interpreter):
             case '*':
                 return self._doc_ref(key, allow_tco=allow_tco)
 
+            # Db doc inplace expand: {**doc}.
+            # This bypasses `self._push()` and directly renders into the current
+            # output. Useful for inner `_output_func()` calls with side-effects.
+            case '**':
+                return self._doc_ref_inplace(key)
+
             # Variable read in the last scope: {::name}
             case '::':
                 last_scope = self._scope.last()
@@ -1417,6 +1423,13 @@ class Engine(Interpreter):
         with self._push():
             self._render(doc)
             return self._gather_output(trim=True)
+
+    def _doc_ref_inplace(self, key: str) -> str:
+        trace('_doc_ref_inplace: %s', key)
+        if (doc := self._get_doc(key)) is not None:
+            trace('_doc_ref_inplace: Rendering doc: %s', key)
+            self._render(doc)
+        return ''
 
     def _eval_func(self, doc) -> Value:
         trace('_eval_func: %s', doc)
