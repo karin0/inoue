@@ -22,8 +22,8 @@ from telegram.constants import ReactionEmoji
 from db import db
 from util import (
     USER_ID,
-    DOC_SEARCH_PATH,
     log,
+    list_env,
     get_msg_arg,
     get_msg_url,
     reply_text,
@@ -46,6 +46,7 @@ from segments import (
     get_renderer,
     render_segment,
 )
+from context import get_sender
 from render_core import Engine, Value, to_str
 from render_bridge import Bridge, to_segment
 from render_context import OverriddenDict, encode_value, decode_value
@@ -346,17 +347,11 @@ class RenderContext:
                 return await func(spec)
 
     def _doc_loader(self, name: str) -> str | None:
-        row = db.get_doc(name)
+        row = get_doc(name, bool(self._trusted))
         if row is None:
-            if self._trusted and DOC_SEARCH_PATH and os.path.basename(name) == name:
-                for d in DOC_SEARCH_PATH:
-                    if os.path.isfile(
-                        file := os.path.join(d, name + '.m')
-                    ) or os.path.isfile(file := os.path.join(d, name + '.txt')):
-                        with open(file, encoding='utf-8') as fp:
-                            return fp.read()
             return None
-        self._doc_refs[row[0]] = name
+        if (doc_id := row[0]) is not None:
+            self._doc_refs[doc_id] = name
         return row[1]
 
     def render_text(self, text: str) -> Segment:
@@ -535,9 +530,6 @@ class RenderContext:
             )
 
 
-REG_DOC_REF = re.compile(r'[*:]\s*(\w+)\s*;')
-
-
 async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
     msg, arg = get_msg_arg(update)
     target = msg.reply_to_message
@@ -554,7 +546,7 @@ async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
     if doc_ref := is_doc_ref(text):
         path, row = doc_ref
         if path is None:
-            return await reply_text(msg, f'No doc: {text}')
+            return await reply_text(msg, f'No doc: {row}')
         assert isinstance(row, tuple)
         doc_id, text = row
     else:
@@ -572,10 +564,50 @@ async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
     await ctx.render(text)
 
 
-def is_doc_ref(text: str) -> tuple[str, tuple[int, str]] | tuple[None, str] | None:
+DOC_SEARCH_PATH = list_env('DOC_SEARCH_PATH', ':')
+ALLOWED_GUEST_DOC_PREFIXES = list_env('ALLOWED_GUEST_DOC_PREFIXES')
+
+REG_DOC_REF = re.compile(r'[*:]\s*(\w+)\s*;')
+
+
+def get_doc(name: str, trusted: bool | None = None) -> tuple[int | None, str] | None:
+    if not (sender := get_sender()):
+        raise RuntimeError('get_doc: no sender')
+
+    if sender.is_guest:
+        if any(name.startswith(prefix) for prefix in ALLOWED_GUEST_DOC_PREFIXES):
+            log.info('get_doc: allowed guest access to doc: %s', name)
+        else:
+            log.info('get_doc: disallowed guest access to doc: %s', name)
+            return None
+
+    row = db.get_doc(name)
+    if row is None and DOC_SEARCH_PATH and os.path.basename(name) == name:
+        if trusted is None:
+            trusted = sender.id == USER_ID
+        log.info(
+            'get_doc: searching doc %s, trusted=%s in %r',
+            name,
+            trusted,
+            DOC_SEARCH_PATH,
+        )
+        if trusted:
+            for d in DOC_SEARCH_PATH:
+                for ext in ('.m', '.txt'):
+                    if os.path.isfile(file := os.path.join(d, name + ext)):
+                        with open(file, encoding='utf-8') as fp:
+                            text = fp.read()
+                        return None, text
+    return row
+
+
+def is_doc_ref(
+    text: str,
+) -> tuple[str, tuple[int | None, str]] | tuple[None, str] | None:
+    '''Returns (path, (doc_id | None, text)), (None, doc_name), or None.'''
     if m := REG_DOC_REF.fullmatch(text):
         doc_name = m[1]
-        row = db.get_doc(doc_name)
+        row = get_doc(doc_name)
         log.info('handle_render: doc ref: %s %s', text, row)
         if row is None:
             return None, doc_name
@@ -700,12 +732,10 @@ async def handle_render_callback(update: Update, callback: CallbackQuery, data: 
         case '#':
             text = db.get('r-' + path)
             if text is None:
-                # TODO: report when cache expired
                 raise ValueError('unknown msg in render callback: ' + path)
         case ':':
-            row = db.get_doc(path[1:])
+            row = get_doc(path[1:])
             if row is None:
-                # TODO: report when doc deleted
                 raise ValueError('unknown doc in render callback: ' + path)
             doc_id, text = row
         case _:

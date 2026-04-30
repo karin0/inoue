@@ -18,8 +18,14 @@ from db import db
 from context import *
 
 
-def load_ids(var_name: str) -> tuple[int, ...]:
-    return tuple(int(x.strip()) for x in os.environ.get(var_name, '').split(','))
+def list_env(key: str, sep: str = ',') -> tuple[str, ...]:
+    if val := os.environ.get(key):
+        return tuple(r for s in val.split(sep) if (r := s.strip()))
+    return ()
+
+
+def load_ids(key: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in list_env(key))
 
 
 USER_ID = int(os.environ['USER_ID'])
@@ -35,8 +41,6 @@ LOG_THREAD_ID = int(os.environ.get('LOG_THREAD_ID', 0)) or None
 
 DB_FILE = os.environ.get('DB_FILE', ME_LOWER + '.db')
 
-if DOC_SEARCH_PATH := os.environ.get('DOC_SEARCH_PATH'):
-    DOC_SEARCH_PATH = tuple(d.strip() for d in DOC_SEARCH_PATH.split(':'))
 
 MAX_TEXT_LENGTH = MessageLimit.MAX_TEXT_LENGTH
 
