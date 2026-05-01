@@ -917,36 +917,24 @@ class Engine(Interpreter):
 
     # Execute!
     def _block_inner_exec(self, tree: Tree) -> MaybeTCO:
-        stmt = narrow(tree.children[-1], Tree)
-        if self._is_empty_stmt(stmt):
-            stmt = None
-
-        refs = []
         for ch in tree.children[1:-1]:
             ch = narrow(ch, Tree)
             match ch.data:
-                # Db doc expand: {:doc} (same as {*doc} in unary expressions)
+                # Doc expansion: {:doc}
+                # Like {*doc} as unary expressions, but ignores sub-docs.
                 case 'doc_ref':
                     key = self._iden(ch.children[-1])
-                    refs.append(key)
-                # Db doc get: handled before in `_scan_block()`.
+                    val = self._doc_ref_no_subdoc(key)
+                    self._put_val(val)
+                # Doc definition: handled before in `_scan_block()`.
                 case 'doc_def':
                     continue
                 case _:
-                    # `block_inner` can contain at most one statement.
+                    # `block_inner` can contain at most one stmt_list.
                     raise ValueError(f'Bad block_inner child: {tree.pretty()}')
 
-        if stmt is None:
-            if refs:
-                last = refs.pop()
-                for key in refs:
-                    self._put_val(self._doc_ref(key))
-                val = self._doc_ref(last, allow_tco=True)
-                return self._put_val(val)
-        else:
-            for key in refs:
-                self._put_val(self._doc_ref(key))
-            return self.visit(stmt, allow_tco=True)
+        stmt = narrow(tree.children[-1], Tree)
+        return self.visit(stmt, allow_tco=True)
 
     def stmt_list(
         self, tree: Tree, *, direct_branch: bool = False, allow_tco: bool = False
@@ -1495,6 +1483,15 @@ class Engine(Interpreter):
             return ''
 
         trace('_doc_ref: Rendering doc: %s', key)
+        with self._push():
+            self._render(doc)
+            return self._gather_output(trim=True)
+
+    def _doc_ref_no_subdoc(self, key: str) -> Value:
+        if (doc := self.get_doc(key)) is None:
+            return ''
+
+        trace('_doc_ref_no_subdoc: Rendering doc: %s', key)
         with self._push():
             self._render(doc)
             return self._gather_output(trim=True)
