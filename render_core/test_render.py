@@ -67,8 +67,8 @@ d?=D; e?=E; f?=F;
 { doc3:}
 { :doc1 }
 { :doc2 }
-{ price="100"; tax="0.08";}
-{"float(price) * (1 + float(tax)) > 105"?Expensive: Cheap}
+{ price=100; tax="0.08";}
+{price * (1 + tax) > 105?Expensive: Cheap}
 """
 
 db_instance = Mock()
@@ -236,7 +236,7 @@ class TestRender(unittest.TestCase):
         )
         self.assertEqual(
             self.render_it(
-                '{c=d=e=\'200\'; f=\'100\'; x=(c=d=f); y=(c=d=e); z=(c?=d=e); w=(c:=d=$e); "x+y+z+w" }',
+                '{c=d=e=\'200\'; f=\'100\'; x=(c=d=f); y=(c=d=e); z=(c?=d=e); w=(c:=d=$e); x+y+z+w }',
                 ctx,
             ),
             "00200200",
@@ -260,18 +260,18 @@ class TestRender(unittest.TestCase):
 
     def test_eval(self):
         ctx = {'price': '100', 'tax': '0.08'}
-        expr = '{"float(price) * (1 + float(tax)) > 105"?Expensive:Cheap}'
+        expr = '{float(price) * (1 + float(tax)) > 105?Expensive:Cheap}'
         self.assertEqual(self.render_it(expr, ctx), "Expensive")
 
         self.assertEqual(self.render_it('"True";'), '1')
         self.assertEqual(self.render_it('"False";'), '0')
         self.assertEqual(self.render_it('"None";'), '')
-        self.assertEqual(self.render_it('"\'s\'.encode()";'), 's')
+        self.assertEqual(self.render_it('\'s\'.encode();'), 's')
         self.assertEqual(self.render_it('"\'s\'.encode";'), '')
         self.assertEqual(self.render_it('aa=bbbb; cc=aa; "len(aa)"; "len(cc)";'), '42')
 
-        self.render_it('"100 ** 100 ** 100 ** 100";', e='Sorry')
-        self.render_it('"\'qwq\' * int(1e9)";', e='Sorry')
+        self.render_it('100 ** 100 ** 100 ** 100;', e='Sorry')
+        self.render_it('\'qwq\' * int(1e9);', e='Sorry')
         self.render_it('a="1 << 100000"; a;', e='Sorry')
         self.render_it('a=2; b="(a:=\'1\')"; a;', e='Sorry')
 
@@ -291,10 +291,10 @@ class TestRender(unittest.TestCase):
 
         # Lists are internally allowed.
         self.assertEqual(
-            self.render_it('s=qwqwqwq; a="s.split(\'w\')"; a;'), "['q', 'q', 'q', 'q']"
+            self.render_it('s=qwqwqwq; a=s.split(\'w\'); a;'), "['q', 'q', 'q', 'q']"
         )
         self.assertEqual(
-            self.render_it('s=qwqwqwq; a="\'z\'.join(s.split(\'w\'))"; a;'), 'qzqzqzq'
+            self.render_it('s=qwqwqwq; a=\'z\'.join(s.split(\'w\')); a;'), 'qzqzqzq'
         )
 
         for s in ('lambda x: x', '[]', '()', '(1,)', '{}'):
@@ -319,6 +319,7 @@ class TestRender(unittest.TestCase):
         ):
             self.render_it(f'a="{s}";', e='NameError')
             self.render_it(f'a="{s}()";', e='NameError')
+            self.render_it(f'a={s}();', e='NameError')
         for p in (
             '__class__',
             '__bases__',
@@ -506,46 +507,46 @@ Write the following sentence twice, the second time within quotes.
         self.render_it("s=abc; s|'([a'\\x; s;", e='regex replace')
 
     def test_empty_values(self):
-        text = '{;a=} {;b:=;} {c=; d=2345;} {d|4/} {"a+b+c+d"}'
+        text = '{;a=} {;b:=;} {c=; d=2345;} {d|4/} {a+b+c+d}'
         result = self.render_it(text)
         self.assertEqual(result, '235')
 
     def test_nested_blocks(self):
-        text = '{ a=\'1\'; { b=\'2\'; { c=\'3\'; "a + b + c" }; "a + b" }; a }'
+        text = '{ a=\'1\'; { b=\'2\'; { c=\'3\'; a + b + c }; a + b }; a }'
         result = self.render_it(text)
         self.assertEqual(result, '123121')
 
     def test_nested_branches(self):
         result = self.render_it(
-            '{ {x="10"; "x>5" ? y="20"; "y>15" ? High : Medium : Low} ;` rest }'
+            '{ {x=10; x>5 ? y=20; y>15 ? High : Medium : Low} ;` rest }'
         )
         self.assertEqual(result, 'High rest')
         result = self.render_it(
-            '{ x="0"; "x>5" ? y="20"; "y>15" ? High : Medium : Low ; `rest }'
+            '{ x=0; x>5 ? y=20; y>15 ? High : Medium : Low ; `rest }'
         )
         self.assertEqual(result, 'Lowrest')
 
         result = self.render_it(
-            '{ x="100"; "x>5" ? y="20"; "y>15" ? High : Medium : Low ; `rest }'
+            '{ x=100; x>5 ? y=20; y>15 ? High : Medium : Low ; `rest }'
         )
         self.assertEqual(result, 'Highrest')
 
-        result = self.render_it('{ x="100" ? \'\' }\na')
+        result = self.render_it('{ x=100 ? \'\' }\na')
         self.assertEqual(result, 'a')
 
-        result = self.render_it('{ x="100" ?: \'\' }\na')
+        result = self.render_it('{ x=100 ?: \'\' }\na')
         self.assertEqual(result, 'a')
 
         self.render_it('a=1; a=2 ? ERR; \'OK\';', eq='OK')
         self.render_it('a=b=1; a=2 ? b=2 ? \'ERR\'; \'OK\';', eq='OK')
 
     def test_nested_blocks_and_branches(self):
-        text = '{ a="1"; "a==1"? { b="2"; "a+b==3"? { c="3"; "a+b+c" } : "Wrong" } : "Wrong" }'
+        text = '{ a=1; a==1? { b=2; a+b==3? { c=3; a+b+c } : Wrong } : Wrong }'
         result = self.render_it(text)
         self.assertEqual(result, '6')
 
     def test_nested_expressions(self):
-        text = '{ a = "30"; b = "12"; c = ( ( "a + b" ) ) ; c }'
+        text = '{ a = "30"; b = 12; c = ( ( "a + b" ) ) ; c }'
         result = self.render_it(text)
         self.assertEqual(result, '42')
         self.assertEqual(self.render_it('a=42; { ( ( ( a ) ) ) };'), '42')
@@ -592,7 +593,7 @@ Write the following sentence twice, the second time within quotes.
         )
 
         # Paren as scope name.
-        text = '{ a=1; s="\'p\'"; a; s; @("s+\'m\'") { a; x?=::a; x="int(x)+1"; x; a=3; a }; a; pm.a; }'
+        text = '{ a=1; s="\'p\'"; a; s; @("s+\'m\'") { a; x?=::a; x=int(x)+1; x; a=3; a }; a; pm.a; }'
         self.assertEqual(self.render_it(text), '1p12313')
 
         text = '{ a=1; t=m; s="\'p\'+t"; a; s; @($s) { a; x?=$a; x="int(x)+1"; x; a=2; a }; a; pm.a; }'
@@ -614,7 +615,7 @@ Write the following sentence twice, the second time within quotes.
         self.render_it(text, e='double scope')
 
     def test_static(self):
-        text = r't=0; @pm { a?="0"; a="a+1"; a^t; }; t; pm.a=$t;'
+        text = r't=0; @pm { a?="0"; a+=1; a^t; }; t; pm.a=$t;'
         self.assertEqual(self.render_it(text), '1')
 
         text = r'c=$pm.a; d="1"; @pm {c=::c; a="c+d"; a;} ;'
@@ -633,27 +634,27 @@ Write the following sentence twice, the second time within quotes.
         self.assertEqual(self.render_it(text2), '114514810')
         self.assertEqual(self.render_it(text), '5')
 
-        text = r't=@pm {a="a+1";a}; t;'
+        text = r't=@pm {a+=1;a}; t;'
         self.assertEqual(self.render_it(text), '6')
 
-        text = r'@pm{}; pm.a="pm.a+1"; pm.a;'
+        text = r'@pm{}; ++pm.a; pm.a;'
         self.assertEqual(self.render_it(text), '7')
 
-        text = r'@pm {a="a+1";a};'
+        text = r'@pm {a+=1;a};'
         self.assertEqual(self.render_it(text), '8')
 
     def test_return_value(self):
         # The type of the return value must be preserved if only one value is
         # yielded from a `code_block` or `unary_chain`.
-        self.assertEqual(self.render_it('{ a={b="1"; b}; "a+1" }'), '2')
-        self.assertEqual(self.render_it('{ a={d={{"1"}}; +b-c$d}; "a+1" }'), '2')
+        self.assertEqual(self.render_it('{ a={b=1; b}; a+1 }'), '2')
+        self.assertEqual(self.render_it('{ a={d={{"1"}}; +b-c$d}; a+1 }'), '2')
         self.assertEqual(
-            self.render_it(r'''{ a={d={{"1"}}; {d==1?q}; +b-c$d}; "a+1" }'''),
+            self.render_it(r'''{ a={d={{"1"}}; {d==1?q}; +b-c$d}; a+1 }'''),
             'q11',
         )
 
     def test_raw_text(self):
-        text = '{ a =` This is naked`?=i:n$cluded!the!b`ac`kti`c\nks! ; "1"; a; "2" }'
+        text = '{ a =` This is naked`?=i:n$cluded!the!b`ac`kti`c\nks! ; "1"; a; \'2\' }'
         result = self.render_it(text)
         self.assertEqual(result, '1 This is naked`?=i:n$cluded!the!b`ac`kti`c\nks! 2')
 
@@ -759,7 +760,7 @@ Write the following sentence twice, the second time within quotes.
         # outer-level escape targets ('{', '}', ';', '\'), so it survives.
         self.assertEqual(result, text)
 
-        text = r''' { another = unclosed = block = "123" '''
+        text = r''' { another = unclosed = block = 123 '''
         result = self.render_it(text, e='Unclosed')
         self.assertEqual(result, text.strip())
 
@@ -1369,7 +1370,7 @@ safe = 1;
             if name == 'doc':
                 return '*f;\nD'
             if name == 'doc2':
-                return 'the\ne="output";\nis\ne;'
+                return 'the\ne=$output;\nis\ne;'
             return None
 
         mock_db(get_doc)
