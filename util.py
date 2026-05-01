@@ -448,9 +448,11 @@ def repl_cleanup_pre(m: re.Match) -> str:
 
 
 def cleanup_text(s: str) -> str:
+    s = s.replace('\r', '\n')
+    s = '\n'.join(map(str.rstrip, s.splitlines()))
     s = reg_cleanup.sub('\n\n', s)
     s = reg_cleanup_pre.sub(repl_cleanup_pre, s)
-    return s
+    return s.strip()
 
 
 async def _keep_action(msg: Message, action: ChatAction):
