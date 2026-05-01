@@ -1105,21 +1105,8 @@ class Engine(Interpreter):
         so we write {some_var}, {show_var ? 1 : 0} and {show_var ? $some_var : literal}.
         '''
         if is_tracing:
-            feats = (
-                permissive and 'permissive',
-                as_str and 'as_str',
-                allow_undef and 'allow_undef',
-            )
-            if feats:
-                feats = ' [' + ', '.join(f for f in feats if f) + ']'
-            else:
-                feats = ''
-            trace(
-                '[%d] _expr: %s%s',
-                self._gas,
-                self.debug_node(tree.children[0]),
-                feats,
-            )
+            s = self._feats(perm=permissive, str=as_str, undef=allow_undef)
+            trace('[%d] _expr%s: %s', self._gas, s, self.debug_node(tree.children[0]))
         self._consume_gas()
 
         assert len(tree.children) == 1
