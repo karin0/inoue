@@ -924,7 +924,7 @@ class Engine(Interpreter):
                 # Like {*doc} as unary expressions, but ignores sub-docs.
                 case 'doc_ref':
                     key = self._iden(ch.children[-1])
-                    val = self._doc_ref_no_subdoc(key)
+                    val = self._doc_ref(key, allow_subdoc=False)
                     self._put_val(val)
                 # Doc definition: handled before in `_scan_block()`.
                 case 'doc_def':
@@ -1426,7 +1426,7 @@ class Engine(Interpreter):
             # This bypasses `self._push()` and directly renders into the current
             # output. Useful for inner `_output_func()` calls with side-effects.
             case '**':
-                return self._doc_ref_inplace(key)
+                return self._doc_ref(key, inplace=True)
 
             # Variable read in the last scope: {::name}
             case '::':
@@ -1460,10 +1460,21 @@ class Engine(Interpreter):
             return doc
         self._error('no doc: ' + key)
 
-    def _doc_ref(self, key: str, *, allow_tco: bool = False) -> Value | TCO:
-        val = self._scope.get(key, allow_undef=True)
+    def _feats(self, **kwargs: bool) -> str:
+        s = ', '.join(k for k, v in kwargs.items() if v)
+        return s and f'[{s}]'
+
+    def _doc_ref(
+        self,
+        key: str,
+        *,
+        allow_tco: bool = False,
+        allow_subdoc: bool = True,
+        inplace: bool = False,
+    ) -> Value | TCO:
+        val = self._scope.get(key, allow_undef=True) if allow_subdoc else None
         if is_tracing:
-            s = ' (tco)' if allow_tco else ''
+            s = self._feats(tco=allow_tco, inplace=inplace, nosub=not allow_subdoc)
             trace('_doc_ref%s: key=%s val=%r', s, key, val)
 
         if isinstance(val, SubDoc):
@@ -1474,41 +1485,29 @@ class Engine(Interpreter):
                     key,
                     self.debug_node(tree),
                 )
+            if inplace:
+                self._error('cannot expand sub-doc in-place: ' + key)
             if allow_tco:
                 return self._set_tco(tree, scope=val.scope)
             return self._call_subdoc(val, trim=True)
 
-        doc = self.get_doc(key)
-        if doc is None:
-            return ''
-
-        trace('_doc_ref: Rendering doc: %s', key)
-        with self._push():
-            self._render(doc)
-            return self._gather_output(trim=True)
-
-    def _doc_ref_no_subdoc(self, key: str) -> Value:
         if (doc := self.get_doc(key)) is None:
             return ''
 
-        trace('_doc_ref_no_subdoc: Rendering doc: %s', key)
+        trace('_doc_ref: Rendering doc: %s', key)
+        if inplace:
+            self._render(doc)
+            return ''
+        return self._render_doc(doc)
+
+    def _render_doc(self, doc: str) -> Value:
         with self._push():
             self._render(doc)
             return self._gather_output(trim=True)
-
-    def _doc_ref_inplace(self, key: str) -> str:
-        trace('_doc_ref_inplace: %s', key)
-        if (doc := self.get_doc(key)) is not None:
-            trace('_doc_ref_inplace: Rendering doc: %s', key)
-            self._render(doc)
-        return ''
 
     def _eval_func(self, doc) -> Value:
         trace('_eval_func: %s', doc)
-        doc = to_str(doc)
-        with self._push():
-            self._render(doc)
-            return self._gather_output(trim=True)
+        return self._render_doc(to_str(doc))
 
     def _output_func(self) -> Value:
         '''Useful for capturing text fragments outside any code blocks.'''
