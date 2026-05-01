@@ -447,11 +447,24 @@ class RenderContext:
         func = get_renderer(parse_mode)
         out = []
 
-        for seg in self._format_seg(seg, state):
-            log.debug('_format_response: seg: %r', seg)
-            func(seg, out)
+        fmt = Formatter()
+        for part in self._format_seg(fmt, seg, state):
+            log.debug('_format_response: part: %r', part)
+            func(part, out)
+
+        seg_num = len(fmt.segments)
+        seg_len = fmt.length
+        seg_typ = type(seg).__name__
+        if isinstance(seg, (list, tuple, str)):
+            seg_typ += f'[{len(seg)}]'
+        elif isinstance(seg, Element):
+            seg_typ += f'[{type(seg.inner).__name__}]'
+        del fmt, seg
 
         result = ''.join(out)
+        out_len = len(out)
+        res_len = len(result)
+        del out
 
         if get_env_flag(ctx, 'raw'):
             # Markup characters are counted in length when `parse_mode` is unset.
@@ -461,12 +474,24 @@ class RenderContext:
         if do_cleanup:
             result = cleanup_text(result)
 
-        log.debug('_format_response: final: %r (%d)', result, len(result))
+        res_len_2 = len(result)
+        log.debug('_format_response: final: %r (%d)', result, res_len_2)
+        log.info(
+            'formatted %s into %d/%d as %d/%d%s, %s, %s',
+            seg_typ,
+            seg_num,
+            seg_len,
+            out_len,
+            res_len,
+            '' if res_len_2 == res_len else f'/{res_len_2}',
+            parse_mode or '/',
+            markup and len(markup.inline_keyboard) or '/',
+        )
         return result, parse_mode, markup
 
-    def _format_seg(self, body: Segment, state: str | None) -> Iterable[Segment]:
-        fmt = Formatter()
-
+    def _format_seg(
+        self, fmt: Formatter, body: Segment, state: str | None
+    ) -> Iterable[Segment]:
         # Reserve space for the overflow indicator.
         length = fmt.to_length(body)
         overflow_line = [str(length), OVERFLOWED_TEXT]
