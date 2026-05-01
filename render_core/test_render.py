@@ -403,6 +403,12 @@ class TestRender(unittest.TestCase):
         self.render_it('{a = 16; a >>= 2; a}', eq='4')
         self.render_it('{a = 16; a >>= "2"; a}', e='TypeError')
 
+    def test_python_native(self):
+        self.render_it('{f ⇒ `qwq}; {g ⇒ $0}; g(*f*f*f);', eq='qwq' * 3)
+        self.render_it('g = {f ⇒ f(); f(1); }; g({h ⇒ `qwq});', eq='qwq' * 2)
+        self.render_it('g = {f ⇒ f}; g({a=qwq;a});', eq='qwq')
+        self.render_it('g = {f ⇒ int(f)<<1; f}; g({g({g({"1"})})});', eq='84424221')
+
     def test_context_assignment(self):
         text = "{target=World}Hello {target}!"
         result, ctx = self.render_it_all(text)

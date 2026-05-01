@@ -13,6 +13,7 @@ from typing import (
     Type,
     TypeVar,
     Literal,
+    TYPE_CHECKING,
     cast,
     overload,
     override,
@@ -85,36 +86,62 @@ parser = Lark.open(
 )
 
 
-def _iter_tokens(tree: Tree) -> Iterable[Token]:
+def _iter_py(tree: Tree) -> Iterable[Tree | Token]:
+    # Find all tokens and native subtrees.
     for ch in tree.children:
         if isinstance(ch, Token):
             yield ch
+        elif ch.data == 'py_native':
+            ch.data = 'expr'
+            yield ch
         else:
-            yield from _iter_tokens(ch)
+            yield from _iter_py(ch)
 
 
 @functools.lru_cache
 def parse_fragment(text: str) -> Tree:
     root: Tree = BranchNormalizer().transform(parser.parse(text))
+    if is_not_quiet:
+        trace('Raw tree: %s', root.pretty())
+    parts = []
     for tree in root.iter_subtrees_topdown():
         if tree.data == 'python':
+            tree_meta = tree.meta
+            if is_not_quiet:
+                trace(
+                    'Python tree: %s\nfrom %r',
+                    tree.pretty(),
+                    text[tree_meta.start_pos : tree_meta.end_pos],
+                )
             out = []
-            last = tree.meta.start_pos
-            for token in _iter_tokens(tree):
-                # Translate `&&`, `||`, `~` to Python.
-                if token.type == 'LOGIC_OP':
-                    repl = ' and ' if token.value == '&&' else ' or '
-                elif token.type == 'NEGATE_OP':
-                    repl = ' not '
+            last = tree_meta.start_pos
+            for ch in _iter_py(tree):
+                trace('Python part: %r', ch)
+                if isinstance(ch, Tree):
+                    # Keep the entire native `expr` tree.
+                    meta = ch.meta
+                    parts.append(text[last : meta.start_pos])
+                    out.append(''.join(parts))
+                    parts.clear()
+                    out.append(ch)
+                    last = meta.end_pos
                 else:
-                    continue
-                out.append(text[last : token.start_pos])
-                out.append(repl)
-                last = token.end_pos
-            out.append(text[last : tree.meta.end_pos])
-
-            # Keep the source and remove all children.
-            tree.children = [''.join(out)] if len(out) > 1 else out
+                    # Translate `&&`, `||`, `~` to Python.
+                    if ch.type == 'LOGIC_OP':
+                        repl = ' and ' if ch.value == '&&' else ' or '
+                    elif ch.type == 'NEGATE_OP':
+                        repl = ' not '
+                    else:
+                        continue
+                    parts.append(text[last : ch.start_pos])
+                    parts.append(repl)
+                    last = ch.end_pos
+            parts.append(text[last : tree_meta.end_pos])
+            out.append(''.join(parts))
+            parts.clear()
+            tree.children.clear()
+            tree.children = out
+            trace('Python final tree: %s', out)
         try:
             delattr(tree, '_meta')
         except AttributeError:
@@ -230,6 +257,7 @@ class Engine(Interpreter):
         '_tree',
         '_gas',
         '_scope',
+        '_py_cache',
         '_this',
     )
 
@@ -259,6 +287,7 @@ class Engine(Interpreter):
         self._tree: Tree | None = None
         self._gas: int = 0
         self._this = (False, None)
+        self._py_cache: dict[Tree, str] = {}
         self._scope = ScopedContext(ctx, self)
 
         trace('Engine initialized: %s', ctx)
@@ -987,7 +1016,7 @@ class Engine(Interpreter):
     @overload
     def expr(
         self,
-        tree: Tree,
+        tree: Tree[Tree | Token],
         *,
         direct_branch: bool = False,
         allow_tco: Literal[False] = False,
@@ -995,11 +1024,19 @@ class Engine(Interpreter):
 
     @overload
     def expr(
-        self, tree: Tree, *, direct_branch: bool = False, allow_tco: Literal[True]
+        self,
+        tree: Tree[Tree | Token],
+        *,
+        direct_branch: bool = False,
+        allow_tco: Literal[True],
     ) -> MaybeTCO: ...
 
     def expr(
-        self, tree: Tree, *, direct_branch: bool = False, allow_tco: bool = False
+        self,
+        tree: Tree[Tree | Token],
+        *,
+        direct_branch: bool = False,
+        allow_tco: bool = False,
     ) -> MaybeTCO:
         # Expression statement: {<expr>}
         # The value is directly appended to output.
@@ -1234,11 +1271,37 @@ class Engine(Interpreter):
         self, tree: Tree, *, as_str: bool = False, allow_tco: bool = False
     ) -> Value | TCO:
         if is_tracing:
-            trace('_python_source: %r, %s', tree, self.debug_node(tree))
-        # Extract the source saved by `parse_fragment`.
-        text = tree.children[0]
-        assert isinstance(text, str), text
-        return self._eval_py(text, as_str=as_str, allow_tco=allow_tco)
+            trace('_python: %s', self.debug_node(tree))
+
+        if len(tree.children) <= 1:
+            expr = tree.children[0]
+            assert isinstance(expr, str)
+        elif (expr := self._py_cache.get(tree)) is None:
+            out = []
+            # Extract the source saved by `parse_fragment`.
+            for part in tree.children:
+                if isinstance(part, str):
+                    out.append(part)
+                else:
+                    if is_tracing:
+                        trace('Injecting: %r', self.debug_node(part))
+                    out.append(self._scope.inject(part))
+
+            # Cache the final expression, so the injected values in `self._scope`
+            # can be reused across multiple evaluations.
+            # We cannot simply save it to `tree.children`, since the tree is also
+            # cached and reused in `parse_fragment`.
+            self._py_cache[tree] = expr = ''.join(out)
+
+        return self._eval_py(expr, as_str=as_str, allow_tco=allow_tco)
+
+    if TYPE_CHECKING:
+
+        def _eval_injected(self, token: Tree) -> Value:
+            return self._expr(token)
+
+    else:
+        _eval_injected = _expr
 
     def _eval_py(
         self, expr: str, *, as_str: bool = False, allow_tco: bool = False

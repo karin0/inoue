@@ -118,6 +118,9 @@ class Fragment(Box, Sequence[Value]):
     def __str__(self) -> str:
         return ''.join(to_str(x) for x in self._flatten())
 
+    def __int__(self) -> int:
+        return int(str(self))
+
     def __repr__(self) -> str:
         return f'Fragment({self._flatten()!r})'
 
@@ -225,12 +228,13 @@ class ScopeProxy:
         return self._ctx._data[self._prefix + name]
 
 
-class ContextCallbacks(Protocol):
+class ContextCallbacks[T](Protocol):
     __slots__ = ()
 
     def _error(self, msg: str): ...
     def _consume_gas(self): ...
     def _get_func(self, name: str) -> Callable | None: ...
+    def _eval_injected(self, token: T) -> Value | None: ...
 
 
 class Context(MutableMapping[str, Value]):
@@ -249,21 +253,23 @@ EVAL_FUNCS = {**DEFAULT_FUNCTIONS, 'len': len}
 EMPTY = {}
 
 
-class ScopedContext:
+class ScopedContext[T]:
     __slots__ = (
         '_scopes',
         '_prefixes',
         '_data',
         '_cb',
+        '_injected',
         '_eval_str',
         '_eval',
     )
 
-    def __init__(self, ctx: Context, callbacks: ContextCallbacks):
+    def __init__(self, ctx: Context, callbacks: ContextCallbacks[T]):
         self._scopes: list[str] = ['']
         self._prefixes = {}
         self._data = ctx
         self._cb = callbacks
+        self._injected: list[T] = []
 
         # Pass empty dicts to prevent the internal copy. We have taken care of
         # all name lookups.
@@ -276,6 +282,7 @@ class ScopedContext:
         eval.nodes[ast.Subscript] = self._eval_subscript
         eval.nodes[ast.Compare] = self._eval_compare
         eval.nodes[ast.AugAssign] = self._eval_augassign
+        eval.nodes[ast.Yield] = self._eval_yield
 
     def _get_func(self, name: str) -> Callable | None:
         if (val := self._cb._get_func(name)) is not None:
@@ -526,6 +533,24 @@ class ScopedContext:
 
         self._data[key] = val
 
+    def _eval_yield(self, node: ast.Yield) -> Value | None:
+        if is_tracing:
+            trace('_eval_yield: %s', ast.dump(node))
+        self._cb._consume_gas()
+        if (
+            isinstance(node.value, ast.Constant)
+            and isinstance(idx := node.value.value, int)
+            and 0 <= idx < len(self._injected)
+        ):
+            return self._cb._eval_injected(self._injected[idx])
+        raise RuntimeError('yield is unavailable')
+
+    def inject(self, token: T) -> str:
+        idx = len(self._injected)
+        self._injected.append(token)
+        trace('Injected: %s -> %r', idx, token)
+        return f'(yield {idx})'
+
     @overload
     def eval(
         self, expr: str, *, allow_tco: Literal[True]
@@ -539,6 +564,8 @@ class ScopedContext:
     ) -> Value | tuple[Box, tuple, dict]:
         self._cb._consume_gas()
         tree = parse_ast(expr)
+        if is_tracing:
+            trace('ctx eval: %r %r', expr, ast.dump(tree))
 
         # Manual TCO.
         if allow_tco:

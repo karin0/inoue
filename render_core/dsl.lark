@@ -51,12 +51,14 @@ repl_pair: [expr] "/" [expr]                      -> repl_pair_plain
 // them here breaks lexing, since we want to allow whitespaces inside naked literals.
 // A 'paren' (i.e. nested 'expr') just replaces the outer one.
 // The only dymamic name resolution allowed here is 'subscript'.
-!expr: literal
-     | unary_chain
-     | code_block
-     | assign_or_equal
-     | lvalue
-     | python
+expr: literal
+    | lvalue
+    | expr_safe
+    | assign_or_equal
+    | python
+
+?expr_safe: unary_chain
+          | code_block
 
 subscript: lvalue "[" expr "]"
 
@@ -76,12 +78,19 @@ UNARY_OP: "$" | "::" | "++" | "--"
 !unary: (COMMON_OP | UNARY_OP) lvalue
 !unary_chain: unary+
 
-// Limited Python expressions. Single term is restricted to avoid ambiguity.
+// Limited Python expressions to be embedded.
+// Single term is restricted to avoid ambiguity.
 python: py_term (py_op py_term)+ | py_term_safe
 ?py_expr: py_term (py_op py_term)*
-?py_term: lvalue | literal | "(" python ")" | py_term "." iden | py_term_safe
-?py_term_safe: py_call | NEGATE_OP py_term | py_term "[" py_expr "]"
-?py_call: py_term "(" (py_expr "," )* py_expr? ")"
+?py_term: literal | lvalue | py_native | py_term_safe | py_paren | py_term "." iden
+?py_term_safe: py_call | NEGATE_OP py_term | py_subscript
+
+// Rules with unnamed token at boundaries must not be folded on tree, or we will
+// lose the outer positions.
+py_native: expr_safe
+py_paren: "(" python ")"
+py_subscript: py_term "[" py_expr "]"
+py_call: py_term "(" (py_expr "," )* py_expr? ")"
 
 // Operators excluded for conflicts: `/`, `|` (repl), `^` (swap), `//` (comment).
 PY_OP: "%" | "&" | "<<" | ">>"
