@@ -327,7 +327,6 @@ class TestRender(unittest.TestCase):
             '__globals__',
             '__code__',
             '__module__',
-            '__name__',
             '__closure__',
             '__self__',
             '__func__',

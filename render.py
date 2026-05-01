@@ -557,7 +557,7 @@ class RenderContext:
         if get_env_flag(ctx, 'show_state', True) and state:
             yield state
 
-        if get_env_flag(ctx, 'show_source') and (source := self.engine.get_doc_text()):
+        if get_env_flag(ctx, 'show_source') and (source := self.engine.get_doc()):
             yield Pre(source, lang='c')
 
         if get_env_flag(ctx, 'show_stats', True) and (unix := self._render_time):

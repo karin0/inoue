@@ -297,8 +297,8 @@ class Engine(Interpreter):
             return val
         match name:
             case '__file__':
-                return self.get_doc_text
-            case '__doc__':
+                return self.get_doc
+            case '__name__':
                 return self._doc_func
             case '__this__':
                 return self._this_func
@@ -1463,18 +1463,14 @@ class Engine(Interpreter):
             case _:
                 raise ValueError(f'Bad unary op: {op}')
 
-    def _get_doc(self, key: str) -> str | None:
-        # Allow self-reference in when current doc is not saved yet.
-        if self.doc_name == key:
-            return self._doc_text
-        doc = self._doc_src(key)
-        if doc is None:
-            self._error('no doc: ' + key)
-        return doc
-
     # Also used as `__file__` function.
-    def get_doc_text(self, key: str | None = None) -> str | None:
-        return self._doc_text if key is None else self._get_doc(key)
+    def get_doc(self, key: str | None = None) -> str | None:
+        # Allow self-reference in when current doc is not saved yet.
+        if not key or self.doc_name == key:
+            return self._doc_text
+        if doc := self._doc_src(key):
+            return doc
+        self._error('no doc: ' + key)
 
     def _doc_ref(self, key: str, *, allow_tco: bool = False) -> Value | TCO:
         val = self._scope.get(key, allow_undef=True)
@@ -1494,7 +1490,7 @@ class Engine(Interpreter):
                 return self._set_tco(tree, scope=val.scope)
             return self._call_subdoc(val, trim=True)
 
-        doc = self._get_doc(key)
+        doc = self.get_doc(key)
         if doc is None:
             return ''
 
@@ -1505,7 +1501,7 @@ class Engine(Interpreter):
 
     def _doc_ref_inplace(self, key: str) -> str:
         trace('_doc_ref_inplace: %s', key)
-        if (doc := self._get_doc(key)) is not None:
+        if (doc := self.get_doc(key)) is not None:
             trace('_doc_ref_inplace: Rendering doc: %s', key)
             self._render(doc)
         return ''
