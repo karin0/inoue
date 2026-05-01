@@ -8,7 +8,16 @@ import subprocess
 from functools import wraps
 from types import MethodType
 from datetime import datetime
-from typing import Any, Awaitable, Callable, Concatenate, Coroutine, Sequence, cast
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    Concatenate,
+    Coroutine,
+    Sequence,
+    Protocol,
+    cast,
+)
 from collections.abc import MutableMapping
 
 from render_core import Box, Value, Fragment, to_str
@@ -182,19 +191,24 @@ def trusted[**P, R](
         return wrapper2
 
 
+class Callbacks(Protocol):
+    async def _update_text(self, seg: Segment) -> Value | None: ...
+    async def _dispatch_cmd(
+        self, cmd: str
+    ) -> Sequence[tuple[str, str | None]] | None: ...
+    def _error(self, msg: str) -> Any: ...
+
+
 class Bridge(Box):
-    __slots__ = ('_ctx', '_update_text', '_trusted')
+    __slots__ = ('_ctx', '_trusted', '_cb')
 
     def __init__(
-        self,
-        ctx: MutableMapping[str, Value],
-        update_text: Callable[[Segment], Awaitable[Value | None]],
-        trusted: int | None = None,
+        self, ctx: MutableMapping[str, Value], trusted: int | None, cb: Callbacks
     ) -> None:
         super().__init__()
         self._ctx = ctx
-        self._update_text = update_text
         self._trusted = trusted
+        self._cb = cb
 
     def __repr__(self) -> str:
         return f'Bridge({self._trusted})'
@@ -214,7 +228,29 @@ class Bridge(Box):
     @trusted
     def edit_message(self, text) -> Promise:
         log.debug('Bridge: edit_message: %r', text)
-        return Promise(self._update_text(to_segment(text)))
+        return Promise(self._cb._update_text(to_segment(text)))
+
+    async def _dispatch_cmd(self, cmd: str) -> Fragment | Raw | None:
+        r = await self._cb._dispatch_cmd(cmd)
+        log.info('Bridge: exec %r returned %r', cmd, r)
+        if r is None:
+            self._cb._error(f'exec failed for {cmd!r}')
+        elif r:
+            return Fragment(
+                [
+                    # Avoid a repeated escaping.
+                    Raw(text) if parse_mode == 'MarkdownV2' else text
+                    for text, parse_mode in r
+                ]
+            )
+
+    @public
+    def exec(self, cmd) -> Promise:
+        log.debug('Bridge: exec: %r', cmd)
+        cmd = to_str(cmd)
+        if not cmd.startswith('/'):
+            raise ValueError(f'command must start with /, got {cmd!r}')
+        return Promise(self._dispatch_cmd(cmd))
 
     @public
     def dbg(self) -> str:

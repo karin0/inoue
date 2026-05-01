@@ -162,7 +162,7 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     sender = get_sender()
     is_guest = bool(sender and sender.is_guest)
     if not is_guest and (post := update.edited_channel_post or update.channel_post):
-        return await handle_render_doc(update, post)
+        return await handle_render_doc(update, ctx, post)
 
     if not (msg := get_msg(update)):
         return
@@ -238,7 +238,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if data.startswith('rg_'):
             await handle_rg_callback(data)
         elif data[0] in CALLBACK_SPECIAL:
-            await handle_render_callback(update, callback, data)
+            await handle_render_callback(update, ctx, callback, data)
             return
         elif data != 'noop':
             log.warning('bad callback: %s', data)

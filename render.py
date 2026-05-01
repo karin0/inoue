@@ -34,6 +34,7 @@ from util import (
     cleanup_text,
     do_notify,
     encode_chat_id,
+    dispatch_cmd,
 )
 from segments import (
     Segment,
@@ -269,6 +270,8 @@ OVERFLOWED_TEXT = '…\n'
 
 class RenderContext:
     __slots__ = (
+        '_update',
+        '_bot_ctx',
         '_markup_state',
         '_doc_id',
         '_path',
@@ -283,12 +286,16 @@ class RenderContext:
     def __init__(
         self,
         update: Update,
+        bot_ctx: ContextTypes.DEFAULT_TYPE,
         overrides: dict[str, Value] | None = None,
         markup_state: MarkupState | None = None,
         doc_id: int | None = None,
         path: str | None = None,
         update_callback: UpdateCallback | None = None,
     ):
+        self._update = update
+        self._bot_ctx = bot_ctx
+
         self._markup_state = markup_state
         self._doc_id = doc_id
         self.set_path(path)
@@ -326,13 +333,16 @@ class RenderContext:
         self._trusted = trusted
 
         self.data = OverriddenDict({}, overrides)
-        bridge = Bridge(self.data, self._update_text, trusted)
+        bridge = Bridge(self.data, trusted, self)
 
         # Access to attributes with underscores should be forbidden in `simpleeval`,
         # so `os` is safe.
         self.data['os'] = self.data['sys'] = bridge
 
         self.engine = Engine(self.data, self._doc_loader, funcs=bridge._get_func)
+
+    def _error(self, msg: str) -> None:
+        self.engine.errors.append(msg)
 
     def set_path(self, path: str | None) -> None:
         self._path = path
@@ -376,6 +386,10 @@ class RenderContext:
         log.debug('_update_text: %s', r)
         if isinstance(r, Message):
             return r.message_id
+
+    async def _dispatch_cmd(self, cmd: str):
+        log.debug('_dispatch_cmd: %r', cmd)
+        return await dispatch_cmd(self._update, self._bot_ctx, cmd)
 
     async def render(
         self,
@@ -530,7 +544,7 @@ class RenderContext:
             )
 
 
-async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
+async def handle_render(update: Update, bot_ctx: ContextTypes.DEFAULT_TYPE):
     msg, arg = get_msg_arg(update)
     target = msg.reply_to_message
     text = target and (target.text or target.caption or '').strip()
@@ -559,7 +573,7 @@ async def handle_render(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
         return await reply_text(msg, *spec, allow_not_modified=True)
 
     ctx = RenderContext(
-        update, doc_id=doc_id, path=path, update_callback=edit_reply_message
+        update, bot_ctx, doc_id=doc_id, path=path, update_callback=edit_reply_message
     )
     await ctx.render(text)
 
@@ -659,7 +673,7 @@ async def handle_render_inline_query(
     else:
         doc_id = path = None
 
-    ctx = RenderContext(update, doc_id=doc_id, path=path)
+    ctx = RenderContext(update, bot_ctx, doc_id=doc_id, path=path)
     ctx.data['_env.footer'] = Element(
         (Bold('via '), '@', bot_ctx.bot.username, ' ', text)
     )
@@ -686,7 +700,12 @@ async def handle_render_inline_query(
     await query.answer((r,))
 
 
-async def handle_render_callback(update: Update, callback: CallbackQuery, data: str):
+async def handle_render_callback(
+    update: Update,
+    bot_ctx: ContextTypes.DEFAULT_TYPE,
+    callback: CallbackQuery,
+    data: str,
+):
     flags = {}
     clicked_button = None
 
@@ -775,6 +794,7 @@ async def handle_render_callback(update: Update, callback: CallbackQuery, data: 
 
     ctx = RenderContext(
         update,
+        bot_ctx,
         overrides=dict(flags),
         markup_state=(flags, data),
         doc_id=doc_id,
@@ -816,12 +836,14 @@ def _report(
     out.append(f'{escape(action)} {msg_info}')
 
 
-async def handle_render_doc(update: Update, msg: Message):
+async def handle_render_doc(
+    update: Update, bot_ctx: ContextTypes.DEFAULT_TYPE, msg: Message
+):
     if not (text := msg.text) or not (text := text.strip()):
         return
 
     id = msg.message_id
-    ctx = RenderContext(update, doc_id=id)
+    ctx = RenderContext(update, bot_ctx, doc_id=id)
     result = ctx.render_text(text)
 
     info = []

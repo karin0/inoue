@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 
 from telegram import Message, Bot, MessageEntity, InlineKeyboardMarkup, Update
+from telegram.ext import CommandHandler, ContextTypes
 from telegram.constants import ChatAction, MessageLimit
 from telegram.error import BadRequest
 
@@ -304,6 +305,9 @@ async def try_send_text[**P, R](
         raise
 
 
+capture_reply: dict[tuple[int, int], list[tuple[str, str | None]]] = {}
+
+
 # Note: the return value could be `None` if `allow_not_modified` is set.
 async def reply_text(
     update: MessageSource,
@@ -321,7 +325,7 @@ async def reply_text(
     key = f'{chat_kind}-{m.message_id}'
 
     # Can only be called when `key` is missing in the cache.
-    async def _do_reply_text():
+    async def _do_reply_text(save: bool = True):
         resp = await try_send_text(
             m.reply_text,
             text,
@@ -331,10 +335,19 @@ async def reply_text(
             do_quote=True,
         )
 
-        val = str(resp.message_id)
-        db[key] = val
-        log.debug('Sending new response: %s -> %s', key, val)
+        if save:
+            val = str(resp.message_id)
+            db[key] = val
+            log.debug('Sending new response: %s -> %s', key, val)
         return resp
+
+    if (buf := capture_reply.get((m.chat_id, m.message_id))) is not None:
+        log.info('reply_text: capture_reply: %s', key)
+        buf.append((text, parse_mode))
+
+        # Do not try to edit the reply, or we will mess up the response of the
+        # capturing context (`/render`).
+        return await _do_reply_text(save=False)
 
     if not (resp_msg_id := db.get(key)):
         return await _do_reply_text()
@@ -457,3 +470,43 @@ def keep_chat_action(msg: Message, action: ChatAction):
         yield task
     finally:
         task.cancel()
+
+
+in_dispatch_cmd: ContextVar[bool] = ContextVar('in_dispatch_cmd', default=False)
+
+
+async def dispatch_cmd(
+    update: Update, ctx: ContextTypes.DEFAULT_TYPE, text: str
+) -> Sequence[tuple[str, str | None]] | None:
+    if (msg := update.effective_message) is None:
+        raise RuntimeError('No message')
+
+    if in_dispatch_cmd.get():
+        log.warning('dispatch_cmd: already in dispatch_cmd: %s', text)
+        return None
+
+    p = min(x for x in (text.find(' '), text.find('@'), len(text)) if x > 0)
+    cmd = text[1:p]
+    log.info('dispatch_cmd: %s: %r', cmd, text)
+    for handlers in ctx.application.handlers.values():
+        for handler in handlers:
+            if isinstance(handler, CommandHandler) and cmd in handler.commands:
+                log.info('dispatch_cmd: %s: dispatching to %s', cmd, handler)
+                key = (msg.chat_id, msg.message_id)
+                if new := ((buf := capture_reply.get(key)) is None):
+                    capture_reply[key] = buf = []
+                else:
+                    log.info('dispatch_cmd: %s: already capturing: %s', cmd, key)
+                token = in_dispatch_cmd.set(True)
+                try:
+                    with use_text_override(text):
+                        await handler.callback(update, ctx)
+                finally:
+                    in_dispatch_cmd.reset(token)
+                    if new:
+                        val = capture_reply.pop(key)
+                        assert val is buf
+
+                # Copy the list to avoid conflicts with outer capture contexts.
+                # We disallow re-entrance for now, but just in case.
+                return tuple(buf)

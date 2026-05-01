@@ -29,7 +29,7 @@ class BaseElement:
 
 
 @dataclass(frozen=True, slots=True, repr=False, eq=False, match_args=False)
-class Element(Box, BaseElement):
+class Element(BaseElement, Box):
     inner: Segment
 
 
