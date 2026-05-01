@@ -273,7 +273,6 @@ class RenderContext:
         '_update',
         '_bot_ctx',
         '_markup_state',
-        '_doc_id',
         '_path',
         '_update_callback',
         '_doc_refs',
@@ -297,9 +296,11 @@ class RenderContext:
         self._bot_ctx = bot_ctx
 
         self._markup_state = markup_state
-        self._doc_id = doc_id
         self.set_path(path)
         self.set_update_callback(update_callback)
+
+        self._doc_refs = {doc_id: ''} if doc_id is not None else {}
+        self._render_time = None
 
         if overrides is None:
             overrides = {}
@@ -328,10 +329,7 @@ class RenderContext:
 
         log.info('create_engine: %s', overrides)
 
-        self._doc_refs = {doc_id: ''} if doc_id is not None else {}
-        self._render_time = None
         self._trusted = trusted
-
         self.data = OverriddenDict({}, overrides)
         bridge = Bridge(self.data, trusted, self)
 
