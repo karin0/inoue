@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import base64
 import asyncio
 import inspect
 import subprocess
@@ -441,11 +442,6 @@ def raw(text) -> Raw | str:
     return Raw(text) if text else ''
 
 
-@public
-def cleanup(text) -> str:
-    return cleanup_text(to_str(text))
-
-
 class Deferred(Box, BaseElement):
     __slots__ = ('_func',)
 
@@ -465,6 +461,28 @@ def fc(thunk: Callable) -> Deferred:
     Note that this may exceed the length limit in `Formatter`.
     '''
     return Deferred(thunk)
+
+
+@public
+def btoa(data) -> str:
+    if isinstance(data, int):
+        data = data.to_bytes((data.bit_length() + 7) // 8)
+    elif not isinstance(data, bytes):
+        data = to_str(data).encode()
+    return base64.b64encode(data).decode()
+
+
+@public
+def atob(text) -> bytes:
+    if not isinstance(text, bytes):
+        text = to_str(text).encode('ascii')
+    text += b'=' * (-len(text) % 4)
+    return base64.b64decode(text)
+
+
+@public
+def cleanup(text) -> str:
+    return cleanup_text(to_str(text))
 
 
 for name, func in _methods.items():
