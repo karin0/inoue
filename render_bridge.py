@@ -23,7 +23,7 @@ from collections.abc import MutableMapping
 
 from render_core import Box, Value, Fragment, to_str
 
-from util import log, escape, html_escape, cleanup_text
+from util import log, escape, html_escape, cleanup_text, cleanup_text_md
 from motto import hitokoto
 from segments import (
     BaseElement,
@@ -483,6 +483,11 @@ def atob(text) -> bytes:
 @public
 def cleanup(text) -> str:
     return cleanup_text(to_str(text))
+
+
+@public
+def cleanup2(text) -> str:
+    return cleanup_text_md(to_str(text))
 
 
 for name, func in _methods.items():

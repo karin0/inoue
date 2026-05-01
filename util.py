@@ -455,6 +455,40 @@ def cleanup_text(s: str) -> str:
     return s.strip()
 
 
+def _cleanup_md(s: str) -> str:
+    s = s.replace('\r', '\n')
+    s = '\n'.join(map(str.strip, s.splitlines()))
+    s = reg_cleanup.sub('\n\n', s)
+    s = reg_cleanup_pre.sub(repl_cleanup_pre, s)
+
+    def hit(c: str) -> bool:
+        return c.isdecimal() or c in '-*+`'
+
+    # Collapse consecutive whitespaces which contains exactly one line break,
+    # like in Markdown, unless it's followed by a digit or '-' to preserve lists.
+    def repl(m: re.Match) -> str:
+        t = m.group(0)
+        if t.count('\n') == 1:
+            p = m.start() - 1
+            q = m.end()
+            if not (p >= 0 and hit(s[p])) and not (q < len(s) and hit(s[q])):
+                return ''
+        return t
+
+    return re.sub(r'\s+', repl, s).strip()
+
+
+def cleanup_text_md(text: str) -> str:
+    parts = text.split('```')
+    n = len(parts)
+    if n <= 2 or n & 1 == 0:
+        return _cleanup_md(text)
+    return '```'.join(
+        ('\n' + part.strip() + '\n') if i & 1 else ('\n\n' + _cleanup_md(part) + '\n\n')
+        for i, part in enumerate(parts)
+    ).strip()
+
+
 async def _keep_action(msg: Message, action: ChatAction):
     try:
         while True:
