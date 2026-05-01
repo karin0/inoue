@@ -102,22 +102,21 @@ NEGATE_OP:  "~"
 
 ?py_op: COMMON_OP | PY_OP | LOGIC_OP
 
-?literal: ESCAPED_STRING  -> dq_lit
-        | SQ_STRING       -> sq_lit
+?literal: DQ_LIT | SQ_LIT
 
-?iden: LITERAL
+?iden: NAKED_LIT
 
 // Terminals.
 
 // Exclude all punctuations except '_', '.', ',' from naked literals.
 // `<` and `>` are also excluded for `python` ops.
 // U+21A6 (↦) and U+21D2 (⇒) are also excluded for slick sub-doc markers.
-LITERAL.-100: /[^\"#$%&'()*+\-\/:;<>=?!@[\\\]^`{|}~↦⇒]+/
+NAKED_LIT.-100: /[^\"#$%&'()*+\-\/:;<>=?!@[\\\]^`{|}~↦⇒]+/
 
-SQ_STRING: /'([^'\\]|\\.)*'/
+SQ_LIT: /'([^'\\]|\\.)*'/
 
 REPL_FLAGS: /[a-z]+/
 
-%import common.ESCAPED_STRING
+%import common.ESCAPED_STRING -> DQ_LIT
 %import common.WS
 %ignore WS

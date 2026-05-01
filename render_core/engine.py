@@ -1066,13 +1066,13 @@ class Engine(Interpreter):
                             return self._set_tco(inner)
                         return self._run_block(inner)
                     return self._put_val(self._sub_doc(inner, sub_doc_token))
-                case 'dq_lit':
-                    # Optimize: chance to TCO.
-                    val = self._dq_lit(inner, allow_tco=allow_tco)
-                    return self._put_val(val)
                 case 'python':
                     val = self._python(inner, allow_tco=allow_tco)
                     return self._put_val(val)
+        elif inner.type == 'DQ_LIT':
+            # Optimize: chance to TCO.
+            val = self._eval_py(self._extract_dq_lit(inner), allow_tco=allow_tco)
+            return self._put_val(val)
 
         val = self._expr(tree, permissive=not direct_branch)
         self._put_val(val)
@@ -1146,14 +1146,30 @@ class Engine(Interpreter):
                     continue
                 break
 
-            # Ambiguous naked literal / var: {some_name}
-            # Treated as var only if `permissive` is True and contains no whitespace.
-            return self._naked_lit(
-                ch,
-                as_str=as_str,
-                permissive=permissive,
-                allow_undef=allow_undef,
-            )
+            trace('token in _expr: %r', ch)
+            assert isinstance(ch, Token)
+            match ch.type:
+                # Literal: {'single quoted'}
+                case 'SQ_LIT':
+                    return (
+                        ch.value[1:-1]
+                        .encode('latin-1', 'backslashreplace')
+                        .decode('unicode_escape')
+                    )
+
+                # Python expression: {"1 + 1"}
+                case 'DQ_LIT':
+                    return self._eval_py(self._extract_dq_lit(ch), as_str=as_str)
+
+                # Ambiguous naked literal / var: {some_name}
+                # Treated as var only if `permissive` is True and contains no whitespace.
+                case 'NAKED_LIT':
+                    return self._naked_lit(
+                        ch,
+                        as_str=as_str,
+                        permissive=permissive,
+                        allow_undef=allow_undef,
+                    )
 
         match ch.data:
             case 'unary_chain':
@@ -1184,18 +1200,9 @@ class Engine(Interpreter):
                 key = self._subscript(ch)
                 return self._scope.get(key, as_str=as_str, allow_undef=allow_undef)
 
-            # Python expression: {"1 + 1"}
-            case 'dq_lit':
-                return self._dq_lit(ch, as_str=as_str)
-
             # Naked Python expression: {1 + 1}, {f(x)}, ...
             case 'python':
                 return self._python(ch, as_str=as_str)
-
-            # Literal: {'single quoted'}
-            case 'sq_lit':
-                s = narrow(ch.children[0], Token).value[1:-1]
-                return s.encode('latin-1', 'backslashreplace').decode('unicode_escape')
 
             case _:
                 raise ValueError(f'Bad expr: {tree.pretty()}')
@@ -1215,33 +1222,9 @@ class Engine(Interpreter):
             return int(key)
         return key
 
-    @overload
-    def _dq_lit(
-        self, tree: Tree, *, as_str: Literal[True], allow_tco: Literal[False] = False
-    ) -> str: ...
-
-    @overload
-    def _dq_lit(
-        self, tree: Tree, *, as_str: Literal[True], allow_tco: Literal[True]
-    ) -> str | TCO: ...
-
-    @overload
-    def _dq_lit(
-        self, tree: Tree, *, as_str: bool = False, allow_tco: Literal[False] = False
-    ) -> Value: ...
-
-    @overload
-    def _dq_lit(
-        self, tree: Tree, *, as_str: bool = False, allow_tco: Literal[True]
-    ) -> Value | TCO: ...
-
-    def _dq_lit(
-        self, tree: Tree, *, as_str: bool = False, allow_tco: bool = False
-    ) -> Value | TCO:
-        value: str = narrow(tree.children[0], Token).value
+    def _extract_dq_lit(self, token: Token) -> str:
         # Strip the quotes and unescape.
-        expr = value[1:-1].strip().replace('\\"', '"').replace('\\\\', '\\')
-        return self._eval_py(expr, as_str=as_str, allow_tco=allow_tco)
+        return token.value[1:-1].replace('\\"', '"').replace('\\\\', '\\')
 
     @overload
     def _python(
@@ -1302,6 +1285,16 @@ class Engine(Interpreter):
 
     else:
         _eval_injected = _expr
+
+    @overload
+    def _eval_py(
+        self, expr: str, *, as_str: bool = False, allow_tco: Literal[False] = False
+    ) -> Value: ...
+
+    @overload
+    def _eval_py(
+        self, expr: str, *, as_str: bool = False, allow_tco: Literal[True]
+    ) -> Value | TCO: ...
 
     def _eval_py(
         self, expr: str, *, as_str: bool = False, allow_tco: bool = False
@@ -1479,7 +1472,7 @@ class Engine(Interpreter):
             self._error('no doc: ' + key)
         return doc
 
-    # Used in dq_lit evaluation as `__file__` function.
+    # Also used as `__file__` function.
     def get_doc_text(self, key: str | None = None) -> str | None:
         return self._doc_text if key is None else self._get_doc(key)
 
