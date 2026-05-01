@@ -2,6 +2,7 @@ import os
 import re
 import math
 import json
+import string
 import asyncio
 import functools
 from io import BytesIO
@@ -78,8 +79,25 @@ def truncate(s: str, limit: int) -> str:
     return s[: max(0, limit - 3)] + '...'
 
 
+BASE58_CHARS = frozenset(string.ascii_letters + string.digits) - frozenset('0OIl')
+YT_CHARS = frozenset(string.ascii_letters + string.digits + '-_')
+
+
+def restore_url(s: str) -> str | None:
+    if len(s) > 2 and s.startswith('av') and s[2] != '0' and s[2:].isdigit():
+        return 'https://www.bilibili.com/video/' + s
+
+    if len(s) == 12 and s.startswith('BV1'):
+        if all(c in BASE58_CHARS for c in s[3:]):
+            return 'https://www.bilibili.com/video/' + s
+
+    if len(s := s.rstrip('=')) == 11 and all(c in YT_CHARS for c in s):
+        return 'https://www.youtube.com/watch?v=' + s
+
+
 def extract_url(text: str) -> tuple[str, str] | None:
-    url = None
+    if (url := restore_url(text)) is not None:
+        return url, ''
 
     def repl(m: re.Match) -> str:
         nonlocal url
