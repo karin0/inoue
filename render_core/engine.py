@@ -307,7 +307,7 @@ class Engine(Interpreter):
             case 'exit':
                 return self._exit_func
             case 'output':
-                return self._output_func
+                return self._gather
             case 'eval':
                 return self._eval_func
             case 'prefix':
@@ -1490,14 +1490,15 @@ class Engine(Interpreter):
     def _render_doc(self, doc: str) -> Value:
         with self._push():
             self._render(doc)
-            return self._gather_output(trim=True)
+            return self._gather()
 
     def _eval_func(self, doc) -> Value:
         trace('_eval_func: %s', doc)
         return self._render_doc(to_str(doc))
 
-    def _output_func(self) -> Value:
-        '''Useful for capturing text fragments outside any code blocks.'''
+    # Also exposed as `output()`, which is useful for capturing text fragments
+    # outside any code blocks.
+    def _gather(self) -> Value:
         # We must `trim` here, or a `Fragment` referencing the current `self._output`
         # might be leaked. See `self._gather_output()`.
         val = self._gather_output(trim=True)
