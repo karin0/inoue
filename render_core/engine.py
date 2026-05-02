@@ -38,7 +38,6 @@ from .context import (
     Fragment,
     Box,
     to_str,
-    try_to_str,
     try_to_value,
     trim_output,
     Context,
@@ -278,7 +277,7 @@ class Engine(Interpreter):
         self.doc_name: str | None = None
 
         self._output: list[Value] = []
-        self._root_output: list[str] = []
+        self._root_output = self._output
         self._depth: int = 0
         self._dirty: bool = False
 
@@ -692,23 +691,20 @@ class Engine(Interpreter):
                 self._output,
             )
             assert self._depth >= 0
-            if self._depth == 0 and self._root_output:
-                old_output.extend(self._root_output)
-                self._root_output.clear()
             if err:
+                # `_gather()` might not be called to collect the output, so we
+                # merge it back to avoid losing it.
                 old_output.extend(self._output)
             self._output = old_output
             self._dirty = old_dirty
 
     def _print_func(self, *args):
-        out = self._root_output if self._depth > 0 else self._output
-        first = True
-        for val in args:
-            if first:
-                first = False
-            else:
+        out = self._root_output
+        if (first := next(it := iter(args), None)) is not None:
+            out.append(first)
+            for val in it:
                 out.append(' ')
-            out.append(try_to_str(val))
+                out.append(val)
         out.append('\n')
 
     def _exit_func(self):
