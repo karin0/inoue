@@ -167,7 +167,7 @@ else:
         return cast(T, x)
 
 
-# Abort the entire rendering, until the "root" document.
+# Abort the entire rendering, until the "root".
 # All remaining fragments and all outer docs are skipped.
 class Abort(Exception):
     pass
@@ -245,7 +245,7 @@ class Engine(Interpreter):
         '_ctx',
         '_doc_src',
         '_funcs_src',
-        '_doc_text',
+        '_root_text',
         'errors',
         'doc_name',
         '_output',
@@ -271,7 +271,7 @@ class Engine(Interpreter):
         self._ctx = ctx
         self._doc_src = doc_loader or (lambda _: None)
         self._funcs_src = funcs or (lambda _: None)
-        self._doc_text = ''
+        self._root_text = ''
 
         self.errors: list[str] = []
         self.doc_name: str | None = None
@@ -554,7 +554,7 @@ class Engine(Interpreter):
             trace('%s = %s', k, v)
 
     def _render_root(self, text: str):
-        self._doc_text = text = text.strip()
+        self._root_text = text = text.strip()
 
         # Internal document expansion does not trim spaces.
         try:
@@ -1437,7 +1437,7 @@ class Engine(Interpreter):
     def get_doc(self, key: str | None = None) -> str | None:
         # Allow self-reference in when current doc is not saved yet.
         if not key or self.doc_name == key:
-            return self._doc_text
+            return self._root_text
         if doc := self._doc_src(key):
             return doc
         self._error('no doc: ' + key)
