@@ -394,3 +394,86 @@ def collapse_blank_lines(chunks: Iterable[Chunk]) -> Iterator[Chunk]:
             push(fragment)
 
     yield from buf
+
+
+# Chars whose presence at end-of-line marks the next line as a continuation.
+# `;` is included so an explicit trailing `;` isn't doubled. `!` is excluded:
+# alone it's BRANCH_END (a terminator); the multi-char `!=` ends in `=`.
+# `.` covers Python attribute access (`obj.\n method()`).
+_NEWLINE_JOIN_AFTER = frozenset('?:=^|+-*/%&<>~,.([{↦⇒;\\')
+
+# Chars whose presence at start-of-line marks the line as a continuation.
+# Only tokens that cannot plausibly *start* a statement: `|` (repl chain),
+# `?`/`:` (branch markers), `!` (BRANCH_END). Operators that double as
+# unary (`+`/`-`/`*`) are excluded — leading `+a` legitimately starts a
+# flag-set statement.
+_NEWLINE_JOIN_BEFORE = frozenset('|?:!')
+
+
+def normalize_newlines(text: str) -> str:
+    '''Replace structurally-significant newlines in `text` with `;`.
+
+    Paren and bracket depth is tracked *per brace level*: each `{...}`
+    opens a fresh `block_inner`, so its inner newlines stay separators
+    even inside an outer call's argument list (`f({a="1"\\nb})`).
+    '''
+    out: list[str] = []
+
+    # One [paren, bracket] frame per enclosing brace level; `{` pushes,
+    # `}` pops. Newlines consult only the top frame.
+    stack: list[list[int]] = [[0, 0]]
+    quote: str | None = None
+    escape = False
+    last_nonws = ''
+
+    for i, c in enumerate(text):
+        if escape:
+            escape = False
+        elif quote:
+            if c == '\\':
+                escape = True
+            elif c == quote:
+                quote = None
+                last_nonws = c
+        elif c == '\n':
+            paren, bracket = stack[-1]
+            if (
+                paren == bracket == 0
+                and last_nonws
+                and last_nonws not in _NEWLINE_JOIN_AFTER
+                and next((d for d in text[i + 1 :] if not d.isspace()), '')
+                not in _NEWLINE_JOIN_BEFORE
+            ):
+                out.append(';')
+            last_nonws = ''
+        else:
+            if c == "'" or c == '"':
+                quote = c
+            elif c == '(':
+                stack[-1][0] += 1
+            elif c == ')':
+                if stack[-1][0] > 0:
+                    stack[-1][0] -= 1
+            elif c == '[':
+                stack[-1][1] += 1
+            elif c == ']':
+                if stack[-1][1] > 0:
+                    stack[-1][1] -= 1
+            elif c == '{':
+                stack.append([0, 0])
+            elif c == '}' and len(stack) > 1:
+                stack.pop()
+            if not c.isspace():
+                last_nonws = c
+        out.append(c)
+
+    return ''.join(out)
+
+
+def chunk_text(text: str, on_error: Callable[[str], None]) -> Iterator[Chunk]:
+    for is_block, fragment in collapse_blank_lines(Chunker(text, on_error)):
+        if is_block:
+            if fragment:
+                yield True, normalize_newlines(fragment)
+        elif fragment or fragment is None:
+            yield False, fragment

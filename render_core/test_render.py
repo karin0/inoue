@@ -63,7 +63,10 @@ hello
 $this;
 a=is also; a; 'naked';
 d?=D; e?=E; f?=F;
-{ a; b; c; d; e; f; count; count_2; raw_text }
+{ a; b
+c; d; e
+f; count
+count_2; raw_text }
 { doc3:}
 { :doc1 }
 { :doc2 }
@@ -186,9 +189,9 @@ class TestRender(unittest.TestCase):
     "a*b"
 }; .a; .b;
 @ {
-    "a*b-a";
-    a;
-    b;
+    a*b-a
+    a
+    b
 };
 '''
         self.render_it(text, eq='5\n632\n332')
@@ -404,10 +407,12 @@ class TestRender(unittest.TestCase):
         self.render_it('{a = 16; a >>= "2"; a}', e='TypeError')
 
     def test_python_native(self):
-        self.render_it('{f ⇒ `qwq}; {g ⇒ $0}; g(*f*f*f);', eq='qwq' * 3)
-        self.render_it('g = {f ⇒ f(); f(1); }; g({h ⇒ `qwq});', eq='qwq' * 2)
-        self.render_it('g = {f ⇒ f}; g({a=qwq;a});', eq='qwq')
-        self.render_it('g = {f ⇒ int(f)<<1; f}; g({g({g({"1"})})});', eq='84424221')
+        self.render_it('{f ⇒ `qwq}\n{g ⇒ $0}; g(*f*f*f);', eq='qwq' * 3)
+        self.render_it('g = {f ⇒ f()\nf(1); }; g({h ⇒ `qwq});', eq='qwq' * 2)
+        self.render_it('g = {f ⇒ f}; g({a=qwq\na});', eq='qwq')
+        self.render_it(
+            'g = {f ⇒ int(f)<<1; f}; g({g({g({a="1"\na})})});', eq='84424221'
+        )
 
     def test_context_assignment(self):
         text = "{target=World}Hello {target}!"
@@ -770,9 +775,9 @@ Write the following sentence twice, the second time within quotes.
         # Naked block across multiple lines.
         text = r'''a=1; a = {
 c={
-    '51';
+    '51'
     {
-        '4';
+        '4'
     }
 };
 "'114' + c";
@@ -781,8 +786,8 @@ c={
 a
 };
 @ns {
-    b=$a;
-    b;
+    b=$a
+    b
 };
 ns.b;
 '''
@@ -1077,10 +1082,10 @@ n="9"; *fib;
         text = r'''{foo = {@; ↦
 n = ::n;
 "n<=1" ? $n :
-  n = "n-1" ;
-  a = *foo  ;
-  n = "n-1" ;
-  b = *foo  ;
+  n = "n-1"
+  a = *foo
+  n = "n-1"
+  b = *foo
   "a + b"   !
 }}
 n="9"; *foo;
@@ -1153,26 +1158,26 @@ a; b; a = $b ? Ok : Fail;'''
         ctx = {f'a{i}': str(v) for i, v in enumerate(ctx)}
         text = r'''
 n="8";
-{ init ↦ i = "0" };
-{ cond ↦ "i<n" };
-{ step ↦ i = "i+1" };
-{ body ↦ ({'v'; i}) = $({'a'; i}) };
+{ init ↦ i = "0" }
+{ cond ↦ "i<n" }
+{ step ↦ i = "i+1" }
+{ body ↦ ({'v'; i}) = $({'a'; i}) }
 *for;
 
 {@; body ↦
-    { init ↦ j = "0" };
-    { cond ↦ "j < n-i-1" };
-    { step ↦ j = "j+1" };
+    { init ↦ j = "0" }
+    { cond ↦ "j < n-i-1" }
+    { step ↦ j = "j+1" }
     { body ↦
-        a = $({'v'; j}); b = $({'v'; "j+1"});
-        "a>b" ? ({'v'; j}) ^ ({'v'; "j+1"});
+        a = $({'v'; j}); b = $({'v'; "j+1"})
+        "a>b" ? ({'v'; j}) ^ ({'v'; "j+1"})
     };
-    *for;
+    *for
 }
 *for;
 
-{ body ↦ x = $({'v'; i}) ; "print(x)" };
-"fur(init, cond, step, body)";
+{ body ↦ x = $({'v'; i}) ; "print(x)" }
+fur(init, cond, step, body);
 '''
         self.render_it(self.STD + text, ctx, eq='\n'.join(str(i) for i in range(1, 9)))
 
@@ -1180,12 +1185,12 @@ n="8";
         text = r'''
 # tco test;
 r = @ {
-    n = "100";
-    { init ↦ i = "0" };
-    { cond ↦ "i<n" };
-    { step ↦ i = "i+1" };
-    { body ↦ };
-    *for;
+    n = 100
+    { init ↦ i = "0" }
+    { cond ↦ i<n }
+    { step ↦ ++i }
+    { body ↦ }
+    *for
 };
 .i = 100 ? Ok : Fail;
 '''
@@ -1196,10 +1201,10 @@ r = @ {
 fac = {
 @; n, m ↦
     "n>1" ?
-      .n = "n-1";
-      .m = "(n-1)*m";
+      .n = n-1
+      .m = (n-1)*m
       *fac
-    : $m ;
+    : $m
 };
 "fac(10, 10)";
 .n = .m = "50";
@@ -1364,6 +1369,93 @@ safe = 1;
         assert callable(cb)
         self.assertEqual(cb(3), 15)
 
+    def test_newline_as_separator(self):
+        from render_core.lex import normalize_newlines
+
+        eq = self.assertEqual
+
+        # Plain newlines become `;`; existing `;` isn't doubled; blank
+        # lines stay blank.
+        eq(normalize_newlines('a\nb\nc\n'), 'a;\nb;\nc;\n')
+        eq(normalize_newlines('a;\nb;\n'), 'a;\nb;\n')
+        eq(normalize_newlines('a\n\n\nb\n'), 'a;\n\n\nb;\n')
+
+        # Trailing continuation chars suppress `;`.
+        for tail in '?:=^|+-*/<>~,.([{↦⇒\\':
+            out = normalize_newlines(f'a {tail}\nb\n')
+            self.assertNotIn(';\nb', out, f'tail={tail!r}: {out!r}')
+
+        # Leading continuation chars suppress `;`.
+        for head in '|?:!':
+            out = normalize_newlines(f'a\n{head} b\n')
+            self.assertNotIn(f'a;\n{head}', out, f'head={head!r}: {out!r}')
+
+        # `!` standalone is BRANCH_END, NOT continuation: `;` is inserted.
+        eq(normalize_newlines('a !\nb\n'), 'a !;\nb;\n')
+
+        # `(...)`, `[...]`, `'...'`, `"..."` preserve newlines as-is, and
+        # `\\<quote>` doesn't end the string.
+        eq(normalize_newlines('(1 +\n 2)\n'), '(1 +\n 2);\n')
+        eq(normalize_newlines('a[\n k\n]\n'), 'a[\n k\n];\n')
+        eq(normalize_newlines("'foo\nbar'\n"), "'foo\nbar';\n")
+        eq(normalize_newlines("'a\\'\nb'\n"), "'a\\'\nb';\n")
+
+        # Per-brace-level paren tracking: a nested `{...}` resets paren
+        # depth so its inner newlines become `;` even when the outer `(`
+        # is still open. This is what makes `f({a="1"\nb})` work.
+        eq(normalize_newlines('f({a="1"\nb})\n'), 'f({a="1";\nb});\n')
+        eq(normalize_newlines('a[{x="1"\nx}]\n'), 'a[{x="1";\nx}];\n')
+
+        # Inside a brace block, newlines act as `;` between statements.
+        self.render_it("{\n a = '1'\n b = '2'\n a; b\n}", eq='12')
+
+        # `↦` keeps the sub-doc body on the next line; the body itself is
+        # then a newline-separated stmt list.
+        self.render_it("{ {f ↦\n    'A'\n    'B'\n    'C'\n }\n  *f\n}", eq='ABC')
+
+        # Branch arms across lines: `?`/`:` are trailing continuation
+        # markers, `!` is a terminator that requires a following `;`.
+        self.render_it("{ flag = '1'\n flag ?\n   'yes'\n :\n   'no' }", eq='yes')
+        self.render_it(
+            "{ flag = '1'\n flag ? 'yes' : 'no'\n !\n 'tail' }", eq='yestail'
+        )
+
+        # Multi-line python attribute access works inside `(...)` because
+        # both Python and our normalize preserve the newline there.
+        self.render_it(
+            "{ s = \"'hi'\"\n  print(s.\n        upper())\n  '' }",
+            eq='HI',
+        )
+
+        # Multi-line subscript and chained AOE — bracket and `=`
+        # continuations respectively.
+        self.render_it("{ a.x = '9'\n b = $a[\n  'x'\n ]\n b }", eq='9')
+        self.render_it("{ a = b =\n   c =\n   'X'\n a; b; c }", eq='XXX')
+
+        # Multi-line repl chain via leading `|`.
+        self.render_it("{ s = 'abc'\n s |a/A\n   |b/B\n s }", eq='ABc')
+
+        # Newlines inside single-quoted literals are part of the literal.
+        self.render_it("{ s = 'foo\nbar'\n s }", eq='foo\nbar')
+
+        # Trailing `//` comments don't break the newline → `;` conversion.
+        self.render_it("{ a = '1' // first\n  b = '2' // second\n  a; b }", eq='12')
+
+        # Naked blocks still require a trailing `;`: a bare top-level
+        # `a = '1'` is plain text. But once inside a naked or brace
+        # block, newlines work like `;`.
+        self.render_it("a = '1'\nb", eq="a = '1'\nb")
+        self.render_it("{a ↦\n  'X'\n  'Y'\n};\n*a;\n", eq='XY')
+
+        # BRANCH_END `!` on its own line followed by a stmt.
+        # `!` must terminate the branch, and `;` must be inserted before
+        # the next stmt.
+        self.render_it("{ n = '1'\n n ?\n   m='3'\n !\n x = '2'\n m; x }", eq='32')
+
+        # `py_native` with an inner newline. The inner block_inner sees its
+        # newline as `;` even though the outer `(` is open.
+        self.render_it('g = {f ⇒ f}; g({a = "1"\n a});', eq='1')
+
     def test_output_func(self):
         def get_doc(name):
             if name == 'doc':
@@ -1375,19 +1467,19 @@ safe = 1;
         mock_db(get_doc)
 
         text = r'''text{
-'A';
-{ 'B' };
-{ f ↦ 'C' };
-*f;
-*doc;
-t=*doc;
-c=*doc2;
-d="output";
-'header';
-c;
-'of';
-d;
-'end';
+'A'
+{ 'B' }
+{ f ↦ 'C' }
+*f
+*doc
+t=*doc
+c=*doc2
+d="output"
+'header'
+c
+'of'
+d
+'end'
 t
 }1'''
         self.render_it(text, eq='headeris\nthe\noftextABCC\nDendC\nD1')

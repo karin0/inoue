@@ -28,7 +28,7 @@ from lark import Lark, Token, Tree
 from lark.visitors import Interpreter, Transformer
 from lark.exceptions import LarkError
 
-from .lex import Chunker, collapse_blank_lines
+from .lex import chunk_text
 from .context import (
     is_tracing,
     is_not_quiet,
@@ -420,8 +420,7 @@ class Engine(Interpreter):
     def __render(self, text: str, root: bool):
         clause = ClauseState()
 
-        chunker = Chunker(text, self.errors.append)
-        for is_block, fragment in collapse_blank_lines(chunker):
+        for is_block, fragment in chunk_text(text, self.errors.append):
             trace('Fragment: %r %r', is_block, fragment)
 
             if is_block:
