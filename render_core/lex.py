@@ -406,12 +406,17 @@ _NEWLINE_JOIN_AFTER = frozenset('?:=^|+-*/%&<>~,.([{↦⇒;\\')
 # Only tokens that cannot plausibly *start* a statement: `|` (repl chain),
 # `?`/`:` (branch markers), `!` (BRANCH_END). Operators that double as
 # unary (`+`/`-`/`*`) are excluded — leading `+a` legitimately starts a
-# flag-set statement.
-_NEWLINE_JOIN_BEFORE = frozenset('|?:!')
+# flag-set statement. `}` is included since `;` is unnecessary before it.
+_NEWLINE_JOIN_BEFORE = frozenset('|?:!}')
+
+_ALL_SYMBOL = _NEWLINE_JOIN_BEFORE | _NEWLINE_JOIN_AFTER | frozenset(')]\'"')
 
 
-def normalize_newlines(text: str) -> str:
-    '''Replace structurally-significant newlines in `text` with `;`.
+def normalize_block(text: str) -> str:
+    '''Replace structurally-significant newlines in `text` with `;`,
+    and drop non-significant whitespaces.
+
+    This means naked_lit can no longer contain line breaks.
 
     Paren and bracket depth is tracked *per brace level*: each `{...}`
     opens a fresh `block_inner`, so its inner newlines stay separators
@@ -421,12 +426,24 @@ def normalize_newlines(text: str) -> str:
 
     # One [paren, bracket] frame per enclosing brace level; `{` pushes,
     # `}` pops. Newlines consult only the top frame.
-    stack: list[list[int]] = [[0, 0]]
+    stack_p = [0]
+    stack_b = [0]
+
     quote: str | None = None
     escape = False
     last_nonws = ''
 
+    next_nonws = {}
+    d = None
+    base = len(text) - 1
+    for i, c in enumerate(reversed(text)):
+        if not c.isspace():
+            d = c
+        elif d is not None:
+            next_nonws[base - i] = d
+
     for i, c in enumerate(text):
+        old_last_nonws = last_nonws
         if escape:
             escape = False
         elif quote:
@@ -436,44 +453,59 @@ def normalize_newlines(text: str) -> str:
                 quote = None
                 last_nonws = c
         elif c == '\n':
-            paren, bracket = stack[-1]
             if (
-                paren == bracket == 0
+                stack_p[-1] == stack_b[-1] == 0
                 and last_nonws
                 and last_nonws not in _NEWLINE_JOIN_AFTER
-                and next((d for d in text[i + 1 :] if not d.isspace()), '')
-                not in _NEWLINE_JOIN_BEFORE
+                and not (
+                    (d := next_nonws.get(i)) is not None and d in _NEWLINE_JOIN_BEFORE
+                )
             ):
                 out.append(';')
-            last_nonws = ''
+                last_nonws = ';'
+                continue
         else:
             if c == "'" or c == '"':
                 quote = c
             elif c == '(':
-                stack[-1][0] += 1
+                stack_p[-1] += 1
             elif c == ')':
-                if stack[-1][0] > 0:
-                    stack[-1][0] -= 1
+                if stack_p[-1] > 0:
+                    stack_p[-1] -= 1
             elif c == '[':
-                stack[-1][1] += 1
+                stack_b[-1] += 1
             elif c == ']':
-                if stack[-1][1] > 0:
-                    stack[-1][1] -= 1
+                if stack_b[-1] > 0:
+                    stack_b[-1] -= 1
             elif c == '{':
-                stack.append([0, 0])
-            elif c == '}' and len(stack) > 1:
-                stack.pop()
+                stack_p.append(0)
+                stack_b.append(0)
+            elif c == '}' and len(stack_p) > 1:
+                stack_p.pop()
+                stack_b.pop()
             if not c.isspace():
                 last_nonws = c
-        out.append(c)
 
-    return ''.join(out)
+        # Drop the whitespace if it's not quoted and next to a symbol (meaning
+        # it's not part of a naked_lit).
+        if quote or not (
+            c.isspace()
+            and (
+                (old_last_nonws and old_last_nonws in _ALL_SYMBOL)
+                or ((d := next_nonws.get(i)) is not None and d in _ALL_SYMBOL)
+            )
+        ):
+            out.append(c)
+
+    r = ''.join(out).strip()
+    trace('normalize: %s\n-> %s', text, r)
+    return r
 
 
 def chunk_text(text: str, on_error: Callable[[str], None]) -> Iterator[Chunk]:
     for is_block, fragment in collapse_blank_lines(Chunker(text, on_error)):
         if is_block:
             if fragment:
-                yield True, normalize_newlines(fragment)
+                yield True, normalize_block(fragment)
         elif fragment or fragment is None:
             yield False, fragment

@@ -1370,41 +1370,42 @@ safe = 1;
         self.assertEqual(cb(3), 15)
 
     def test_newline_as_separator(self):
-        from render_core.lex import normalize_newlines
+        from render_core.lex import normalize_block
 
         eq = self.assertEqual
 
         # Plain newlines become `;`; existing `;` isn't doubled; blank
         # lines stay blank.
-        eq(normalize_newlines('a\nb\nc\n'), 'a;\nb;\nc;\n')
-        eq(normalize_newlines('a;\nb;\n'), 'a;\nb;\n')
-        eq(normalize_newlines('a\n\n\nb\n'), 'a;\n\n\nb;\n')
+        eq(normalize_block('a\nb\nc\n'), 'a;b;c;')
+        eq(normalize_block('a;\nb;\n'), 'a;b;')
+        eq(normalize_block('a\n\n\nb\n'), 'a;b;')
 
         # Trailing continuation chars suppress `;`.
         for tail in '?:=^|+-*/<>~,.([{↦⇒\\':
-            out = normalize_newlines(f'a {tail}\nb\n')
+            out = normalize_block(f'a {tail}\nb\n')
             self.assertNotIn(';\nb', out, f'tail={tail!r}: {out!r}')
 
         # Leading continuation chars suppress `;`.
         for head in '|?:!':
-            out = normalize_newlines(f'a\n{head} b\n')
+            out = normalize_block(f'a\n{head} b\n')
             self.assertNotIn(f'a;\n{head}', out, f'head={head!r}: {out!r}')
 
         # `!` standalone is BRANCH_END, NOT continuation: `;` is inserted.
-        eq(normalize_newlines('a !\nb\n'), 'a !;\nb;\n')
+        eq(normalize_block('a !\nb\n'), 'a!;b;')
 
         # `(...)`, `[...]`, `'...'`, `"..."` preserve newlines as-is, and
         # `\\<quote>` doesn't end the string.
-        eq(normalize_newlines('(1 +\n 2)\n'), '(1 +\n 2);\n')
-        eq(normalize_newlines('a[\n k\n]\n'), 'a[\n k\n];\n')
-        eq(normalize_newlines("'foo\nbar'\n"), "'foo\nbar';\n")
-        eq(normalize_newlines("'a\\'\nb'\n"), "'a\\'\nb';\n")
+        eq(normalize_block('(1 +\n 2)\n'), '(1+2);')
+        eq(normalize_block('a[\n k\n]\n'), 'a[k];')
+        eq(normalize_block("'foo\nbar'\n"), "'foo\nbar';")
+        eq(normalize_block("foo\nbar\n"), "foo;bar;")
+        eq(normalize_block("'a\\'\nb'\n"), "'a\\'\nb';")
 
         # Per-brace-level paren tracking: a nested `{...}` resets paren
         # depth so its inner newlines become `;` even when the outer `(`
         # is still open. This is what makes `f({a="1"\nb})` work.
-        eq(normalize_newlines('f({a="1"\nb})\n'), 'f({a="1";\nb});\n')
-        eq(normalize_newlines('a[{x="1"\nx}]\n'), 'a[{x="1";\nx}];\n')
+        eq(normalize_block('f({a="1"\nb})\n'), 'f({a="1";b});')
+        eq(normalize_block('a[{x="1"\nx}]\n'), 'a[{x="1";x}];')
 
         # Inside a brace block, newlines act as `;` between statements.
         self.render_it("{\n a = '1'\n b = '2'\n a; b\n}", eq='12')
