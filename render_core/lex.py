@@ -5,9 +5,7 @@ if not is_not_quiet:
     trace = lambda *_: None
 
 
-type Code = tuple[Literal[True], str]
-type Text = tuple[Literal[False], str | None]
-type Chunk = Code | Text
+type Chunk = tuple[bool, str] | tuple[Literal[False], str | None]
 
 
 class Chunker:
@@ -28,7 +26,16 @@ class Chunker:
     For 2. (naked blocks), the chunk without the trailing whitespaces is yielded,
     followed by a `(False, None)` to indicate an "implicit" line break.
 
-    Text fragments outside code blocks are yielded as-is.
+    Also, whitespace texts around code-only lines are suppressed and replaced
+    with an following implicit line break, like after naked blocks, so we can keep
+    a newline if these code blocks produce any non-space outputs.
+
+    When a line contains only code blocks and whitespaces, the surrounding text
+    fragments are dropped, preventing structural template lines from introducing
+    blank gaps.
+
+    Note that we do not check if code blocks contain '\n', so a collapsed line
+    here may span multiple physical lines.
     '''
 
     __slots__ = (
@@ -108,7 +115,7 @@ class Chunker:
 
         # Tracking the naked block candidate.
         _naked_start = 0
-        _naked_buf: list[Chunk] = []
+        _naked_buf: list[tuple[bool, str]] = []
 
         for p, c in enumerate(text):
             if escape:
@@ -160,8 +167,7 @@ class Chunker:
 
             if c == '{':
                 if not block_starts:
-                    for fragment in self._text_fragments(cursor, p):
-                        _naked_buf.append(fragment)
+                    _naked_buf.extend(self._text_fragments(cursor, p))
                     cursor = p
 
                 block_starts.append(p)
@@ -187,8 +193,8 @@ class Chunker:
                     chunk = ''.join(buf)[1:].strip()
                     buf.clear()
 
-                    # Yield the block even it's empty. Even an empty block can
-                    # have its semantics, like in `collapse_blank_lines`.
+                    # Yield the block even it's empty, so it still triggers
+                    # whitespace collapsing.
                     trace('Chunked block: %r', chunk)
                     _naked_buf.append((True, chunk))
                     cursor = p + 1
@@ -251,12 +257,21 @@ class Chunker:
                     _naked_start = p + 1
                     continue
 
-                if _naked_buf:
-                    yield from _naked_buf
-                    _naked_buf.clear()
-
-                yield from self._text_fragments(cursor, p + 1)
+                # Gather the last text fragments in this line for the whitespace check.
+                _naked_buf.extend(self._text_fragments(cursor, p + 1))
                 cursor = _naked_start = p + 1
+
+                if _naked_buf:
+                    if any(t[0] for t in _naked_buf) and all(
+                        t[0] or t[1].isspace() for t in _naked_buf
+                    ):
+                        # All text fragments are whitespace. Drop them and emit
+                        # an implicit line break.
+                        yield from (t for t in _naked_buf if t[0])
+                        yield False, None
+                    else:
+                        yield from _naked_buf
+                    _naked_buf.clear()
 
         # Flush final line buffer, pretending a EOF.
         if (
@@ -310,90 +325,6 @@ class Chunker:
 
         # Flush final text fragments.
         yield from self._text_fragments(cursor, len(text))
-
-
-def collapse_blank_lines(chunks: Iterable[Chunk]) -> Iterator[Chunk]:
-    '''Suppress whitespace around code-only lines.
-
-    When a line contains only code blocks and whitespaces, the surrounding text
-    fragments are dropped, preventing structural template lines from introducing
-    blank gaps.
-
-    An implicit line break is produced, like after naked blocks, so we can keep
-    a newline if these code blocks produce any non-space outputs.
-
-    Note that we do not check if code blocks contain '\n', so a collapsed line
-    here may span multiple physical lines.
-    '''
-    buf: list[Chunk] = []
-    has_code = False
-    all_blank = True
-
-    def push(text: str):
-        nonlocal all_blank
-        assert text
-        if all_blank and not text.isspace():
-            all_blank = False
-        buf.append((False, text))
-
-    for chunk in chunks:
-        is_block, fragment = chunk
-        trace('Collapse: chunk: %r', chunk)
-
-        if is_block:
-            buf.append(chunk)
-            has_code = True
-            continue
-
-        if fragment is None:
-            trace('Collapse: phantom buf: %r', buf)
-            yield from buf
-            buf.clear()
-            yield chunk
-            has_code = False
-            all_blank = True
-            continue
-
-        if not fragment:
-            continue
-
-        p = fragment.find('\n')
-        trace('Collapse: fragment: %r, p1: %s', fragment, p)
-        if p < 0:
-            push(fragment)
-            continue
-
-        if p:
-            push(fragment[:p])
-
-        fragment = fragment[p + 1 :]
-
-        if has_code and all_blank:
-            trace('Collapse: collapse buf: %r', buf)
-            for c in buf:
-                if c[0]:
-                    yield c
-            yield False, None
-        else:
-            trace('Collapse: keep buf: %r', buf)
-            yield from buf
-            yield False, '\n'
-
-        buf.clear()
-        has_code = False
-        all_blank = True
-
-        p = fragment.rfind('\n')
-        trace('Collapse: fragment: %r, p2: %s', fragment, p)
-
-        if p >= 0:
-            yield False, fragment[: p + 1]
-            fragment = fragment[p + 1 :]
-
-        if fragment:
-            push(fragment)
-
-    yield from buf
 
 
 # Chars whose presence at end-of-line marks the next line as a continuation.
@@ -503,7 +434,7 @@ def normalize_block(text: str) -> str:
 
 
 def chunk_text(text: str, on_error: Callable[[str], None]) -> Iterator[Chunk]:
-    for is_block, fragment in collapse_blank_lines(Chunker(text, on_error)):
+    for is_block, fragment in Chunker(text, on_error):
         if is_block:
             if fragment:
                 yield True, normalize_block(fragment)

@@ -1301,7 +1301,7 @@ text1
 {!}
 
 text3
-'''.replace('{}', '{}  ')
+  {a=1} {}'''.replace('{}', '{}  ')
         self.render_it(text, eq='text1\n    text2\n\ntext3')
 
         # A blank source line between blocks is preserved.
