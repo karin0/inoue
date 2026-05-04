@@ -4,7 +4,7 @@ from collections.abc import ItemsView, MutableMapping
 
 from db import db
 from util import log
-from render_core import Context, Value, is_value_type
+from render_core import Context, Value, Box, is_value_type
 
 LRU_CAPACITY = 128
 
@@ -105,7 +105,9 @@ class PersistentStorage(MutableMapping[str, Value]):
         return db.count_prefix('pm-')
 
 
-# Static context variables are persisted across different `RenderInterpreter` instances.
+# Static context variables are persisted across all rendering contexts.
+# Consider them as untrusted and never use them for sensitive logic, since no
+# isolation is provided and any user can modify them directly.
 persisted = PersistentStorage()
 PM_PREFIX = 'pm.'
 
@@ -157,7 +159,9 @@ class OverriddenDict(UserDict[str, Value], Context):
     # For `=` operator.
     def __setitem__(self, key: str, val: Value):
         if pm_key := get_pm_key(key):
-            if key not in self.overrides:
+            if not (key in self.overrides or isinstance(val, Box)):
+                # Forbid storing `Box` persistently, which blocks GC and can carry
+                # globally visible untrusted code (as `SubDoc`).
                 persisted[pm_key] = val
             return
 
