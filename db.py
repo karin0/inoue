@@ -57,6 +57,11 @@ class DataStore:
                     saved_at   TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(chat_id, message_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS Todo (
+                    id    INTEGER PRIMARY KEY NOT NULL,
+                    text  TEXT    NOT NULL
+                );
                 ''')
         log.debug('Connected to db: %s', file)
 
@@ -138,7 +143,9 @@ class DataStore:
 
     def __delitem__(self, key: str):
         with self.conn:
-            self.conn.execute('DELETE FROM KV WHERE key = ?;', (key,))
+            r = self.conn.execute('DELETE FROM KV WHERE key = ?;', (key,))
+            if r.rowcount == 0:
+                raise KeyError(key)
 
     def iter_prefix(self, prefix: str) -> Iterable[str]:
         cursor = self.conn.execute(
@@ -235,6 +242,25 @@ class DataStore:
                 (chat_id, message_id),
             )
         return title_row[0]
+
+    def add_todo(self, text: str):
+        with self.conn:
+            self.conn.execute('INSERT INTO Todo (text) VALUES (?);', (text,))
+
+    def get_todo(self, task_id: int) -> str | None:
+        cursor = self.conn.execute('SELECT text FROM Todo WHERE id = ?;', (task_id,))
+        if row := cursor.fetchone():
+            return row[0]
+        return None
+
+    def get_todos(self) -> list[tuple[int, str]]:
+        return self.conn.execute(
+            'SELECT id, text FROM Todo ORDER BY id DESC;'
+        ).fetchall()
+
+    def delete_todo(self, task_id: int):
+        with self.conn:
+            self.conn.execute('DELETE FROM Todo WHERE id = ?;', (task_id,))
 
 
 db = DataStore()

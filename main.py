@@ -29,6 +29,7 @@ from util import (
     USER_ID,
     CHAN_ID,
     GROUP_ID,
+    TODO_ID,
     GUEST_USER_IDS,
     IGNORE_CHAT_IDS,
     DB_FILE,
@@ -43,6 +44,7 @@ from context import Sender, get_sender
 from inoue import render_receipt
 from rg import handle_rg, handle_rg_callback
 from voice import try_handle_voice
+from todo import handle_todo_msg, handle_todo_callback
 from ytdlp import extract_url, handle_yt_inline_query, handle_yt_chosen_result
 from render import (
     handle_render_doc,
@@ -167,6 +169,11 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not (msg := get_msg(update)):
         return
 
+    if msg.chat_id == TODO_ID:
+        if sender and sender.id == USER_ID:
+            return await handle_todo_msg(msg)
+        raise ValueError(f'Unauthorized todo: {msg}')
+
     # `render` handles Doc messages that are forwarded from CHAN_ID to its discussion group.
     if (
         isinstance(origin := msg.forward_origin, MessageOriginChannel)
@@ -239,6 +246,9 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await handle_rg_callback(data)
         elif data[0] in CALLBACK_SPECIAL:
             await handle_render_callback(update, ctx, callback, data)
+            return
+        elif data.startswith('todo_'):
+            await handle_todo_callback(callback, data, ctx.bot)
             return
         elif data != 'noop':
             log.warning('bad callback: %s', data)
