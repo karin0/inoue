@@ -1,16 +1,14 @@
-from telegram import Message, Update
-from telegram.ext import ContextTypes
+from telegram import Message
 
 from db import db
 from util import (
     log,
     escape,
-    get_msg,
-    get_msg_arg,
     get_msg_url,
     get_deep_link_url,
     reply_text,
 )
+from dispatch import MessageArg, command
 
 
 def extract_media(msg: Message) -> tuple[str, str] | None:
@@ -38,9 +36,8 @@ def extract_media(msg: Message) -> tuple[str, str] | None:
     return None
 
 
-async def handle_save(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    msg, arg = get_msg_arg(update)
-
+@command
+async def handle_save(msg: Message, arg: MessageArg):
     if (target := msg.reply_to_message) and (info := extract_media(target)) is not None:
         pass
     elif (info := extract_media(msg)) is not None:
@@ -73,8 +70,8 @@ def render_media(chat_id: int, message_id: int, title: str) -> str:
     return f'{render_title(title)}: {render_ids(chat_id, message_id)}'
 
 
-async def handle_play(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    msg = get_msg(update)
+@command(public=True)
+async def handle_play(msg: Message):
     if not (media := db.random_media()):
         return await msg.reply_text('No saved media.', do_quote=True)
 
@@ -83,8 +80,8 @@ async def handle_play(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await msg.reply_copy(chat_id, message_id, do_quote=True)
 
 
-async def handle_playlist(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    msg = get_msg(update)
+@command
+async def handle_playlist(msg: Message):
     items = list(db.iter_media())
     if not items:
         return await msg.reply_text('No saved media.', do_quote=True)

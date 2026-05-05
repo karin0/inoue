@@ -1,11 +1,11 @@
 import inspect
 from itertools import islice
-from typing import Any, Callable, Iterable, Coroutine, Type
+from typing import Any, Callable, Iterable, Coroutine, Type, overload
 
 from telegram import CallbackQuery, Message, Update, Bot
 from telegram.ext import ContextTypes
 
-from util import USER_ID, log, get_msg, get_msg_arg
+from util import USER_ID, log, get_arg, get_msg
 
 type MessageArg = str
 type CallbackData = str
@@ -24,7 +24,11 @@ CALLBACK_PARAM_TYPES = (
     int,
 )
 
-type Handler = Callable[..., Coroutine[Any, Any, Any]]
+type Handler[**P, R] = Callable[P, Coroutine[Any, Any, R]]
+
+type PTBHandler[T] = Callable[
+    [Update, ContextTypes.DEFAULT_TYPE], Coroutine[Any, Any, T]
+]
 
 
 def _unwrap[T](x: T | None) -> T:
@@ -33,10 +37,10 @@ def _unwrap[T](x: T | None) -> T:
     return x
 
 
-class Route:
+class Route[**P, R]:
     __slots__ = ('_func', '_public', '_params', '_va')
 
-    def __init__(self, func: Handler, public: bool):
+    def __init__(self, func: Handler[P, R], public: bool):
         params: list[Type[CallbackParam]] = []
         va_ty: Type[str | int] | None = None
         sig = inspect.signature(func)
@@ -69,14 +73,14 @@ class Route:
             va_ty,
         )
 
-        self._func = func
+        self._func: Callable = func
         self._public = public
         self._params = tuple(params)
         self._va = va_ty
 
     def call(
-        self, update: Update, ctx: ContextTypes.DEFAULT_TYPE, argv: Iterable[str]
-    ) -> Coroutine[Any, Any, Any]:
+        self, update: Update, ctx: ContextTypes.DEFAULT_TYPE, argv: Iterable[str] = ()
+    ) -> Coroutine[Any, Any, R]:
         log.debug('Calling route: %s: %r', self._func.__name__, argv)
         if not (
             self._public
@@ -94,7 +98,7 @@ class Route:
             elif ty is Message:
                 args.append(get_msg(update))
             elif ty is MessageArg:
-                args.append(get_msg_arg(update)[1])
+                args.append(get_arg(get_msg(update)))
             elif ty is CallbackQuery:
                 args.append(_unwrap(update.callback_query))
             elif ty is CallbackData:
@@ -109,12 +113,68 @@ class Route:
                 raise TypeError(f'Bad parameter: {ty}')
 
         if self._va is not None:
-            args.extend(self._va(x) for x in it)
+            args.extend(map(self._va, it))
         elif (v := next(it, None)) is not None:
             raise ValueError(f'Too many arguments: {args}, {v}')
 
         log.debug('Injected to %s: %r', self._func.__name__, args)
         return self._func(*args)
+
+
+_cmd_handlers: dict[str, Route] = {}
+
+
+@overload
+def command[H: Handler](func: H, /, *, public: bool = False) -> H: ...
+
+
+@overload
+def command[H: Handler](
+    func: str | None = None, /, *, public: bool = False
+) -> Callable[[H], H]: ...
+
+
+def command[H: Handler](
+    func: H | str | None = None, /, *, public: bool = False
+) -> H | Callable[[H], H]:
+    name_ = None
+
+    def decorator(func: H) -> H:
+        name = name_
+
+        if name is None:
+            parts = func.__name__.split('_')
+            if not (len(parts) == 2 and parts[0] == 'handle'):
+                raise ValueError(
+                    'command: name must be provided if function name does not match handle_*'
+                )
+            name = parts[1]
+
+        if not name:
+            raise ValueError('command: name cannot be empty')
+
+        if name in _cmd_handlers:
+            raise ValueError(f'command: {name} already exists')
+
+        _cmd_handlers[name] = Route(func, public)
+        return func
+
+    if func is None or isinstance(func, str):
+        name_ = func
+        return decorator
+
+    return decorator(func)
+
+
+def iter_commands() -> Iterable[tuple[str, tuple[PTBHandler, bool]]]:
+    return (
+        (name, (route.call, route._public)) for name, route in _cmd_handlers.items()
+    )
+
+
+def get_command_handler(name: str) -> PTBHandler | None:
+    if route := _cmd_handlers.get(name):
+        return route.call
 
 
 _cb_handlers: dict[str, Route] = {}
@@ -127,7 +187,7 @@ def callback_query(
     filter: Callable[[CallbackData], bool] | None = None,
     public: bool = False,
 ):
-    def decorator(func: Handler) -> Handler:
+    def decorator[H: Handler](func: H) -> H:
         route = Route(func, public)
 
         if filter is not None:

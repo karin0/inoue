@@ -7,27 +7,28 @@ import subprocess
 from asyncio.subprocess import Process
 from typing import Awaitable, Callable, TypeVar
 
-from telegram import Message, Update
-from telegram.ext import ContextTypes
+from telegram import Message
 from telegram.constants import ChatAction
 
-from util import log, get_msg, get_msg_arg, pre_block, reply_text, MAX_TEXT_LENGTH
+from util import log, pre_block, reply_text, MAX_TEXT_LENGTH
+from dispatch import command, MessageArg
 from misc import reply_file
 from context import ME
 
 UPDATE_CWD = os.environ['UPDATE_CWD']
 
 
-async def handle_run(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    msg, cmd = get_msg_arg(update)
+@command
+async def handle_run(msg: Message, cmd: MessageArg):
     if cmd:
         await handle_cmd(msg, cmd)
     else:
         await reply_text(msg, 'Provide a command to run.')
 
 
-async def handle_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await _handle_cmd(get_msg(update), './run.sh', cwd=UPDATE_CWD)
+@command
+async def handle_update(msg: Message):
+    await _handle_cmd(msg, './run.sh', cwd=UPDATE_CWD)
 
 
 async def handle_cmd(msg: Message, cmd: str):

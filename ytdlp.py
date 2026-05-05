@@ -14,7 +14,6 @@ from telegram import (
     Video,
     Audio,
     Document,
-    Update,
     Message,
     InlineQueryResultCachedAudio,
     InlineQueryResultCachedVideo,
@@ -30,11 +29,11 @@ from telegram import (
     InputTextMessageContent,
     SwitchInlineQueryChosenChat,
 )
-from telegram.ext import ContextTypes
 from telegram.constants import ChatAction
 
 from context import get_sender
-from util import log, is_debug, get_msg_arg, reply_text, keep_chat_action
+from dispatch import MessageArg, command
+from util import log, is_debug, reply_text, keep_chat_action
 from render_context import LRUDict
 from ffmpeg import (
     encode_voice,
@@ -417,14 +416,14 @@ async def run_ytdlp(url: str, *, audio_only: bool = False) -> Output:
 
 
 async def _handle_yt(
-    update: Update,
+    msg: Message,
+    arg: str,
     cmd: str,
     action: ChatAction,
     *,
     audio_only: bool = False,
     video_note: bool = False,
 ):
-    msg, arg = get_msg_arg(update)
     if not arg:
         await reply_text(msg, f'Usage: {cmd} <url>')
         return
@@ -446,16 +445,19 @@ async def _handle_yt(
             await reply_text(msg, error_msg)
 
 
-async def handle_yt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await _handle_yt(update, '/yt', ChatAction.RECORD_VIDEO)
+@command(public=True)
+async def handle_yt(msg: Message, arg: MessageArg):
+    await _handle_yt(msg, arg, '/yt', ChatAction.RECORD_VIDEO)
 
 
-async def handle_yta(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await _handle_yt(update, '/yta', ChatAction.RECORD_VOICE, audio_only=True)
+@command(public=True)
+async def handle_yta(msg: Message, arg: MessageArg):
+    await _handle_yt(msg, arg, '/yta', ChatAction.RECORD_VOICE, audio_only=True)
 
 
-async def handle_ytn(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await _handle_yt(update, '/ytn', ChatAction.RECORD_VIDEO_NOTE, video_note=True)
+@command(public=True)
+async def handle_ytn(msg: Message, arg: MessageArg):
+    await _handle_yt(msg, arg, '/ytn', ChatAction.RECORD_VIDEO_NOTE, video_note=True)
 
 
 def make_markup(text: str) -> InlineKeyboardMarkup:

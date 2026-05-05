@@ -43,14 +43,14 @@ from util import (
 )
 from db import db
 from context import Sender, get_sender
-from dispatch import handle_callback_query
+from dispatch import handle_callback_query, iter_commands
 from inoue import render_receipt
 from rg import handle_rg
 from voice import try_handle_voice
 from todo import handle_todo_msg
 from ytdlp import extract_url, handle_yt_inline_query, handle_yt_chosen_result
 from render import handle_render_doc, handle_render_group, handle_render_inline_query
-from commands import dispatch_cmd, set_commands, stats, commands, reply_usage
+from commands import dispatch_cmd, set_commands, stats, reply_usage
 
 
 def auth(
@@ -183,7 +183,7 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if msg.chat.type != ChatType.PRIVATE:
         return
 
-    if await try_handle_voice(update):
+    if await try_handle_voice(msg):
         return
 
     # ID Bot
@@ -229,7 +229,7 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await dispatch_cmd(update, ctx, msg, text)
 
     if '\n' not in text:
-        return await handle_rg(update, ctx)
+        return await handle_rg(msg, text)
 
     await reply_text(msg, *pre_block(render_receipt(text)))
 
@@ -315,7 +315,7 @@ def build_app():
     app.add_error_handler(handle_error)
 
     rg = None
-    for name, (func, permissive) in commands.items():
+    for name, (func, permissive) in iter_commands():
         f = auth(func, permissive=permissive)
         if name == 'rg':
             rg = f

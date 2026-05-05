@@ -7,25 +7,18 @@ from typing import Iterable, Sequence
 from subprocess import DEVNULL, PIPE
 from dataclasses import dataclass, field
 
-from telegram import (
-    Update,
-    Message,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-)
-from telegram.ext import ContextTypes
+from telegram import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
 from util import (
     log,
     escape,
-    get_msg_arg,
     get_deep_link_url,
     pre_block_raw,
     truncate_text,
     reply_text,
     MAX_TEXT_LENGTH,
 )
-from dispatch import callback_query
+from dispatch import MessageArg, command, callback_query
 from segments import Segment, Link, Bold, Underline, Formatter
 
 # >>> 2026-01-02 15:04:05 (1)
@@ -445,8 +438,8 @@ def render_query_menu(
     return fmt, markup
 
 
-async def handle_rg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    msg, arg = get_msg_arg(update)
+@command
+async def handle_rg(msg: Message, arg: MessageArg):
     if not arg:
         return await reply_text(msg, 'Provide a keyword.')
 
