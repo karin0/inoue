@@ -1,7 +1,6 @@
 import re
 import shlex
 import asyncio
-from typing import Callable, Sequence
 
 from telegram.ext import ContextTypes
 from telegram import (
@@ -21,21 +20,17 @@ from util import (
     pre_block_raw,
     reply_text,
     use_text_override,
-    get_msg_arg,
     ME,
     CHAN_ID,
     TRUSTED_IDS,
 )
 from db import db
 from context import Sender, get_sender
-from render import handle_render, handle_ls
 from motto import greeting, hitokoto
-from ytdlp import handle_yt, handle_yta, handle_ytn
-from rg import handle_rg, handle_rg_start
-from misc import handle_sort, handle_fetch
-from run import handle_run, handle_cmd, handle_update
-from voice import handle_voice
-from media import *
+from rg import handle_rg_start
+from run import handle_cmd
+from dispatch import get_command_handler, iter_commands, command, MessageArg
+from media import handle_play_media, handle_remove_media
 
 try:
     from env import reply_usage
@@ -47,8 +42,6 @@ except ImportError:
 
 
 REG_TEMPLATE_ARG = re.compile(r'\$(\*|\d+)')
-
-commands: dict[str, tuple[Callable, bool]]
 
 
 def expand_template(template: str, args_str: str) -> str:
@@ -88,15 +81,15 @@ async def dispatch_cmd(
             return await dispatch_cmd(update, ctx, msg, expanded, depth + 1)
         return await handle_cmd(msg, expanded)
 
-    if handler := commands.get(cmd_name):
+    if handler := get_command_handler(cmd_name):
         with use_text_override(text):
-            return await handler[0](update, ctx)
+            return await handler(update, ctx)
 
     return await handle_cmd(msg, content)
 
 
-async def handle_def(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    msg, arg = get_msg_arg(update)
+@command
+async def handle_def(msg: Message, arg: MessageArg, bot: Bot):
     if not arg:
         cmds = []
         for name in db.iter_commands():
@@ -112,12 +105,12 @@ async def handle_def(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if template:
         db.set_command(name, template)
-        await set_commands(ctx.bot)
+        await set_commands(bot)
         await reply_text(msg, *pre_block(f'/{name} \u2192 {template}'))
     else:
         if db.get_command(name):
             db.set_command(name, '')
-            await set_commands(ctx.bot)
+            await set_commands(bot)
             await reply_text(msg, f'Deleted /{name}')
         else:
             await reply_text(msg, f'/{name} not found')
@@ -127,9 +120,9 @@ async def set_commands(bot: Bot):
     cmds = []
     public_cmds = []
 
-    for name, (func, permissive) in commands.items():
+    for name, (_, permissive) in iter_commands():
         cmds.append((name, name))
-        if permissive or func is handle_start:
+        if permissive or name == 'start':
             public_cmds.append((name, name))
 
     for name in db.iter_commands():
@@ -166,8 +159,9 @@ def stats(me: User, header: str = ME) -> tuple[str, str]:
     return text, 'MarkdownV2'
 
 
-async def handle_greet(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await reply_text(update, *stats(await ctx.bot.get_me()))
+@command
+async def handle_greet(msg: Message, bot: Bot):
+    await reply_text(msg, *stats(await bot.get_me()))
 
 
 def parse_media(arg: str) -> tuple[int, int] | None:
@@ -181,8 +175,8 @@ def parse_media(arg: str) -> tuple[int, int] | None:
         return None
 
 
-async def handle_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    msg, arg = get_msg_arg(update)
+@command
+async def handle_start(msg: Message, arg: MessageArg):
     if arg:
         if arg.startswith('rg_'):
             return await handle_rg_start(msg, arg)
@@ -200,36 +194,3 @@ async def handle_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     sender = get_sender()
     assert sender is not None
     return await reply_usage(msg, sender)
-
-
-handlers = (
-    handle_start,
-    handle_update,
-    handle_rg,
-    handle_run,
-    handle_fetch,
-    handle_greet,
-    handle_def,
-    handle_save,
-    handle_playlist,
-    handle_ls,
-)
-
-permissive_handlers = (
-    handle_play,
-    handle_yt,
-    handle_yta,
-    handle_ytn,
-    handle_voice,
-    handle_render,
-    handle_sort,
-)
-
-
-def to_commands(
-    funcs: Sequence[Callable], permissive: bool
-) -> dict[str, tuple[Callable, bool]]:
-    return {f.__name__[f.__name__.index('_') + 1 :]: (f, permissive) for f in funcs}
-
-
-commands = to_commands(handlers, False) | to_commands(permissive_handlers, True)

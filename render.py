@@ -24,7 +24,6 @@ from util import (
     USER_ID,
     log,
     list_env,
-    get_msg_arg,
     get_msg_url,
     reply_text,
     try_send_text,
@@ -50,7 +49,7 @@ from segments import (
 from context import get_sender
 from render_core import Engine, Value, to_str
 from render_bridge import Bridge, to_segment
-from dispatch import callback_query, CallbackData
+from dispatch import MessageArg, CallbackData, callback_query, command
 from render_context import OverriddenDict, encode_value, decode_value
 
 # '/' is kept for compatibility, which was used for '-'.
@@ -568,8 +567,10 @@ class RenderContext:
             )
 
 
-async def handle_render(update: Update, bot_ctx: ContextTypes.DEFAULT_TYPE):
-    msg, arg = get_msg_arg(update)
+@command(public=True)
+async def handle_render(
+    update: Update, bot_ctx: ContextTypes.DEFAULT_TYPE, msg: Message, arg: MessageArg
+):
     target = msg.reply_to_message
     text = target and (target.text or target.caption or '').strip()
 
@@ -904,14 +905,11 @@ async def handle_render_doc(
         return
 
     res = truncate_text(('\n' if len(info) > 2 else ' ').join(info))
-    await asyncio.gather(
-        do_notify(res, 'MarkdownV2', quiet=True),
-        set_reaction,
-    )
+    await asyncio.gather(do_notify(res, 'MarkdownV2', quiet=True), set_reaction)
 
 
-async def handle_ls(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    msg, arg = get_msg_arg(update)
+@command
+async def handle_ls(msg: Message, arg: MessageArg):
     keywords = arg.split()
 
     if not (docs := tuple(db.find_docs(keywords))):

@@ -1,14 +1,10 @@
 import os
 from typing import Iterable
 
-from telegram import Message, Update
-from telegram.ext import ContextTypes
+from telegram import Message
 
-from util import (
-    pre_block,
-    reply_text,
-    get_msg_arg,
-)
+from util import pre_block, reply_text
+from dispatch import MessageArg, command
 
 
 def parse_sort(arg: str) -> Iterable[int]:
@@ -21,19 +17,16 @@ def parse_sort(arg: str) -> Iterable[int]:
         yield int(x)
 
 
-async def handle_sort(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    msg, arg = get_msg_arg(update)
+@command(public=True)
+async def handle_sort(msg: Message, arg: MessageArg):
     if not arg:
         return await msg.reply_text('Usage: /sort 114 514 1919 810 ...')
     res = '\n'.join(str(x) for x in sorted(parse_sort(arg)))
     await reply_text(msg, *pre_block(res))
 
 
-async def handle_fetch(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await reply_file(*get_msg_arg(update))
-
-
-async def reply_file(msg: Message, path: str) -> Message:
+@command('fetch')
+async def reply_file(msg: Message, path: MessageArg) -> Message:
     if not path:
         return await msg.reply_text('Usage: /fetch <file path>', do_quote=True)
 

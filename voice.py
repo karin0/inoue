@@ -3,16 +3,16 @@ import math
 import asyncio
 from datetime import timedelta
 
-from telegram import Message, Document, Audio, Update, Video
+from telegram import Message, Document, Audio, Video
 from telegram.constants import ChatAction
-from telegram.ext import ContextTypes
 
+from dispatch import command
 from ffmpeg import encode_voice
 from context import is_sender_guest
 from ytdlp import run_ytdlp, extract_url, Output
 from util import (
     log,
-    get_msg_arg,
+    get_arg,
     escape,
     reply_text,
     keep_chat_action,
@@ -162,8 +162,8 @@ def extract_media(
         return media, media.duration
 
 
-async def try_handle_voice(update: Update, *, parse_url: bool = False) -> bool:
-    msg, arg = get_msg_arg(update)
+async def try_handle_voice(msg: Message, *, parse_url: bool = False) -> bool:
+    arg = get_arg(msg)
     info = extract_media(msg) or (
         msg.reply_to_message and extract_media(msg.reply_to_message)
     )
@@ -196,10 +196,11 @@ async def try_handle_voice(update: Update, *, parse_url: bool = False) -> bool:
         return True
 
 
-async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not await try_handle_voice(update, parse_url=True):
+@command(public=True)
+async def handle_voice(msg: Message):
+    if not await try_handle_voice(msg, parse_url=True):
         await reply_text(
-            update,
+            msg,
             r'Send or reply to a media message with `/voice [q]`, or use `/voice <url>`\.',
             'MarkdownV2',
         )

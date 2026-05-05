@@ -229,31 +229,23 @@ async def do_notify(
 type MessageSource = Message | Update | None
 
 
-def get_msg(update: MessageSource) -> Message:
-    if isinstance(update, Update):
-        # Unlike update.effective_message, channel posts and callback queries
-        # are ignored here.
-        if m := update.message or update.edited_message:
-            return m
-    elif update is None:
-        if m := msg.get():
-            return m
-    else:
-        return update
+def get_msg(update: Update) -> Message:
+    # Unlike update.effective_message, channel posts and callback queries
+    # are ignored here.
+    if m := update.message or update.edited_message:
+        return m
 
     raise ValueError('No message')
 
 
-def get_msg_arg(update: MessageSource) -> tuple[Message, str]:
-    m = get_msg(update)
+def get_arg(m: Message) -> str:
     s = text_override.get() or m.text or m.caption or ''
 
     if not s.startswith('/'):
-        return m, s.strip()
-    try:
-        return m, s[s.index(' ') + 1 :].strip()
-    except ValueError:
-        return m, ''
+        return s.strip()
+
+    p = s.find(' ')
+    return s[p + 1 :].strip() if p >= 0 else ''
 
 
 def get_msg_url(msg_id, chat_id=None) -> str:
@@ -312,7 +304,7 @@ capture_reply: dict[tuple[int, int], list[tuple[str, str | None]]] = {}
 
 # Note: the return value could be `None` if `allow_not_modified` is set.
 async def reply_text(
-    update: MessageSource,
+    m: Message,
     text: str,
     parse_mode: str | None = None,
     reply_markup: InlineKeyboardMarkup | None = None,
@@ -320,7 +312,6 @@ async def reply_text(
     entities: Sequence[MessageEntity] | None = None,
     allow_not_modified: bool = False,
 ) -> Message | None:
-    m = get_msg(update)
     chat_kind = encode_chat_id(m)
     if chat_kind == 'c':
         log.warning('reply_text: channel chat: %s', m)
