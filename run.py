@@ -156,7 +156,10 @@ async def consumer(
             await send(content, arg)
 
 
-async def __handle_cmd(msg: Message, child: Process, evt: asyncio.Event):
+async def __handle_cmd(msg: Message, child: Process, evt: asyncio.Event | None):
+    if child.stdout is None or child.stderr is None:
+        raise RuntimeError('stdout and stderr must be captured')
+
     q = asyncio.Queue()
     asyncio.create_task(producer(q, child.stdout))
 
