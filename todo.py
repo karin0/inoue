@@ -11,6 +11,7 @@ from telegram.error import BadRequest
 
 from db import db
 from util import log, TODO_ID
+from dispatch import callback_query
 
 
 def get_panel_id() -> int | None:
@@ -68,9 +69,8 @@ async def handle_todo_msg(msg: Message):
         await switch_panel_id(msg.get_bot(), sent.message_id)
 
 
-async def handle_todo_callback(query: CallbackQuery, data: str, bot: Bot):
-    _, task_id = data.split('_', 1)
-    task_id = int(task_id)
+@callback_query('todo')
+async def handle_todo_callback(query: CallbackQuery, task_id: int, bot: Bot):
     text = db.get_todo(task_id)
     if text is None:
         await query.answer('Task not found.', show_alert=True)

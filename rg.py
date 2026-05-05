@@ -25,6 +25,7 @@ from util import (
     reply_text,
     MAX_TEXT_LENGTH,
 )
+from dispatch import callback_query
 from segments import Segment, Link, Bold, Underline, Formatter
 
 # >>> 2026-01-02 15:04:05 (1)
@@ -253,30 +254,25 @@ async def do_show(i: str | int, j: str | int, k: str | int | None, alt_off: int 
     )
 
 
-async def handle_rg_callback(data: str):
-    _, cmd, *args = data.split('_')
+@callback_query('rg')
+async def handle_rg_callback(cmd: str, idx: int, *args: int):
     list_pages = False
     match cmd:
         case 'back':
-            idx = int(args[0])
             query = QUERIES[idx]
             page_num = query.page_num
         case 'page':
-            idx = int(args[0])
-            page_num = int(args[1])
+            page_num = args[0]
             query = QUERIES[idx]
         case 'list':
-            idx = int(args[0])
             query = QUERIES[idx]
             page_num = query.page_num
             list_pages = True
         case 'show':
-            idx = int(args[0])
-            j = int(args[1])
-            off = int(args[2])
+            j, off = args
             return await do_show(idx, j, None, off)
         case _:
-            raise ValueError('bad rg callback: ' + data)
+            raise ValueError('bad rg callback: ' + cmd)
 
     text, markup = render_query_menu(
         query, idx, page_num=page_num, list_pages=list_pages

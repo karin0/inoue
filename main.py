@@ -43,18 +43,13 @@ from util import (
 )
 from db import db
 from context import Sender, get_sender
+from dispatch import handle_callback_query
 from inoue import render_receipt
-from rg import handle_rg, handle_rg_callback
+from rg import handle_rg
 from voice import try_handle_voice
-from todo import handle_todo_msg, handle_todo_callback
+from todo import handle_todo_msg
 from ytdlp import extract_url, handle_yt_inline_query, handle_yt_chosen_result
-from render import (
-    handle_render_doc,
-    handle_render_callback,
-    handle_render_group,
-    handle_render_inline_query,
-    CALLBACK_SPECIAL,
-)
+from render import handle_render_doc, handle_render_group, handle_render_inline_query
 from commands import dispatch_cmd, set_commands, stats, commands, reply_usage
 
 
@@ -239,27 +234,6 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await reply_text(msg, *pre_block(render_receipt(text)))
 
 
-async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    callback = update.callback_query
-    assert callback
-    data = callback.data
-    if data:
-        if data.startswith('rg_'):
-            await handle_rg_callback(data)
-        elif data[0] in CALLBACK_SPECIAL:
-            await handle_render_callback(update, ctx, callback, data)
-            return
-        elif data.startswith('todo_'):
-            await handle_todo_callback(callback, data, ctx.bot)
-            return
-        elif data != 'noop':
-            log.warning('bad callback: %s', data)
-    else:
-        log.warning('empty callback')
-
-    await callback.answer()
-
-
 async def handle_inline_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.inline_query
     assert query
@@ -352,7 +326,7 @@ def build_app():
     for off in range(5):
         app.add_handler(CommandHandler(f'rg{off}', rg))
 
-    app.add_handler(CallbackQueryHandler(auth(handle_callback, permissive=True)))
+    app.add_handler(CallbackQueryHandler(auth(handle_callback_query, permissive=True)))
     app.add_handler(InlineQueryHandler(auth(handle_inline_query, permissive=True)))
     app.add_handler(
         ChosenInlineResultHandler(auth(handle_chosen_inline, permissive=True))

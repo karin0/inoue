@@ -50,6 +50,7 @@ from segments import (
 from context import get_sender
 from render_core import Engine, Value, to_str
 from render_bridge import Bridge, to_segment
+from dispatch import callback_query, CallbackData
 from render_context import OverriddenDict, encode_value, decode_value
 
 # '/' is kept for compatibility, which was used for '-'.
@@ -723,11 +724,12 @@ async def handle_render_inline_query(
     await query.answer((r,))
 
 
+@callback_query(filter=lambda data: data[0] in CALLBACK_SPECIAL, public=True)
 async def handle_render_callback(
     update: Update,
     bot_ctx: ContextTypes.DEFAULT_TYPE,
     callback: CallbackQuery,
-    data: str,
+    data: CallbackData,
 ):
     flags = {}
     clicked_button = None
