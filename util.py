@@ -42,6 +42,7 @@ TRUSTED_IDS = frozenset((USER_ID, CHAN_ID, GROUP_ID, TODO_ID, *load_ids('TRUSTED
 LOG_THREAD_ID = int(os.environ.get('LOG_THREAD_ID', 0)) or None
 
 DB_FILE = os.environ.get('DB_FILE', ME_LOWER + '.db')
+LOCK_FILE = ME_LOWER + '.pid'
 
 
 MAX_TEXT_LENGTH = MessageLimit.MAX_TEXT_LENGTH

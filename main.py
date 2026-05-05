@@ -1,5 +1,6 @@
 import os
 import sys
+import atexit
 import asyncio
 import functools
 from typing import Callable, Coroutine
@@ -33,6 +34,7 @@ from util import (
     GUEST_USER_IDS,
     IGNORE_CHAT_IDS,
     DB_FILE,
+    LOCK_FILE,
     ME,
     init_util,
     use_msg,
@@ -300,7 +302,6 @@ async def post_init(app: Application) -> None:
 
 async def post_stop(_: Application) -> None:
     db.close()
-    log.info('Database closed.')
 
 
 async def handle_error(update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -361,10 +362,27 @@ def build_app():
     return app
 
 
+def get_lock():
+    fd = os.open(LOCK_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+    with os.fdopen(fd, 'w') as fp:
+        fp.write(str(os.getpid()))
+    atexit.register(drop_lock)
+
+
+def drop_lock():
+    try:
+        os.remove(LOCK_FILE)
+    except OSError as e:
+        print(f'Failed to remove lock: {e}', file=sys.stderr)
+    atexit.unregister(drop_lock)
+
+
 def main():
     log.info('Starting %s...', ME)
+    get_lock()
     build_app().run_polling()
     log.info('%s stopped.', ME)
+    drop_lock()
 
 
 if __name__ == '__main__':
