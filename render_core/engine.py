@@ -22,7 +22,10 @@ from typing import (
 try:
     import regex as re
 except ImportError:
-    import re
+    import warnings
+
+    warnings.warn('regex module not found. Regex replacements will be disabled.')
+    re = None
 
 from lark import Lark, Token, Tree
 from lark.visitors import Interpreter, Transformer
@@ -48,14 +51,18 @@ from .tco import TCO, MaybeTCO, Tco, TCOContext
 MAX_DEPTH = 20
 MAX_GAS = 2000
 
-REPL_REGEX_FLAG_MAP = {
-    'a': re.ASCII,
-    'i': re.IGNORECASE,
-    'm': re.MULTILINE,
-    's': re.DOTALL,
-    'u': re.UNICODE,
-    'x': re.VERBOSE,
-}
+REPL_REGEX_FLAG_MAP = (
+    {
+        'a': re.ASCII,
+        'i': re.IGNORECASE,
+        'm': re.MULTILINE,
+        's': re.DOTALL,
+        'u': re.UNICODE,
+        'x': re.VERBOSE,
+    }
+    if re
+    else None
+)
 
 
 # https://stackoverflow.com/a/47956089
@@ -1686,6 +1693,10 @@ class Engine(Interpreter):
                     self._ctx[key] = val = val.replace(pat, sub)
 
                 case 'repl_pair_regex':
+                    if not re:
+                        self._error('regex replacement disabled')
+                        continue
+
                     flags = (
                         self._regex_flags(narrow(chs[2], Token).value)
                         if len(chs) > 2
@@ -1693,7 +1704,7 @@ class Engine(Interpreter):
                     )
 
                     try:
-                        val = re.sub(pat, sub, val, flags=flags)
+                        val = re.sub(pat, sub, val, flags=flags, timeout=0.1)
                     except re.error as e:
                         self._error(f'regex replace: {e}')
                     else:
@@ -1703,6 +1714,8 @@ class Engine(Interpreter):
                     raise ValueError(f'Bad repl pair: {pair.data}')
 
     def _regex_flags(self, spec: str) -> int:
+        assert REPL_REGEX_FLAG_MAP is not None
+
         flags = 0
         for c in spec:
             if (flag := REPL_REGEX_FLAG_MAP.get(c)) is None:
