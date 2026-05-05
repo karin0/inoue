@@ -77,11 +77,16 @@ type PromiseResult = Value | list[Value] | tuple[Value, ...] | dict[str, Value] 
 
 
 class Promise[T: PromiseResult](Box):
-    __slots__ = ('_task',)
+    __slots__ = ('_task', '_factory')
 
-    def __init__(self, coro: Awaitable[T]):
+    def __init__(
+        self,
+        coro: Awaitable[T],
+        factory: Callable[[Awaitable[T]], 'Promise[T]'] | None = None,
+    ):
         super().__init__()
         self._task = asyncio.create_task(_run(coro))
+        self._factory = factory
 
     def then(self, *callbacks: Then) -> Promise:
         # `callback` is expected to be a `SubDoc` with a `scope`, so we can call
@@ -90,7 +95,7 @@ class Promise[T: PromiseResult](Box):
             return self
         if not all(callable(f) for f in callbacks):
             raise TypeError(f'Promise.then: callback must be callable, got {callbacks}')
-        return Promise(_chained(self._task, callbacks))
+        return (self._factory or Promise)(_chained(self._task, callbacks))
 
     def __repr__(self) -> str:
         return f'<Promise task={self._task!r}>'
@@ -201,7 +206,7 @@ class Callbacks(Protocol):
 
 
 class Bridge(Box):
-    __slots__ = ('_ctx', '_trusted', '_cb')
+    __slots__ = ('_ctx', '_trusted', '_cb', '_promise_cap')
 
     def __init__(
         self, ctx: MutableMapping[str, Value], trusted: int | None, cb: Callbacks
@@ -210,6 +215,7 @@ class Bridge(Box):
         self._ctx = ctx
         self._trusted = trusted
         self._cb = cb
+        self._promise_cap = 5 if trusted is None else 10
 
     def __repr__(self) -> str:
         return f'Bridge({self._trusted})'
@@ -226,10 +232,25 @@ class Bridge(Box):
             return val
         raise AttributeError(name)
 
+    def _promise[T: PromiseResult](self, coro: Awaitable[T]) -> Promise[T]:
+        if self._promise_cap is not None:
+            if self._promise_cap <= 0:
+                raise RuntimeError('Promise capacity exceeded')
+            self._promise_cap -= 1
+        return Promise(coro, self._promise)
+
     @trusted
+    def communicate(self, cmd, input='') -> Promise[dict[str, Value]]:
+        return self._promise(_communicate(to_str(cmd), to_str(input)))
+
+    @public
     def edit_message(self, text) -> Promise:
         log.debug('Bridge: edit_message: %r', text)
-        return Promise(self._cb._update_text(to_segment(text)))
+        return self._promise(self._cb._update_text(to_segment(text)))
+
+    @public
+    def sleep(self, seconds: float) -> Promise[None]:
+        return self._promise(asyncio.sleep(seconds))
 
     async def _dispatch_cmd(self, cmd: str) -> Fragment | Raw | None:
         r = await self._cb._dispatch_cmd(cmd)
@@ -251,7 +272,7 @@ class Bridge(Box):
         cmd = to_str(cmd)
         if not cmd.startswith('/'):
             raise ValueError(f'command must start with /, got {cmd!r}')
-        return Promise(self._dispatch_cmd(cmd))
+        return self._promise(self._dispatch_cmd(cmd))
 
     @public
     def dbg(self) -> str:
@@ -305,11 +326,6 @@ def system(cmd: str) -> str:
     return result.strip()
 
 
-@trusted
-def sleep(seconds: float) -> Promise[None]:
-    return Promise(asyncio.sleep(seconds))
-
-
 async def _communicate(cmd: str, input: str | None) -> dict[str, Value]:
     fut = asyncio.create_subprocess_shell(
         cmd,
@@ -350,11 +366,6 @@ async def _communicate(cmd: str, input: str | None) -> dict[str, Value]:
     if returncode is not None:
         r['returncode'] = returncode
     return r
-
-
-@trusted
-def communicate(cmd, input='') -> Promise[dict[str, Value]]:
-    return Promise(_communicate(to_str(cmd), to_str(input)))
 
 
 public(time.time, name='time')
