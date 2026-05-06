@@ -173,7 +173,7 @@ def iter_commands() -> Iterable[tuple[str, tuple[PTBHandler, bool]]]:
 
 
 def get_command_handler(name: str) -> PTBHandler | None:
-    if route := _cmd_handlers.get(name):
+    if (route := _cmd_handlers.get(name)) is not None:
         return route.call
 
 
@@ -210,8 +210,16 @@ def callback_query(
     return decorator
 
 
+def _dispatch_argv(
+    update: Update, ctx: ContextTypes.DEFAULT_TYPE, data: str, map: dict[str, Route]
+) -> Coroutine | None:
+    args = data.split('_')
+    if (route := map.get(args[0])) is not None:
+        return route.call(update, ctx, islice(args, 1, None))
+
+
 async def handle_callback_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not (query := update.callback_query):
+    if (query := update.callback_query) is None:
         raise ValueError('No callback_query')
 
     if not (data := query.data):
@@ -222,10 +230,34 @@ async def handle_callback_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     for filter_func, route in _cb_filters:
         if filter_func(data):
-            return await route.call(update, ctx, ())
+            return await route.call(update, ctx)
 
-    args = data.split('_')
-    if route := _cb_handlers.get(args[0]):
-        return await route.call(update, ctx, islice(args, 1, None))
+    if fut := _dispatch_argv(update, ctx, data, _cb_handlers):
+        return await fut
 
     raise ValueError(f'Bad callback query: {data}')
+
+
+_start_handlers: dict[str, Route] = {}
+
+
+def start(key: str, *, public: bool = False) -> Callable[[Handler], Handler]:
+    def decorator[H: Handler](func: H) -> H:
+        route = Route(func, public)
+
+        if not key:
+            raise ValueError('start: key cannot be empty')
+
+        if key in _start_handlers:
+            raise ValueError(f'start: {key} already exists')
+
+        _start_handlers[key] = route
+        return func
+
+    return decorator
+
+
+def dispatch_start(
+    update: Update, ctx: ContextTypes.DEFAULT_TYPE, arg: MessageArg
+) -> Coroutine | None:
+    return _dispatch_argv(update, ctx, arg, _start_handlers) if arg else None

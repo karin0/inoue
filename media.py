@@ -1,14 +1,8 @@
 from telegram import Message
 
 from db import db
-from util import (
-    log,
-    escape,
-    get_msg_url,
-    get_deep_link_url,
-    reply_text,
-)
-from dispatch import MessageArg, command
+from util import log, escape, get_msg_url, get_deep_link_url, reply_text
+from dispatch import MessageArg, command, start
 
 
 def extract_media(msg: Message) -> tuple[str, str] | None:
@@ -104,6 +98,7 @@ async def handle_playlist(msg: Message):
     )
 
 
+@start('play')
 async def handle_play_media(msg: Message, chat_id: int, message_id: int):
     if not db.has_media(chat_id, message_id):
         return await reply_text(msg, 'Media not found.')
@@ -116,6 +111,7 @@ async def handle_play_media(msg: Message, chat_id: int, message_id: int):
     )
 
 
+@start('unsave')
 async def handle_remove_media(msg: Message, chat_id: int, message_id: int):
     title = db.delete_media(chat_id, message_id)
     if title is not None:
