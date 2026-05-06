@@ -27,10 +27,14 @@ from util import (
 from db import db
 from context import Sender, get_sender
 from motto import greeting, hitokoto
-from rg import handle_rg_start
 from run import handle_cmd
-from dispatch import get_command_handler, iter_commands, command, MessageArg
-from media import handle_play_media, handle_remove_media
+from dispatch import (
+    MessageArg,
+    command,
+    iter_commands,
+    get_command_handler,
+    dispatch_start,
+)
 
 try:
     from env import reply_usage
@@ -164,33 +168,12 @@ async def handle_greet(msg: Message, bot: Bot):
     await reply_text(msg, *stats(await bot.get_me()))
 
 
-def parse_media(arg: str) -> tuple[int, int] | None:
-    parts = arg.split('_', 2)
-    if len(parts) != 3:
-        return None
-
-    try:
-        return int(parts[1]), int(parts[2])
-    except ValueError:
-        return None
-
-
 @command
-async def handle_start(msg: Message, arg: MessageArg):
-    if arg:
-        if arg.startswith('rg_'):
-            return await handle_rg_start(msg, arg)
-
-        elif arg.startswith('play_'):
-            if (parsed := parse_media(arg)) is None:
-                return await reply_text(msg, 'Bad play link.')
-            return await handle_play_media(msg, *parsed)
-
-        elif arg.startswith('unsave_'):
-            if (parsed := parse_media(arg)) is None:
-                return await reply_text(msg, 'Bad unsave link.')
-            return await handle_remove_media(msg, *parsed)
-
-    sender = get_sender()
-    assert sender is not None
-    return await reply_usage(msg, sender)
+async def handle_start(
+    update: Update, ctx: ContextTypes.DEFAULT_TYPE, msg: Message, arg: MessageArg
+):
+    if not await dispatch_start(update, ctx, arg):
+        sender = get_sender()
+        if sender is None:
+            raise RuntimeError('No sender')
+        return await reply_usage(msg, sender)

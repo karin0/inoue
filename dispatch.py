@@ -211,7 +211,7 @@ def callback_query(
 
 
 async def handle_callback_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not (query := update.callback_query):
+    if (query := update.callback_query) is None:
         raise ValueError('No callback_query')
 
     if not (data := query.data):
@@ -225,7 +225,37 @@ async def handle_callback_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return await route.call(update, ctx, ())
 
     args = data.split('_')
-    if route := _cb_handlers.get(args[0]):
+    if (route := _cb_handlers.get(args[0])) is not None:
         return await route.call(update, ctx, islice(args, 1, None))
 
     raise ValueError(f'Bad callback query: {data}')
+
+
+_start_handlers: dict[str, Route] = {}
+
+
+def start(key: str, *, public: bool = False) -> Callable[[Handler], Handler]:
+    def decorator[H: Handler](func: H) -> H:
+        route = Route(func, public)
+
+        if not key:
+            raise ValueError('start: key cannot be empty')
+
+        if key in _start_handlers:
+            raise ValueError(f'start: {key} already exists')
+
+        _start_handlers[key] = route
+        return func
+
+    return decorator
+
+
+async def dispatch_start(
+    update: Update, ctx: ContextTypes.DEFAULT_TYPE, arg: MessageArg
+) -> bool:
+    if arg:
+        args = arg.split('_')
+        if (route := _start_handlers.get(args[0])) is not None:
+            await route.call(update, ctx, islice(args, 1, None))
+            return True
+    return False

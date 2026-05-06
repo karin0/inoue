@@ -18,7 +18,7 @@ from util import (
     reply_text,
     MAX_TEXT_LENGTH,
 )
-from dispatch import MessageArg, command, callback_query
+from dispatch import MessageArg, command, callback_query, start
 from segments import Segment, Link, Bold, Underline, Formatter
 
 # >>> 2026-01-02 15:04:05 (1)
@@ -184,22 +184,22 @@ def push_query(q: RGQuery):
     return r
 
 
-async def handle_rg_start(msg: Message, arg: str):
-    _, i, j, k = arg.split('_')
+@start('rg')
+async def handle_rg_start(msg: Message, i: int, j: int, k: int):
     await asyncio.gather(msg.delete(), do_show(i, j, k, None))
 
 
-async def do_show(i: str | int, j: str | int, k: str | int | None, alt_off: int | None):
-    query = QUERIES[int(i)]
+async def do_show(i: int, j: int, k: int | None, alt_off: int | None):
+    query = QUERIES[i]
     message = query.message
     assert message is not None
-    file = query.files[int(j)]
+    file = query.files[j]
 
     if alt_off is not None:
         off = alt_off
     else:
         assert k is not None
-        off = file.matches[int(k)].absolute_offset
+        off = file.matches[k].absolute_offset
 
     with open(os.path.join(query.cwd, file.path), 'rb') as fp:
         with mmap.mmap(fp.fileno(), 0, access=mmap.ACCESS_READ) as mm:
