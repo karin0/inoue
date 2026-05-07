@@ -168,14 +168,16 @@ class DataStore:
 
     def set_command(self, name: str, cmd: str):
         with self.conn:
-            if cmd:
-                self.conn.execute(
-                    '''INSERT INTO Command (name, cmd) VALUES (?, ?)
-                    ON CONFLICT(name) DO UPDATE SET cmd = excluded.cmd;''',
-                    (name, cmd),
-                )
-            else:
-                self.conn.execute('DELETE FROM Command WHERE name = ?;', (name,))
+            self.conn.execute(
+                '''INSERT INTO Command (name, cmd) VALUES (?, ?)
+                ON CONFLICT(name) DO UPDATE SET cmd = excluded.cmd;''',
+                (name, cmd),
+            )
+
+    def del_command(self, name: str) -> bool:
+        with self.conn:
+            r = self.conn.execute('DELETE FROM Command WHERE name = ?;', (name,))
+            return r.rowcount > 0
 
     def iter_commands(self) -> Iterable[str]:
         cursor = self.conn.execute('SELECT name FROM Command ORDER BY name;')
