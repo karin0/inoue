@@ -18,11 +18,11 @@ def parse_sort(arg: str) -> Iterable[int]:
 
 
 @command(public=True)
-async def handle_sort(msg: Message, arg: MessageArg):
+def handle_sort(msg: Message, arg: MessageArg):
     if not arg:
-        return await msg.reply_text('Usage: /sort 114 514 1919 810 ...')
+        return msg.reply_text('Usage: /sort 114 514 1919 810 ...')
     res = '\n'.join(str(x) for x in sorted(parse_sort(arg)))
-    await reply_text(msg, *pre_block(res))
+    return reply_text(msg, *pre_block(res))
 
 
 @command('fetch')

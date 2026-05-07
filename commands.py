@@ -39,9 +39,9 @@ try:
     from env import reply_usage
 except ImportError:
 
-    async def reply_usage(msg: Message, sender: Sender):
+    def reply_usage(msg: Message, sender: Sender):
         text = rf'Hello, {escape(sender.name)}\!'
-        await reply_text(msg, text, 'MarkdownV2')
+        return reply_text(msg, text, 'MarkdownV2')
 
 
 REG_TEMPLATE_ARG = re.compile(r'\$(\*|\d+)')
@@ -117,7 +117,7 @@ async def handle_def(msg: Message, arg: MessageArg, bot: Bot):
         await reply_text(msg, f'/{name} not found')
 
 
-async def set_commands(bot: Bot):
+def set_commands(bot: Bot):
     cmds = []
     public_cmds = []
 
@@ -129,7 +129,7 @@ async def set_commands(bot: Bot):
     for name in db.iter_commands():
         cmds.append((name, name))
 
-    await asyncio.gather(
+    return asyncio.gather(
         bot.set_my_commands(public_cmds, BotCommandScopeDefault()),
         *(
             (
@@ -166,13 +166,13 @@ async def handle_greet(msg: Message, bot: Bot):
 
 
 @command
-async def handle_start(
+def handle_start(
     update: Update, ctx: ContextTypes.DEFAULT_TYPE, msg: Message, arg: MessageArg
 ):
     if (fut := dispatch_start(update, ctx, arg)) is not None:
-        return await fut
+        return fut
 
     if (sender := get_sender()) is None:
         raise RuntimeError('No sender')
 
-    return await reply_usage(msg, sender)
+    return reply_usage(msg, sender)

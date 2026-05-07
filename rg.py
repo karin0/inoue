@@ -185,8 +185,8 @@ def push_query(q: RGQuery):
 
 
 @start('rg')
-async def handle_rg_start(msg: Message, i: int, j: int, k: int):
-    await asyncio.gather(msg.delete(), do_show(i, j, k, None))
+def handle_rg_start(msg: Message, i: int, j: int, k: int):
+    return asyncio.gather(msg.delete(), do_show(i, j, k, None))
 
 
 async def do_show(i: int, j: int, k: int | None, alt_off: int | None):
@@ -248,7 +248,7 @@ async def do_show(i: int, j: int, k: int | None, alt_off: int | None):
 
 
 @callback_query('rg')
-async def handle_rg_callback(cmd: str, idx: int, *args: int):
+def handle_rg_callback(cmd: str, idx: int, *args: int):
     list_pages = False
     match cmd:
         case 'back':
@@ -263,7 +263,7 @@ async def handle_rg_callback(cmd: str, idx: int, *args: int):
             list_pages = True
         case 'show':
             j, off = args
-            return await do_show(idx, j, None, off)
+            return do_show(idx, j, None, off)
         case _:
             raise ValueError('bad rg callback: ' + cmd)
 
@@ -272,7 +272,7 @@ async def handle_rg_callback(cmd: str, idx: int, *args: int):
     )
     message = query.message
     assert message is not None
-    await message.edit_text(text, parse_mode='HTML', reply_markup=markup)
+    return message.edit_text(text, parse_mode='HTML', reply_markup=markup)
 
 
 async def _run_rg(arg: str, cwd: str) -> RGQuery:

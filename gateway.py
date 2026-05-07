@@ -1,4 +1,3 @@
-import inspect
 import functools
 from typing import Callable, Sequence, TYPE_CHECKING
 
@@ -151,10 +150,10 @@ def add_handler[**P, T: BaseHandler](
 
     callback: PTBHandler | None = None
     for arg in args:
-        if inspect.iscoroutinefunction(arg):
+        if callable(arg):
             if callback is not None:
                 raise ValueError(f'Multiple callbacks in args: {args}')
-            callback = arg
+            callback = arg  # type: ignore[assignment]
 
     if callback is None:
         raise ValueError(f'No callback in args: {args}')

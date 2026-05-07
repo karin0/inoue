@@ -19,20 +19,19 @@ UPDATE_CWD = os.environ['UPDATE_CWD']
 
 
 @command
-async def handle_run(msg: Message, cmd: MessageArg):
+def handle_run(msg: Message, cmd: MessageArg):
     if cmd:
-        await handle_cmd(msg, cmd)
-    else:
-        await reply_text(msg, 'Provide a command to run.')
+        return handle_cmd(msg, cmd)
+    return reply_text(msg, 'Provide a command to run.')
 
 
 @command
-async def handle_update(msg: Message):
-    await _handle_cmd(msg, './run.sh', cwd=UPDATE_CWD)
+def handle_update(msg: Message):
+    return _handle_cmd(msg, './run.sh', cwd=UPDATE_CWD)
 
 
-async def handle_cmd(msg: Message, cmd: str):
-    return await _handle_cmd(msg, 'bash', '-c', cmd)
+def handle_cmd(msg: Message, cmd: str):
+    return _handle_cmd(msg, 'bash', '-c', cmd)
 
 
 async def _handle_cmd(msg: Message, bin: str, *args, **kwargs):

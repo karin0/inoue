@@ -446,18 +446,18 @@ async def _handle_yt(
 
 
 @command(public=True)
-async def handle_yt(msg: Message, arg: MessageArg):
-    await _handle_yt(msg, arg, '/yt', ChatAction.RECORD_VIDEO)
+def handle_yt(msg: Message, arg: MessageArg):
+    return _handle_yt(msg, arg, '/yt', ChatAction.RECORD_VIDEO)
 
 
 @command(public=True)
-async def handle_yta(msg: Message, arg: MessageArg):
-    await _handle_yt(msg, arg, '/yta', ChatAction.RECORD_VOICE, audio_only=True)
+def handle_yta(msg: Message, arg: MessageArg):
+    return _handle_yt(msg, arg, '/yta', ChatAction.RECORD_VOICE, audio_only=True)
 
 
 @command(public=True)
-async def handle_ytn(msg: Message, arg: MessageArg):
-    await _handle_yt(msg, arg, '/ytn', ChatAction.RECORD_VIDEO_NOTE, video_note=True)
+def handle_ytn(msg: Message, arg: MessageArg):
+    return _handle_yt(msg, arg, '/ytn', ChatAction.RECORD_VIDEO_NOTE, video_note=True)
 
 
 def make_markup(text: str) -> InlineKeyboardMarkup:
@@ -466,7 +466,7 @@ def make_markup(text: str) -> InlineKeyboardMarkup:
     )
 
 
-async def handle_yt_inline_query(query: InlineQuery, parsed: tuple[str, str]):
+def handle_yt_inline_query(query: InlineQuery, parsed: tuple[str, str]):
     url, arg = parsed
     log.info('handle_yt_inline_query: %s / %s', url, arg)
     caption = None if 'q' in arg else url
@@ -477,8 +477,7 @@ async def handle_yt_inline_query(query: InlineQuery, parsed: tuple[str, str]):
         result = InlineQueryResultCachedVoice(
             id='noop', title=title, voice_file_id=file_id, caption=caption
         )
-        await query.answer((result,))
-        return
+        return query.answer((result,))
 
     media = _media_cache.get(url)
     results = []
@@ -553,7 +552,7 @@ async def handle_yt_inline_query(query: InlineQuery, parsed: tuple[str, str]):
             )
         )
 
-    await query.answer(results, cache_time=cached_time)
+    return query.answer(results, cache_time=cached_time)
 
 
 async def _finish_voice(

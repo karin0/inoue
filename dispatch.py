@@ -1,6 +1,6 @@
 import inspect
 from itertools import islice
-from typing import Any, Callable, Iterable, Coroutine, Type, overload
+from typing import Any, Callable, Iterable, Coroutine, Awaitable, Type, overload
 
 from telegram import CallbackQuery, Message, Update, Bot
 from telegram.ext import ContextTypes
@@ -24,7 +24,7 @@ CALLBACK_PARAM_TYPES = (
     int,
 )
 
-type Handler[**P, R] = Callable[P, Coroutine[Any, Any, R]]
+type Handler[**P, R] = Callable[P, Awaitable[R]]
 
 type PTBHandler[T] = Callable[
     [Update, ContextTypes.DEFAULT_TYPE], Coroutine[Any, Any, T]
@@ -218,7 +218,7 @@ def _dispatch_argv(
         return route.call(update, ctx, islice(args, 1, None))
 
 
-async def handle_callback_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+def handle_callback_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if (query := update.callback_query) is None:
         raise ValueError('No callback_query')
 
@@ -226,14 +226,14 @@ async def handle_callback_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         raise ValueError('No data in cq')
 
     if data == 'noop':
-        return await query.answer()
+        return query.answer()
 
     for filter_func, route in _cb_filters:
         if filter_func(data):
-            return await route.call(update, ctx)
+            return route.call(update, ctx)
 
     if fut := _dispatch_argv(update, ctx, data, _cb_handlers):
-        return await fut
+        return fut
 
     raise ValueError(f'Bad callback query: {data}')
 

@@ -378,12 +378,8 @@ class RenderContext:
         if isinstance(r, Message):
             return r.message_id
 
-    async def render(
-        self,
-        text: str,
-    ) -> MessageSpec:
-        rendered = self.render_text(text)
-        return await self.to_response(rendered)
+    def render(self, text: str) -> Awaitable[MessageSpec]:
+        return self.to_response(self.render_text(text))
 
     async def to_response(self, rendered: Segment) -> MessageSpec:
         spec = self._format_response(rendered)
@@ -557,7 +553,7 @@ class RenderContext:
 
 
 @command(public=True)
-async def handle_render(update: Update, msg: Message, arg: MessageArg):
+def handle_render(update: Update, msg: Message, arg: MessageArg):
     target = msg.reply_to_message
     text = target and (target.text or target.caption or '').strip()
 
@@ -567,12 +563,12 @@ async def handle_render(update: Update, msg: Message, arg: MessageArg):
     elif arg:
         text = arg
     else:
-        return await reply_text(msg, 'Specify text or reply to a message to render.')
+        return reply_text(msg, 'Specify text or reply to a message to render.')
 
     if doc_ref := is_doc_ref(text):
         path, row = doc_ref
         if path is None:
-            return await reply_text(msg, f'No doc: {row}')
+            return reply_text(msg, f'No doc: {row}')
         assert isinstance(row, tuple)
         doc_id, text = row
     else:
@@ -581,13 +577,13 @@ async def handle_render(update: Update, msg: Message, arg: MessageArg):
         db['r-' + path] = text
         doc_id = None
 
-    async def edit_reply_message(spec: MessageSpec):
-        return await reply_text(msg, *spec, allow_not_modified=True)
+    def edit_reply_message(spec: MessageSpec):
+        return reply_text(msg, *spec, allow_not_modified=True)
 
     ctx = RenderContext(
         update, doc_id=doc_id, path=path, update_callback=edit_reply_message
     )
-    await ctx.render(text)
+    return ctx.render(text)
 
 
 DOC_SEARCH_PATH = list_env('DOC_SEARCH_PATH', ':')
@@ -714,9 +710,7 @@ async def handle_render_inline_query(
 
 
 @callback_query(filter=lambda data: data[0] in CALLBACK_SPECIAL, public=True)
-async def handle_render_callback(
-    update: Update, callback: CallbackQuery, data: CallbackData
-):
+def handle_render_callback(update: Update, callback: CallbackQuery, data: CallbackData):
     flags = {}
     clicked_button = None
 
@@ -817,7 +811,7 @@ async def handle_render_callback(
         ctx.data[MEMORY_KEY] = decode_value(memory)
     ctx.data['_state'] = data
 
-    await ctx.render(text)
+    return ctx.render(text)
 
 
 def _report(
@@ -891,15 +885,15 @@ async def handle_render_doc(update: Update, msg: Message):
 
 
 @command
-async def handle_ls(msg: Message, arg: MessageArg):
+def handle_ls(msg: Message, arg: MessageArg):
     keywords = arg.split()
 
     if not (docs := tuple(db.find_docs(keywords))):
-        return await reply_text(msg, 'No docs found.')
+        return reply_text(msg, 'No docs found.')
 
     lines = [rf'{len(docs)} docs:']
     for id, name, length in docs:
         line = rf'\- [*{escape(name)}*]({get_msg_url(id)}) \({id}, {length}\)'
         lines.append(line)
 
-    await reply_text(msg, '\n'.join(lines), parse_mode='MarkdownV2')
+    return reply_text(msg, '\n'.join(lines), parse_mode='MarkdownV2')

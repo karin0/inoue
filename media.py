@@ -31,13 +31,13 @@ def extract_media(msg: Message) -> tuple[str, str] | None:
 
 
 @command
-async def handle_save(msg: Message, arg: MessageArg):
+def handle_save(msg: Message, arg: MessageArg):
     if (target := msg.reply_to_message) and (info := extract_media(target)) is not None:
         pass
     elif (info := extract_media(msg)) is not None:
         target = msg
     else:
-        return await reply_text(
+        return reply_text(
             msg, r'Send or reply to a media message with `/save [title]` to save it\.'
         )
 
@@ -49,7 +49,7 @@ async def handle_save(msg: Message, arg: MessageArg):
         text = rf'Saved {media_text}'
     else:
         text = rf'Updated {media_text}'
-    await reply_text(msg, text, 'MarkdownV2')
+    return reply_text(msg, text, 'MarkdownV2')
 
 
 def render_title(title: str) -> str:
@@ -65,20 +65,20 @@ def render_media(chat_id: int, message_id: int, title: str) -> str:
 
 
 @command(public=True)
-async def handle_play(msg: Message):
+def handle_play(msg: Message):
     if not (media := db.random_media()):
-        return await msg.reply_text('No saved media.', do_quote=True)
+        return msg.reply_text('No saved media.', do_quote=True)
 
     chat_id, message_id = media
     log.info('Forwarding saved media: %s/%s -> %s', chat_id, message_id, msg.chat_id)
-    await msg.reply_copy(chat_id, message_id, do_quote=True)
+    return msg.reply_copy(chat_id, message_id, do_quote=True)
 
 
 @command
-async def handle_playlist(msg: Message):
+def handle_playlist(msg: Message):
     items = list(db.iter_media())
     if not items:
-        return await msg.reply_text('No saved media.', do_quote=True)
+        return msg.reply_text('No saved media.', do_quote=True)
 
     lines = []
     for i, (chat_id, message_id, title, _) in enumerate(items, 1):
@@ -90,7 +90,7 @@ async def handle_playlist(msg: Message):
             f'{escape(f'{i}.')} [{title_text}]({msg_url}) \\| [play]({play_url}) \\| [remove]({unsave_url})'
         )
 
-    await msg.reply_text(
+    return msg.reply_text(
         '\n'.join(lines),
         'MarkdownV2',
         do_quote=True,
@@ -99,11 +99,11 @@ async def handle_playlist(msg: Message):
 
 
 @start('play')
-async def handle_play_media(msg: Message, chat_id: int, message_id: int):
+def handle_play_media(msg: Message, chat_id: int, message_id: int):
     if not db.has_media(chat_id, message_id):
-        return await reply_text(msg, 'Media not found.')
+        return reply_text(msg, 'Media not found.')
 
-    return await msg.get_bot().forward_message(
+    return msg.get_bot().forward_message(
         msg.chat_id,
         chat_id,
         message_id,
@@ -112,12 +112,12 @@ async def handle_play_media(msg: Message, chat_id: int, message_id: int):
 
 
 @start('unsave')
-async def handle_remove_media(msg: Message, chat_id: int, message_id: int):
+def handle_remove_media(msg: Message, chat_id: int, message_id: int):
     title = db.delete_media(chat_id, message_id)
     if title is not None:
-        return await reply_text(
+        return reply_text(
             msg,
             f'Removed {render_media(chat_id, message_id, title)}',
             'MarkdownV2',
         )
-    return await reply_text(msg, f'Media not found.')
+    return reply_text(msg, f'Media not found.')
