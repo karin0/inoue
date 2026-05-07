@@ -111,8 +111,8 @@ def extract_url(text: str) -> tuple[str, str] | None:
 
 
 def find_url(text: str) -> str | None:
-    m = REG_URL.search(text.strip())
-    return m and matched_url(m)
+    if (r := extract_url(text)) is not None:
+        return r[0]
 
 
 MAX_FILE_SIZE = 50 << 20
