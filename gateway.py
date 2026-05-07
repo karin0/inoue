@@ -1,6 +1,6 @@
 import inspect
 import functools
-from typing import Callable, Coroutine, Sequence, cast
+from typing import Callable, Sequence, TYPE_CHECKING
 
 from telegram import Message, User, Update, MessageOriginChannel
 from telegram.ext import (
@@ -11,27 +11,18 @@ from telegram.ext import (
 )
 from telegram.constants import ChatID
 
-from util import (
-    log,
-    trace,
-    notify,
-    shorten,
-    use_context,
-    USER_ID,
-    CHAN_ID,
-    GROUP_ID,
-    GUEST_USER_IDS,
-    IGNORE_CHAT_IDS,
-)
+from util.log import log, trace, notify
+from util.text import shorten
+from util.ctx import use_context
+from util.env import USER_ID, CHAN_ID, GROUP_ID, GUEST_USER_IDS, IGNORE_CHAT_IDS
+
 from context import Sender
-from commands import reply_usage
+
+if TYPE_CHECKING:
+    from dispatch import PTBHandler
 
 
-def auth(
-    func: Callable[[Update, ContextTypes.DEFAULT_TYPE], Coroutine],
-    *,
-    permissive: bool = False,
-) -> Callable[[Update, ContextTypes.DEFAULT_TYPE], Coroutine]:
+def auth(func: PTBHandler, *, permissive: bool = False) -> PTBHandler:
     @functools.wraps(func)
     async def wrapper(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         effective_msg = update.effective_message
@@ -116,6 +107,8 @@ def auth(
                 chat,
             )
             if is_guest and msg:
+                from commands import reply_usage
+
                 assert sender is not None
                 await reply_usage(msg, sender)
             return
@@ -131,15 +124,13 @@ def auth(
     return wrapper
 
 
-command_callbacks: dict[
-    str, Callable[[Update, ContextTypes.DEFAULT_TYPE], Coroutine]
-] = {}
+command_callbacks: dict[str, PTBHandler] = {}
 
 
 def add_command_handler(
     app: Application,
     commands: Sequence[str],
-    callback: Callable[[Update, ContextTypes.DEFAULT_TYPE], Coroutine],
+    callback: PTBHandler,
     permissive: bool = False,
 ):
     callback = auth(callback, permissive=permissive)
@@ -158,7 +149,7 @@ def add_handler[**P, T: BaseHandler](
     if kwargs:
         raise TypeError(f'Unexpected kwargs: {kwargs}')
 
-    callback = None
+    callback: PTBHandler | None = None
     for arg in args:
         if inspect.iscoroutinefunction(arg):
             if callback is not None:
@@ -168,7 +159,6 @@ def add_handler[**P, T: BaseHandler](
     if callback is None:
         raise ValueError(f'No callback in args: {args}')
 
-    callback = cast(Callable[[Update, ContextTypes.DEFAULT_TYPE], Coroutine], callback)
     new_callback = auth(callback, permissive=permissive)
     new_args = tuple(new_callback if arg is callback else arg for arg in args)
     if new_args == args:
