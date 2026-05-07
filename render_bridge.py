@@ -250,7 +250,7 @@ class Bridge(Box):
     def sleep(self, seconds: float) -> Promise[None]:
         return self._promise(asyncio.sleep(seconds))
 
-    async def _reroute_cmd(self, cmd: str) -> Fragment | Raw | None:
+    async def _reroute_cmd(self, cmd: str) -> Fragment[Raw | str] | Raw | str | None:
         if (ctx := get_context()) is None:
             self._cb._error('no context')
             log.error('Bridge: no context for command: %r', cmd)
@@ -260,10 +260,14 @@ class Bridge(Box):
         log.info('Bridge: exec %r returned %r', cmd, r)
         if r is None:
             self._cb._error(f'exec failed for {cmd!r}')
-        elif r:
+            return None
+        if len(r) == 1:
+            text, parse_mode = r[0]
+            # Avoid a repeated escaping.
+            return Raw(text) if parse_mode == 'MarkdownV2' else text
+        if r:
             return Fragment(
                 [
-                    # Avoid a repeated escaping.
                     Raw(text) if parse_mode == 'MarkdownV2' else text
                     for text, parse_mode in r
                 ]
