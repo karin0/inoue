@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 
 from telegram import Message, Bot, MessageEntity, InlineKeyboardMarkup, Update
-from telegram.ext import CommandHandler, ContextTypes
+from telegram.ext import ContextTypes
 from telegram.constants import ChatAction, MessageLimit
 from telegram.error import BadRequest
 
@@ -508,6 +508,8 @@ def keep_chat_action(msg: Message, action: ChatAction):
 async def reroute_cmd(
     update: Update, ctx: ContextTypes.DEFAULT_TYPE, text: str
 ) -> Sequence[tuple[str, str | None]] | None:
+    from gateway import get_command_callback
+
     if (msg := update.effective_message) is None:
         raise RuntimeError('No message')
 
@@ -518,16 +520,19 @@ async def reroute_cmd(
     p = min(x for x in (text.find(' '), text.find('@'), len(text)) if x > 0)
     cmd = text[1:p]
     log.info('reroute: %s: %r', cmd, text)
-    for handlers in ctx.application.handlers.values():
-        for handler in handlers:
-            if isinstance(handler, CommandHandler) and cmd in handler.commands:
-                log.info('reroute: %s: dispatching to %s', cmd, handler)
-                buf = []
-                token = reroute_capture.set((msg.chat_id, msg.message_id, buf))
-                try:
-                    with use_text_override(text):
-                        await handler.callback(update, ctx)
-                finally:
-                    reroute_capture.reset(token)
 
-                return buf
+    callback = get_command_callback(cmd)
+    if callback is None:
+        log.info('reroute: command not found: %s', cmd)
+        return None
+
+    log.info('reroute: %s: dispatching to %s', cmd, callback)
+    buf = []
+    token = reroute_capture.set((msg.chat_id, msg.message_id, buf))
+    try:
+        with use_text_override(text):
+            await callback(update, ctx)
+    finally:
+        reroute_capture.reset(token)
+
+    return buf
