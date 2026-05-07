@@ -12,6 +12,7 @@ from typing import (
     TypeGuard,
     Iterable,
     Protocol,
+    cast,
     overload,
 )
 
@@ -104,12 +105,12 @@ def try_to_value_or_none(val: Any) -> Value | None:
     return fix_to_str(val)
 
 
-class Fragment(Box, Sequence[Value]):
+class Fragment[T: Value](Box, Sequence[T]):
     '''An immutable fragment of values.'''
 
     __slots__ = ('_inner', '_flattened')
 
-    def __init__(self, inner: list[Value]):
+    def __init__(self, inner: list[T]):
         '''Caller must not mutate `inner` after passing it in, unless they have
         called `_flatten()`.'''
         self._inner = inner
@@ -125,28 +126,28 @@ class Fragment(Box, Sequence[Value]):
         return f'Fragment({self._flatten()!r})'
 
     @overload
-    def __getitem__(self, index: int) -> Value: ...
+    def __getitem__(self, index: int) -> T: ...
 
     @overload
-    def __getitem__(self, index: slice) -> list[Value]: ...
+    def __getitem__(self, index: slice) -> list[T]: ...
 
-    def __getitem__(self, index: int | slice) -> Value | list[Value]:
+    def __getitem__(self, index: int | slice) -> T | list[T]:
         return self._flatten()[index]
 
     def __len__(self) -> int:
         return len(self._flatten())
 
-    def __iter__(self) -> Iterator[Value]:
+    def __iter__(self) -> Iterator[T]:
         return iter(self._flatten())
 
-    def _flatten_inner(self) -> Iterable[Value]:
+    def _flatten_inner(self) -> Iterable[T]:
         for x in self._inner:
             if isinstance(x, Fragment):
                 yield from x._flatten_inner()
             else:
                 yield x
 
-    def _flatten_copy(self) -> list[Value]:
+    def _flatten_copy(self) -> list[T]:
         # Join all consecutive strings.
         new = []
         parts = []
@@ -165,15 +166,16 @@ class Fragment(Box, Sequence[Value]):
 
         return new
 
-    def _flatten(self) -> list[Value]:
+    def _flatten(self) -> list[T]:
         if not self._flattened:
             self._inner = self._flatten_copy()
             self._flattened = True
         return self._inner
 
-    def _trim(self, keep_newline: bool = True) -> Value:
+    def _trim(self, keep_newline: bool = True) -> T | str | Fragment[T | str]:
         '''Similar to `trim_output`.'''
-        if not (items := self._flatten_copy()):
+        items = cast(list[T | str], self._flatten_copy())
+        if not items:
             return ''
 
         start = 0
