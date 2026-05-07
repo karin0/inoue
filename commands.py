@@ -111,13 +111,11 @@ async def handle_def(msg: Message, arg: MessageArg, bot: Bot):
         db.set_command(name, template)
         await set_commands(bot)
         await reply_text(msg, *pre_block(f'/{name} \u2192 {template}'))
+    elif db.del_command(name):
+        await set_commands(bot)
+        await reply_text(msg, f'Deleted /{name}')
     else:
-        if db.get_command(name):
-            db.set_command(name, '')
-            await set_commands(bot)
-            await reply_text(msg, f'Deleted /{name}')
-        else:
-            await reply_text(msg, f'/{name} not found')
+        await reply_text(msg, f'/{name} not found')
 
 
 async def set_commands(bot: Bot):
