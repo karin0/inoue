@@ -20,12 +20,11 @@ from util import (
     pre_block_raw,
     reply_text,
     use_text_override,
-    ME,
     CHAN_ID,
     TRUSTED_IDS,
 )
 from db import db
-from context import Sender, get_sender
+from context import Sender, ME, get_sender
 from motto import greeting, hitokoto
 from run import handle_cmd
 from dispatch import (
