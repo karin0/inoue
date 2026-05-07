@@ -2,6 +2,9 @@ import os
 from typing import NamedTuple
 from contextvars import ContextVar
 
+from telegram import Message, Update
+from telegram.ext import ContextTypes
+
 ME = os.environ['ME']
 ME_LOWER = ME.lower()
 
@@ -15,11 +18,28 @@ class Sender(NamedTuple):
         return f'{self.name} ({self.id}{", guest" if self.is_guest else ""})'
 
 
-current_sender: ContextVar[Sender | None] = ContextVar('current_sender', default=None)
+class Context(NamedTuple):
+    update: Update
+    ptb: ContextTypes.DEFAULT_TYPE
+    msg: Message | None
+    sender: Sender | None
+
+
+current_context: ContextVar[Context | None] = ContextVar(
+    'current_context', default=None
+)
+
+get_context = current_context.get
+
+
+def get_ctx_msg() -> Message | None:
+    if ctx := current_context.get():
+        return ctx.msg
 
 
 def get_sender() -> Sender | None:
-    return current_sender.get()
+    if ctx := current_context.get():
+        return ctx.sender
 
 
 def is_sender_guest() -> bool:

@@ -16,7 +16,7 @@ from telegram.constants import ChatAction, MessageLimit
 from telegram.error import BadRequest
 
 from db import db
-from context import *
+from context import Context, Sender, ME_LOWER, get_ctx_msg, current_context
 
 
 def list_env(key: str, sep: str = ',') -> tuple[str, ...]:
@@ -47,7 +47,6 @@ LOCK_FILE = ME_LOWER + '.pid'
 
 MAX_TEXT_LENGTH = MessageLimit.MAX_TEXT_LENGTH
 
-msg: ContextVar[Message | None] = ContextVar('msg')
 text_override: ContextVar[str | None] = ContextVar('text_override', default=None)
 bot: Bot | None = None
 
@@ -63,8 +62,9 @@ class NotifyHandler(logging.Handler):
             return
         text = truncate_text(self.format(record))
         # Fetch the context before yielding to async code
-        m = msg.get(None)
-        asyncio.create_task(do_notify(text, message=m, revocable=self._revocable))
+        asyncio.create_task(
+            do_notify(text, message=get_ctx_msg(), revocable=self._revocable)
+        )
 
     @contextmanager
     def revocable(self):
@@ -130,21 +130,22 @@ def init_util(b: Bot):
 
 
 @contextmanager
-def use_msg(m: Message | None, sender: Sender | None):
+def use_context(
+    update: Update,
+    ctx: ContextTypes.DEFAULT_TYPE,
+    m: Message | None,
+    sender: Sender | None,
+):
     # Only messages from USER_ID are allowed to be set in the context, since it's
     # used for `do_notify` to notify system events.
     if m and m.chat_id != USER_ID:
         m = None
 
-    token = msg.set(m)
-    if sender is not None:
-        token_sender = current_sender.set(sender)
+    token = current_context.set(Context(update, ctx, m, sender))
     try:
         yield m
     finally:
-        msg.reset(token)
-        if sender is not None:
-            current_sender.reset(token_sender)  # type: ignore
+        current_context.reset(token)
 
 
 @contextmanager
@@ -200,7 +201,7 @@ async def do_notify(
         return
     notify_moments.append(now)
 
-    if m := message or msg.get(None):
+    if m := message or get_ctx_msg():
         try:
             if revocable:
                 return await reply_text(m, text, parse_mode, **kwargs)
@@ -224,9 +225,6 @@ async def do_notify(
         except Exception:
             with notify.suppress():
                 log.exception('do_notify: send_message failed')
-
-
-type MessageSource = Message | Update | None
 
 
 def get_msg(update: Update) -> Message:
@@ -299,7 +297,9 @@ async def try_send_text[**P, R](
         raise
 
 
-capture_reply: dict[tuple[int, int], list[tuple[str, str | None]]] = {}
+reroute_capture: ContextVar[tuple[int, int, list[tuple[str, str | None]]] | None] = (
+    ContextVar('reroute_capture', default=None)
+)
 
 
 # Note: the return value could be `None` if `allow_not_modified` is set.
@@ -334,9 +334,13 @@ async def reply_text(
             log.debug('Sending new response: %s -> %s', key, val)
         return resp
 
-    if (buf := capture_reply.get((m.chat_id, m.message_id))) is not None:
-        log.info('reply_text: capture_reply: %s', key)
-        buf.append((text, parse_mode))
+    if (
+        (reroute := reroute_capture.get()) is not None
+        and reroute[0] == m.chat_id
+        and reroute[1] == m.message_id
+    ):
+        log.info('reply_text: reroute_capture: %s', key)
+        reroute[2].append((text, parse_mode))
 
         # Do not try to edit the reply, or we will mess up the response of the
         # capturing context (`/render`).
@@ -501,41 +505,29 @@ def keep_chat_action(msg: Message, action: ChatAction):
         task.cancel()
 
 
-in_dispatch_cmd: ContextVar[bool] = ContextVar('in_dispatch_cmd', default=False)
-
-
-async def dispatch_cmd(
+async def reroute_cmd(
     update: Update, ctx: ContextTypes.DEFAULT_TYPE, text: str
 ) -> Sequence[tuple[str, str | None]] | None:
     if (msg := update.effective_message) is None:
         raise RuntimeError('No message')
 
-    if in_dispatch_cmd.get():
-        log.warning('dispatch_cmd: already in dispatch_cmd: %s', text)
+    if reroute_capture.get():
+        log.warning('reroute: already in reroute_cmd: %s', text)
         return None
 
     p = min(x for x in (text.find(' '), text.find('@'), len(text)) if x > 0)
     cmd = text[1:p]
-    log.info('dispatch_cmd: %s: %r', cmd, text)
+    log.info('reroute: %s: %r', cmd, text)
     for handlers in ctx.application.handlers.values():
         for handler in handlers:
             if isinstance(handler, CommandHandler) and cmd in handler.commands:
-                log.info('dispatch_cmd: %s: dispatching to %s', cmd, handler)
-                key = (msg.chat_id, msg.message_id)
-                if new := ((buf := capture_reply.get(key)) is None):
-                    capture_reply[key] = buf = []
-                else:
-                    log.info('dispatch_cmd: %s: already capturing: %s', cmd, key)
-                token = in_dispatch_cmd.set(True)
+                log.info('reroute: %s: dispatching to %s', cmd, handler)
+                buf = []
+                token = reroute_capture.set((msg.chat_id, msg.message_id, buf))
                 try:
                     with use_text_override(text):
                         await handler.callback(update, ctx)
                 finally:
-                    in_dispatch_cmd.reset(token)
-                    if new:
-                        val = capture_reply.pop(key)
-                        assert val is buf
+                    reroute_capture.reset(token)
 
-                # Copy the list to avoid conflicts with outer capture contexts.
-                # We disallow re-entrance for now, but just in case.
-                return tuple(buf)
+                return buf
