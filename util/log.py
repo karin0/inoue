@@ -93,18 +93,13 @@ notify_moments = deque(maxlen=NOTIFY_LIMIT_BURST)
 notify_buf = []
 
 
-async def _flush_notify_buf():
+def flush_notify_buf():
     if n := len(notify_buf):
         text = '\n'.join(notify_buf)
         text = truncate_text(text)
         notify_buf.clear()
         log.info('flushing %s buffered notifications (%s chars)', n, len(text))
-        await do_notify(text)
-
-
-def flush_notify_buf():
-    if notify_buf:
-        asyncio.create_task(_flush_notify_buf())
+        asyncio.create_task(do_notify(text))
 
 
 async def do_notify(
