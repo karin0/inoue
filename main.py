@@ -35,14 +35,13 @@ from util import (
     IGNORE_CHAT_IDS,
     DB_FILE,
     LOCK_FILE,
-    ME,
     init_util,
-    use_msg,
+    use_context,
     get_msg,
     do_notify,
 )
 from db import db
-from context import Sender, get_sender
+from context import ME, Sender, get_sender
 from dispatch import handle_callback_query, iter_commands
 from inoue import render_receipt
 from rg import handle_rg
@@ -148,7 +147,7 @@ def auth(
                 await reply_usage(msg, sender)
             return
 
-        with use_msg(msg, sender):
+        with use_context(update, ctx, msg, sender):
             try:
                 return await func(update, ctx)
             except Exception as e:
@@ -163,7 +162,7 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     sender = get_sender()
     is_guest = bool(sender and sender.is_guest)
     if not is_guest and (post := update.edited_channel_post or update.channel_post):
-        return await handle_render_doc(update, ctx, post)
+        return await handle_render_doc(update, post)
 
     if not (msg := get_msg(update)):
         return

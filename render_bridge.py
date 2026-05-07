@@ -23,7 +23,8 @@ from collections.abc import MutableMapping
 
 from render_core import Box, Value, Fragment, to_str
 
-from util import log, escape, html_escape, cleanup_text, cleanup_text_md
+from context import get_context
+from util import log, escape, html_escape, cleanup_text, cleanup_text_md, reroute_cmd
 from motto import hitokoto
 from segments import (
     BaseElement,
@@ -199,9 +200,6 @@ def trusted[**P, R](
 
 class Callbacks(Protocol):
     async def _update_text(self, seg: Segment) -> Value | None: ...
-    async def _dispatch_cmd(
-        self, cmd: str
-    ) -> Sequence[tuple[str, str | None]] | None: ...
     def _error(self, msg: str) -> Any: ...
 
 
@@ -252,8 +250,13 @@ class Bridge(Box):
     def sleep(self, seconds: float) -> Promise[None]:
         return self._promise(asyncio.sleep(seconds))
 
-    async def _dispatch_cmd(self, cmd: str) -> Fragment | Raw | None:
-        r = await self._cb._dispatch_cmd(cmd)
+    async def _reroute_cmd(self, cmd: str) -> Fragment | Raw | None:
+        if (ctx := get_context()) is None:
+            self._cb._error('no context')
+            log.error('Bridge: no context for command: %r', cmd)
+            return None
+
+        r = await reroute_cmd(ctx.update, ctx.ptb, cmd)
         log.info('Bridge: exec %r returned %r', cmd, r)
         if r is None:
             self._cb._error(f'exec failed for {cmd!r}')
@@ -272,7 +275,7 @@ class Bridge(Box):
         cmd = to_str(cmd)
         if not cmd.startswith('/'):
             raise ValueError(f'command must start with /, got {cmd!r}')
-        return self._promise(self._dispatch_cmd(cmd))
+        return self._promise(self._reroute_cmd(cmd))
 
     @public
     def dbg(self) -> str:
