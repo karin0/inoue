@@ -23,8 +23,15 @@ from collections.abc import MutableMapping
 
 from render_core import Box, Value, Fragment, to_str
 
-from context import get_context
-from util import log, escape, html_escape, cleanup_text, cleanup_text_md, reroute_cmd
+from util import (
+    log,
+    get_context,
+    escape,
+    html_escape,
+    cleanup_text,
+    cleanup_text_md,
+    reroute_cmd,
+)
 from motto import hitokoto
 from segments import (
     BaseElement,

@@ -12,10 +12,8 @@ from telegram.constants import ChatID
 
 from util.log import log, trace, notify
 from util.text import shorten
-from util.ctx import use_context
+from util.ctx import use_context, Sender
 from util.env import USER_ID, CHAN_ID, GROUP_ID, GUEST_USER_IDS, IGNORE_CHAT_IDS
-
-from context import Sender
 
 if TYPE_CHECKING:
     from dispatch import PTBHandler

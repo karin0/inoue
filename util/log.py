@@ -8,10 +8,9 @@ from contextlib import contextmanager
 
 from telegram import Message
 
-from context import ME_LOWER, get_ctx_msg
-
+from .ctx import get_ctx_msg
 from .text import truncate_text
-from .env import USER_ID, GROUP_ID, LOG_THREAD_ID
+from .env import ME_LOWER, USER_ID, GROUP_ID, LOG_THREAD_ID
 
 
 class NotifyHandler(logging.Handler):

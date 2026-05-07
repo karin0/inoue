@@ -31,9 +31,8 @@ from telegram import (
 )
 from telegram.constants import ChatAction
 
-from context import get_sender
 from dispatch import MessageArg, command
-from util import log, is_debug, reply_text, keep_chat_action
+from util import log, is_debug, reply_text, keep_chat_action, get_sender
 from render_context import LRUDict
 from ffmpeg import (
     encode_voice,

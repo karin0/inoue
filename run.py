@@ -10,10 +10,9 @@ from typing import Awaitable, Callable, TypeVar
 from telegram import Message
 from telegram.constants import ChatAction
 
-from util import log, pre_block, reply_text, MAX_TEXT_LENGTH
+from util import log, pre_block, reply_text, ME, MAX_TEXT_LENGTH
 from dispatch import command, MessageArg
 from misc import reply_file
-from context import ME
 
 UPDATE_CWD = os.environ['UPDATE_CWD']
 

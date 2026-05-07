@@ -8,7 +8,6 @@ from telegram.constants import ChatAction
 
 from dispatch import command
 from ffmpeg import encode_voice
-from context import is_sender_guest
 from ytdlp import run_ytdlp, extract_url, Output
 from util import (
     log,
@@ -16,6 +15,7 @@ from util import (
     escape,
     reply_text,
     keep_chat_action,
+    is_sender_guest,
 )
 
 VOICE_ASSETS_DIR = 'assets/voice'

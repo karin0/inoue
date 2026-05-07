@@ -23,6 +23,7 @@ from db import db
 from util import (
     USER_ID,
     log,
+    get_sender,
     list_env,
     get_msg_url,
     reply_text,
@@ -45,7 +46,6 @@ from segments import (
     get_renderer,
     render_segment,
 )
-from context import get_sender
 from render_core import Engine, Value, to_str
 from render_bridge import Bridge, to_segment
 from dispatch import MessageArg, CallbackData, callback_query, command

@@ -22,19 +22,20 @@ from util import (
     notify,
     pre_block,
     reply_text,
+    ME,
     USER_ID,
     CHAN_ID,
     GROUP_ID,
     TODO_ID,
     DB_FILE,
     LOCK_FILE,
+    get_sender,
     init_util,
     get_msg,
     do_notify,
 )
 from db import db
 from gateway import add_handler, add_command_handler
-from context import ME, get_sender
 from dispatch import handle_callback_query, iter_commands
 from inoue import render_receipt
 from rg import handle_rg

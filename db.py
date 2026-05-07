@@ -3,7 +3,7 @@ import logging
 from typing import Iterable, Sequence, cast
 from sqlite3 import connect, Connection
 
-from context import ME_LOWER
+from util.env import ME_LOWER
 
 log = logging.getLogger(ME_LOWER + '.db')
 

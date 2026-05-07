@@ -2,7 +2,13 @@ import os
 
 from telegram.constants import MessageLimit
 
-from context import ME_LOWER
+ME = os.environ['ME']
+ME_LOWER = ME.lower()
+
+USER_ID = int(os.environ['USER_ID'])
+CHAN_ID = int(os.environ['CHAN_ID'])
+GROUP_ID = int(os.environ['GROUP_ID'])
+TODO_ID = int(os.environ['TODO_ID'])
 
 
 def list_env(key: str, sep: str = ',') -> tuple[str, ...]:
@@ -14,11 +20,6 @@ def list_env(key: str, sep: str = ',') -> tuple[str, ...]:
 def load_ids(key: str) -> tuple[int, ...]:
     return tuple(int(x) for x in list_env(key))
 
-
-USER_ID = int(os.environ['USER_ID'])
-CHAN_ID = int(os.environ['CHAN_ID'])
-GROUP_ID = int(os.environ['GROUP_ID'])
-TODO_ID = int(os.environ['TODO_ID'])
 
 GUEST_USER_IDS = frozenset(load_ids('GUEST_USER_IDS'))
 IGNORE_CHAT_IDS = frozenset(load_ids('IGNORE_CHAT_IDS'))
