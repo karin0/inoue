@@ -4,6 +4,7 @@ import time
 import base64
 import asyncio
 import inspect
+import weakref
 import subprocess
 
 from functools import wraps
@@ -50,14 +51,6 @@ from segments import (
     Spoiler,
 )
 
-
-async def _run[T](coro: Awaitable[T]) -> T | None:
-    try:
-        return await coro
-    except Exception:
-        log.exception('Promise: coroutine failed')
-
-
 type Then[**P, U] = Callable[P, U | Coroutine[Any, Any, U]]
 
 
@@ -85,16 +78,27 @@ type PromiseResult = Value | list[Value] | tuple[Value, ...] | dict[str, Value] 
 
 
 class Promise[T: PromiseResult](Box):
-    __slots__ = ('_task', '_factory')
+    __slots__ = ('_task', '_factory', '_token')
 
     def __init__(
         self,
         coro: Awaitable[T],
-        factory: Callable[[Awaitable[T]], 'Promise[T]'] | None = None,
+        factory: Callable[[Awaitable[T]], 'Promise[T]'],
+        token: object,
     ):
-        super().__init__()
-        self._task = asyncio.create_task(_run(coro))
+        self._task = asyncio.create_task(self._run(coro))
         self._factory = factory
+        self._token = token
+
+    async def _run(self, coro: Awaitable[T]) -> T | None:
+        log.debug('Promise: starting coroutine %r', coro)
+        try:
+            return await coro
+        except Exception:
+            log.exception('Promise: coroutine failed')
+        finally:
+            log.debug('Promise: resolved %r', coro)
+            del self._token
 
     def then(self, *callbacks: Then) -> Promise:
         # `callback` is expected to be a `SubDoc` with a `scope`, so we can call
@@ -103,7 +107,7 @@ class Promise[T: PromiseResult](Box):
             return self
         if not all(callable(f) for f in callbacks):
             raise TypeError(f'Promise.then: callback must be callable, got {callbacks}')
-        return (self._factory or Promise)(_chained(self._task, callbacks))
+        return self._factory(_chained(self._task, callbacks))
 
     def __repr__(self) -> str:
         return f'<Promise task={self._task!r}>'
@@ -211,7 +215,7 @@ class Callbacks(Protocol):
 
 
 class Bridge(Box):
-    __slots__ = ('_ctx', '_trusted', '_cb', '_promise_cap')
+    __slots__ = ('_ctx', '_trusted', '_cb_ref', '_promise_cap')
 
     def __init__(
         self, ctx: MutableMapping[str, Value], trusted: int | None, cb: Callbacks
@@ -219,11 +223,23 @@ class Bridge(Box):
         super().__init__()
         self._ctx = ctx
         self._trusted = trusted
-        self._cb = cb
+        self._cb_ref = weakref.ref(cb, self._finalize)
         self._promise_cap = 5 if trusted is None else 10
 
     def __repr__(self) -> str:
         return f'Bridge({self._trusted})'
+
+    @property
+    def _cb(self) -> Callbacks:
+        if (r := self._cb_ref()) is None:
+            raise RuntimeError('Bridge: context gone')
+        return r
+
+    def _finalize(self, ref):
+        # Break the reference cycle, since the Context can hold references to
+        # `Bridge` and `SubDoc` (which holds `Engine`).
+        self._ctx.clear()
+        log.debug('Bridge: destroyed')
 
     def _get_func(self, name: str) -> Callable[..., Value | None] | None:
         if name.startswith('_') or name.endswith('_'):
@@ -242,7 +258,10 @@ class Bridge(Box):
             if self._promise_cap <= 0:
                 raise RuntimeError('Promise capacity exceeded')
             self._promise_cap -= 1
-        return Promise(coro, self._promise)
+
+        # Let each promise hold a reference to `self._cb` to keep it alive until
+        # all promises are resolved.
+        return Promise(coro, self._promise, self._cb)
 
     @trusted
     def communicate(self, cmd, input='') -> Promise[dict[str, Value]]:
@@ -250,7 +269,7 @@ class Bridge(Box):
 
     @public
     def edit_message(self, text) -> Promise:
-        log.debug('Bridge: edit_message: %r', text)
+        log.debug('Bridge: edit_message: %r %r', text, self._cb)
         return self._promise(self._cb._update_text(to_segment(text)))
 
     @public

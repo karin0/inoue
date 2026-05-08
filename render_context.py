@@ -175,7 +175,8 @@ class OverriddenDict(UserDict[str, Value], Context):
     # the underlying dict by their *values*, but are placed after those touched
     # by `=` and `?=` in the natural order of *keys*.
     # However, the existing `overrides` keys are frozen and can NEVER be modified
-    # or removed, even by `:=` itself.
+    # or removed, even by `:=` itself. (Unless `clear()` is called, which is not
+    # available via any operator.)
     def setitem_with(self, key: str, val: Value, op: str) -> None:
         self.overrides.setdefault(key, val)
 
@@ -189,8 +190,6 @@ class OverriddenDict(UserDict[str, Value], Context):
 
     def __iter__(self):
         # Keys from the underlying dict are yielded first, in their natural order.
-        # Technically the side effects of this method shouldn't affect our behavior,
-        # since existing overrides can never be removed or modified.
         return iter(self._compact())
 
     def __len__(self) -> int:
@@ -198,3 +197,7 @@ class OverriddenDict(UserDict[str, Value], Context):
 
     def items(self) -> ItemsView[str, Value]:
         return self._compact().items()
+
+    def clear(self) -> None:
+        self.data.clear()
+        self.overrides.clear()

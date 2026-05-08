@@ -2,6 +2,7 @@ import os
 import re
 import time
 import asyncio
+import weakref
 from itertools import chain, islice
 from typing import Container, Iterable, Mapping, Callable, Awaitable, cast
 
@@ -277,6 +278,7 @@ class RenderContext:
         '_trusted',
         'data',
         'engine',
+        '__weakref__',
     )
 
     def __init__(
@@ -330,7 +332,9 @@ class RenderContext:
         # so `os` is safe.
         self.data['os'] = self.data['sys'] = bridge
 
-        self.engine = Engine(self.data, self._doc_loader, funcs=bridge._get_func)
+        this = weakref.ref(self)
+        doc_loader = lambda name: this()._doc_loader(name)  # type: ignore
+        self.engine = Engine(self.data, doc_loader, funcs=bridge._get_func)
 
     def _error(self, msg: str) -> None:
         self.engine.errors.append(msg)
@@ -357,9 +361,9 @@ class RenderContext:
 
     def render_text(self, text: str) -> Segment:
         val = self.engine.render_value(text)
+        self._render_time = int(time.time())
         log.debug('render_text: %r', val)
         result = to_segment(val)
-        self._render_time = int(time.time())
         log.info(
             'rendered %d -> %s (%s)', len(text), type(result).__name__, self._doc_refs
         )
@@ -783,7 +787,7 @@ def handle_render_callback(update: Update, callback: CallbackQuery, data: Callba
                 raise
             r = None
 
-        if (query is not None) and (answer := get_env(ctx.data, 'answer')):
+        if (query is not None) and (answer := get_env(inner, 'answer')):
             q = query
             query = None
 
@@ -791,7 +795,7 @@ def handle_render_callback(update: Update, callback: CallbackQuery, data: Callba
             if len(answer) > CallbackQuery.MAX_ANSWER_TEXT_LENGTH:
                 answer = answer[: CallbackQuery.MAX_ANSWER_TEXT_LENGTH - 1] + '…'
 
-            show_alert = get_env_flag(ctx.data, 'answer_alert')
+            show_alert = get_env_flag(inner, 'answer_alert')
             log.info('handle_render_callback: answer: %s, %s', answer, show_alert)
             await q.answer(answer, show_alert=show_alert)
 
@@ -805,11 +809,12 @@ def handle_render_callback(update: Update, callback: CallbackQuery, data: Callba
         path=path,
         update_callback=edit_callback_message,
     )
+    inner = ctx.data
     if clicked_button is not None:
-        ctx.data[BUTTON_KEY] = clicked_button
+        inner[BUTTON_KEY] = clicked_button
     if memory is not None:
-        ctx.data[MEMORY_KEY] = decode_value(memory)
-    ctx.data['_state'] = data
+        inner[MEMORY_KEY] = decode_value(memory)
+    inner['_state'] = data
 
     return ctx.render(text)
 
