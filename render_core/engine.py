@@ -644,7 +644,7 @@ class Engine(Interpreter):
 
     def _error(self, msg: str):
         ctx = self._tree_ctx()
-        log.debug('Error: %s: %s', msg, ctx)
+        log.info('Error: %s: %s', msg, ctx)
         if is_tracing:
             trace('%s', ''.join(traceback.format_stack()))
 
@@ -1284,8 +1284,7 @@ class Engine(Interpreter):
             raise
         except Exception as e:
             self._error(f'evaluate: {expr!r}: {type(e).__name__}: {e}')
-            if is_tracing:
-                trace('%s', traceback.format_exc())
+            log.exception('evaluate: %s', expr)
             return ''
 
         if isinstance(val, tuple):
