@@ -1,5 +1,6 @@
 import os
 import ast
+import weakref
 import logging
 import functools
 
@@ -270,7 +271,7 @@ class ScopedContext[T]:
         self._scopes: list[str] = ['']
         self._prefixes = {}
         self._data = ctx
-        self._cb = callbacks
+        self._cb = weakref.proxy(callbacks, self._finalize)
         self._injected: list[T] = []
 
         # Pass empty dicts to prevent the internal copy. We have taken care of
@@ -278,13 +279,20 @@ class ScopedContext[T]:
         eval = SimpleEval(names=EMPTY, functions=EMPTY)
         self._eval_str = eval.eval
         self._eval = eval._eval
-        assert eval.nodes
-        eval.nodes[ast.Name] = self._eval_name
-        eval.nodes[ast.Call] = self._eval_call
-        eval.nodes[ast.Subscript] = self._eval_subscript
-        eval.nodes[ast.Compare] = self._eval_compare
-        eval.nodes[ast.AugAssign] = self._eval_augassign
-        eval.nodes[ast.Yield] = self._eval_yield
+        nodes = eval.nodes
+        assert nodes
+        nodes[ast.Name] = self._eval_name
+        nodes[ast.Call] = self._eval_call
+        nodes[ast.Subscript] = self._eval_subscript
+        nodes[ast.Compare] = self._eval_compare
+        nodes[ast.AugAssign] = self._eval_augassign
+        nodes[ast.Yield] = self._eval_yield
+
+    def _finalize(self, ref):
+        # Break the reference cycle for instant GC.
+        nodes = self._eval_str.__self__.nodes
+        assert nodes
+        nodes.clear()
 
     def _get_func(self, name: str) -> Callable | None:
         if (val := self._cb._get_func(name)) is not None:
