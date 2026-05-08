@@ -30,6 +30,7 @@ class NotifyHandler(logging.Handler):
 
     @contextmanager
     def revocable(self):
+        '''Note: this does not use ContextVar. Do not hold this across await.'''
         old = self._revocable
         self._revocable = True
         try:
@@ -39,6 +40,7 @@ class NotifyHandler(logging.Handler):
 
     @contextmanager
     def suppress(self):
+        '''Note: this does not use ContextVar. Do not hold this across await.'''
         old = self._suppressed
         self._suppressed = True
         try:
@@ -61,6 +63,8 @@ def _get_logger(name):
     else:
         fmt = '%(asctime)s [%(levelname)s] %(message)s'
 
+    fmt = logging.Formatter(fmt)
+
     logger = logging.getLogger(name)
     logger.setLevel(level)
     logger.handlers.clear()
@@ -68,7 +72,7 @@ def _get_logger(name):
 
     h = logging.StreamHandler()
     h.setLevel(level)
-    h.setFormatter(logging.Formatter(fmt))
+    h.setFormatter(fmt)
     logger.addHandler(h)
 
     logger.addHandler(notify)
@@ -76,7 +80,18 @@ def _get_logger(name):
     if level == logging.DEBUG:
         rc_log = logging.getLogger('render_core')
         rc_log.setLevel(logging.DEBUG)
-        rc_log.addHandler(logging.FileHandler('render_core.log'))
+        rc_log.propagate = False
+        rc_log.handlers.clear()
+
+        h = logging.FileHandler('render_core.log')
+        h.setLevel(logging.DEBUG)
+        h.setFormatter(fmt)
+        rc_log.addHandler(h)
+
+        h = logging.StreamHandler()
+        h.setLevel(logging.INFO)
+        h.setFormatter(fmt)
+        rc_log.addHandler(h)
 
     return logger
 
