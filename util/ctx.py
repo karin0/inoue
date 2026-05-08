@@ -92,5 +92,5 @@ def get_arg(m: Message) -> str:
     if not s.startswith('/'):
         return s.strip()
 
-    p = s.find(' ')
-    return s[p + 1 :].strip() if p >= 0 else ''
+    p = min(x for x in (s.find(' '), s.find('\n'), len(s)) if x > 0)
+    return s[p + 1 :].strip()

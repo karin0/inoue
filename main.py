@@ -33,6 +33,7 @@ from util import (
     init_util,
     get_msg,
     do_notify,
+    try_reroute_cmd,
 )
 from db import db
 from gateway import add_handler, add_command_handler
@@ -70,6 +71,12 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         and origin.chat.id == CHAN_ID
     ):
         return await handle_render_group(msg, origin.message_id)
+
+    # Reroute if the text starts with a command.
+    # This allows commands to be sent as any styled text (pre/quote), rather than
+    # a canonical BOT_COMMAND entity.
+    if (fut := try_reroute_cmd(update, ctx, msg)) is not None:
+        return await fut
 
     if msg.chat.type != ChatType.PRIVATE:
         return
