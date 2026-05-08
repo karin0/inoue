@@ -3,13 +3,26 @@ import re
 import time
 import asyncio
 import weakref
+from io import BytesIO
 from itertools import chain, islice
-from typing import Container, Iterable, Mapping, Callable, Awaitable, cast
+from typing import (
+    Container,
+    Iterable,
+    Mapping,
+    Callable,
+    Awaitable,
+    BinaryIO,
+    Protocol,
+    Type,
+    cast,
+)
 
 from telegram import (
     CallbackQuery,
     InlineQuery,
     InlineQueryResultArticle,
+    InputMediaPhoto,
+    InputMediaDocument,
     InputTextMessageContent,
     Update,
     Message,
@@ -17,8 +30,7 @@ from telegram import (
     InlineKeyboardButton,
 )
 from telegram.ext import ContextTypes
-from telegram.error import BadRequest
-from telegram.constants import ReactionEmoji
+from telegram.constants import MessageLimit, ReactionEmoji
 
 from db import db
 from util import (
@@ -28,7 +40,7 @@ from util import (
     list_env,
     get_msg_url,
     reply_text,
-    try_send_text,
+    try_send_text_or_not_modified,
     shorten,
     truncate_text,
     escape,
@@ -48,7 +60,7 @@ from segments import (
     render_segment,
 )
 from render_core import Engine, Value, to_str
-from render_bridge import Bridge, to_segment
+from render_bridge import Bridge, LocalPath, to_segment
 from dispatch import MessageArg, CallbackData, callback_query, command
 from render_context import OverriddenDict, encode_value, decode_value
 
@@ -276,6 +288,7 @@ class RenderContext:
         '_doc_refs',
         '_render_time',
         '_trusted',
+        '_as_caption',
         'data',
         'engine',
         '__weakref__',
@@ -286,11 +299,13 @@ class RenderContext:
         update: Update,
         overrides: dict[str, Value] | None = None,
         markup_state: MarkupState | None = None,
+        as_caption: bool = False,
         doc_id: int | None = None,
         path: str | None = None,
         update_callback: UpdateCallback | None = None,
     ):
         self._markup_state = markup_state
+        self._as_caption = as_caption
         self.set_path(path)
         self.set_update_callback(update_callback)
 
@@ -434,7 +449,12 @@ class RenderContext:
         func = get_renderer(parse_mode)
         out = []
 
-        fmt = Formatter()
+        if self._as_caption or has_media(ctx):
+            limit = MessageLimit.CAPTION_LENGTH
+        else:
+            limit = MessageLimit.MAX_TEXT_LENGTH
+
+        fmt = Formatter(limit)
         for part in self._format_seg(fmt, seg, state):
             log.debug('_format_response: part: %r', part)
             func(part, out)
@@ -581,13 +601,67 @@ def handle_render(update: Update, msg: Message, arg: MessageArg):
         db['r-' + path] = text
         doc_id = None
 
-    def edit_reply_message(spec: MessageSpec):
-        return reply_text(msg, *spec, allow_not_modified=True)
-
-    ctx = RenderContext(
-        update, doc_id=doc_id, path=path, update_callback=edit_reply_message
-    )
+    ctx = RenderContext(update, doc_id=doc_id, path=path)
+    ctx.set_update_callback(create_reply_callback(msg, ctx.data))
     return ctx.render(text)
+
+
+class ReplyMediaFunc(Protocol):
+    def __call__(
+        self,
+        msg: Message,
+        content: BinaryIO,
+        /,
+        *,
+        caption: str | None,
+        parse_mode: str | None,
+        reply_markup: InlineKeyboardMarkup | None,
+    ) -> Awaitable[Message]: ...
+
+
+type AllowedMedia = InputMediaPhoto | InputMediaDocument
+
+
+def _extract_media(
+    val: Value, typ: Type[AllowedMedia], reply_func: ReplyMediaFunc
+) -> tuple[BinaryIO, Type[AllowedMedia], ReplyMediaFunc] | None:
+    if isinstance(val, LocalPath):
+        content = open(val.path, 'rb')
+    elif isinstance(val, bytes):
+        content = BytesIO(val)
+    else:
+        return None
+    log.info('Opened %s: %s', typ.__name__, repr(val)[:50])
+    return content, typ, reply_func
+
+
+def open_media(data: Mapping[str, Value]):
+    if photo := get_env(data, 'photo'):
+        r = _extract_media(photo, InputMediaPhoto, Message.reply_photo)
+        if r is not None:
+            return r
+
+    if document := get_env(data, 'document'):
+        r = _extract_media(document, InputMediaDocument, Message.reply_document)
+        if r is not None:
+            return r
+
+
+def has_media(data: Mapping[str, Value]) -> bool:
+    return bool(get_env(data, 'photo') or get_env(data, 'document'))
+
+
+def create_reply_callback(msg: Message, data: Mapping[str, Value]) -> UpdateCallback:
+    async def do_reply(spec: MessageSpec):
+        if (media := open_media(data)) is not None:
+            content, _, reply_func = media
+            with content as fp:
+                return await reply_func(
+                    msg, fp, caption=spec[0], parse_mode=spec[1], reply_markup=spec[2]
+                )
+        return await reply_text(msg, *spec, allow_not_modified=True)
+
+    return do_reply
 
 
 DOC_SEARCH_PATH = list_env('DOC_SEARCH_PATH', ':')
@@ -648,11 +722,8 @@ async def handle_render_group(msg: Message, origin_id: int):
         ctx, doc_name, result = cache
         log.info('Doc in group: %s -> %s %s', msg.id, origin_id, doc_name)
 
-        async def edit_reply_message(spec: MessageSpec):
-            return await reply_text(msg, *spec, allow_not_modified=True)
-
         ctx.set_path(':' + doc_name)
-        ctx.set_update_callback(edit_reply_message)
+        ctx.set_update_callback(create_reply_callback(msg, ctx.data))
         await ctx.to_response(result)
     else:
         log.info('No preview cache in group: %s -> %s', msg.id, origin_id)
@@ -769,37 +840,8 @@ def handle_render_callback(update: Update, callback: CallbackQuery, data: Callba
         case _:
             raise ValueError('bad render callback: ' + data)
 
-    query: CallbackQuery | None = callback
-
-    async def edit_callback_message(spec: MessageSpec):
-        nonlocal query
-
-        text, parse_mode, markup = spec
-        try:
-            r = await try_send_text(
-                callback.edit_message_text,
-                text,
-                parse_mode=parse_mode,
-                reply_markup=markup,
-            )
-        except BadRequest as e:
-            if 'Message is not modified' not in str(e):
-                raise
-            r = None
-
-        if (query is not None) and (answer := get_env(inner, 'answer')):
-            q = query
-            query = None
-
-            answer = render_segment(to_segment(answer))
-            if len(answer) > CallbackQuery.MAX_ANSWER_TEXT_LENGTH:
-                answer = answer[: CallbackQuery.MAX_ANSWER_TEXT_LENGTH - 1] + '…'
-
-            show_alert = get_env_flag(inner, 'answer_alert')
-            log.info('handle_render_callback: answer: %s, %s', answer, show_alert)
-            await q.answer(answer, show_alert=show_alert)
-
-        return r
+    msg = callback.message
+    as_caption = bool(msg is not None and getattr(msg, 'caption', None))
 
     ctx = RenderContext(
         update,
@@ -807,16 +849,63 @@ def handle_render_callback(update: Update, callback: CallbackQuery, data: Callba
         markup_state=(flags, data),
         doc_id=doc_id,
         path=path,
-        update_callback=edit_callback_message,
+        as_caption=as_caption,
     )
     inner = ctx.data
+    ctx.set_update_callback(create_callback_query_callback(callback, as_caption, inner))
     if clicked_button is not None:
         inner[BUTTON_KEY] = clicked_button
     if memory is not None:
         inner[MEMORY_KEY] = decode_value(memory)
     inner['_state'] = data
-
     return ctx.render(text)
+
+
+def create_callback_query_callback(
+    callback: CallbackQuery, as_caption: bool, data: Mapping[str, Value]
+) -> UpdateCallback:
+    answered = False
+
+    async def edit_callback_message(spec: MessageSpec):
+        nonlocal answered
+
+        text, parse_mode, markup = spec
+        if as_caption:
+            if (media := open_media(data)) is not None:
+                content, typ, _ = media
+                with content as fp:
+                    r = await callback.edit_message_media(
+                        typ(fp, caption=text, parse_mode=parse_mode),
+                        reply_markup=markup,
+                    )
+            else:
+                r = await try_send_text_or_not_modified(
+                    callback.edit_message_caption,
+                    text,
+                    parse_mode=parse_mode,
+                    reply_markup=markup,
+                )
+        else:
+            r = await try_send_text_or_not_modified(
+                callback.edit_message_text,
+                text,
+                parse_mode=parse_mode,
+                reply_markup=markup,
+            )
+
+        if (not answered) and (answer := get_env(data, 'answer')):
+            answered = True
+            answer = to_str(answer)
+            if len(answer) > CallbackQuery.MAX_ANSWER_TEXT_LENGTH:
+                answer = answer[: CallbackQuery.MAX_ANSWER_TEXT_LENGTH - 1] + '…'
+
+            show_alert = get_env_flag(data, 'answer_alert')
+            log.info('handle_render_callback: answer: %s, %s', answer, show_alert)
+            await callback.answer(answer, show_alert=show_alert)
+
+        return r
+
+    return edit_callback_message
 
 
 def _report(

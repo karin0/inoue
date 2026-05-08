@@ -5,6 +5,7 @@ import base64
 import asyncio
 import inspect
 import weakref
+import tempfile
 import subprocess
 
 from functools import wraps
@@ -215,7 +216,7 @@ class Callbacks(Protocol):
 
 
 class Bridge(Box):
-    __slots__ = ('_ctx', '_trusted', '_cb_ref', '_promise_cap')
+    __slots__ = ('_ctx', '_trusted', '_cb_ref', '_promise_cap', '_temp_files')
 
     def __init__(
         self, ctx: MutableMapping[str, Value], trusted: int | None, cb: Callbacks
@@ -225,6 +226,7 @@ class Bridge(Box):
         self._trusted = trusted
         self._cb_ref = weakref.ref(cb, self._finalize)
         self._promise_cap = 5 if trusted is None else 10
+        self._temp_files = []
 
     def __repr__(self) -> str:
         return f'Bridge({self._trusted})'
@@ -239,7 +241,20 @@ class Bridge(Box):
         # Break the reference cycle, since the Context can hold references to
         # `Bridge` and `SubDoc` (which holds `Engine`).
         self._ctx.clear()
-        log.debug('Bridge: destroyed')
+        cnt = 0
+        for file in self._temp_files:
+            try:
+                os.remove(file)
+            except OSError as e:
+                log.error(
+                    'Bridge: failed to remove temp file %r: %s: %s',
+                    file,
+                    type(e).__name__,
+                    e,
+                )
+            else:
+                cnt += 1
+        log.debug('Bridge: destroyed, removed %d temp files', cnt)
 
     def _get_func(self, name: str) -> Callable[..., Value | None] | None:
         if name.startswith('_') or name.endswith('_'):
@@ -266,6 +281,27 @@ class Bridge(Box):
     @trusted
     def communicate(self, cmd, input='') -> Promise[dict[str, Value]]:
         return self._promise(_communicate(to_str(cmd), to_str(input)))
+
+    @trusted
+    def mkstemp(self, *args, **kwargs) -> 'LocalPath':
+        fd, path = tempfile.mkstemp(*args, **kwargs)
+        self._temp_files.append(path)
+        os.close(fd)
+        return LocalPath(path)
+
+    @trusted
+    def evil(self, code):
+        code = to_str(code).strip()
+        if '\n' in code:
+            res = []
+
+            def print(*args):
+                res.extend(repr(arg) for arg in args)
+
+            exec(code, globals={'print': print}, locals=self._ctx)
+            return '\n'.join(res)
+
+        return eval(code, locals=self._ctx)
 
     @public
     def edit_message(self, text) -> Promise:
@@ -342,7 +378,6 @@ def write_file(path, text) -> None:
         fp.write(text)
 
 
-trusted(eval, name='evil')
 trusted(repr)
 
 
@@ -399,6 +434,20 @@ async def _communicate(cmd: str, input: str | None) -> dict[str, Value]:
     if returncode is not None:
         r['returncode'] = returncode
     return r
+
+
+class LocalPath(Box):
+    __slots__ = ('path',)
+
+    def __init__(self, path: str):
+        super().__init__()
+        self.path = path
+
+    def __repr__(self):
+        return f'LocalPath({self.path!r})'
+
+    def __str__(self):
+        return self.path
 
 
 public(time.time, name='time')

@@ -244,15 +244,15 @@ def _to_length(cache: dict[int, int], s: BaseElement | Sequence[Segment]) -> int
 
 
 class Formatter:
-    __slots__ = ('segments', 'length', 'full', '_best_effort', '_lengths')
-
-    limit = MAX_TEXT_LENGTH
+    __slots__ = ('limit', 'segments', 'length', 'full', '_best_effort', '_lengths')
 
     def __init__(
         self,
+        limit: int = MAX_TEXT_LENGTH,
         *,
         strict: bool = False,
     ) -> None:
+        self.limit = limit
         self.segments: list[Segment] = []
         self.length = 0
         self.full = False
