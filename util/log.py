@@ -2,7 +2,9 @@ import os
 import asyncio
 import logging
 import traceback
+import functools
 
+from datetime import datetime
 from collections import deque
 from contextlib import contextmanager
 
@@ -10,7 +12,7 @@ from telegram import Message
 
 from .ctx import get_ctx_msg
 from .text import truncate_text, escape, escape_pre
-from .env import MAX_TEXT_LENGTH, ME_LOWER, USER_ID, GROUP_ID, LOG_THREAD_ID
+from .env import ME_LOWER, MAX_TEXT_LENGTH, USER_ID, GROUP_ID, LOG_THREAD_ID
 
 
 class NotifyHandler(logging.Handler):
@@ -71,42 +73,54 @@ class NotifyHandler(logging.Handler):
             self._suppressed = old
 
 
+class MicrosecondFormatter(logging.Formatter):
+    def formatTime(self, record, datefmt=None):
+        return datetime.fromtimestamp(record.created).strftime('%m-%d %H:%M:%S.%f')
+
+
 notify = NotifyHandler()
+
+TRACE = os.environ.get('TRACE') == '1'
+TRACE_LVL = 5
+
+if TRACE:
+    logging.addLevelName(TRACE_LVL, 'TRACE')
 
 
 def _get_logger(name):
-    if os.environ.get('DEBUG') == '1':
+    if TRACE:
+        level = TRACE_LVL
+    elif os.environ.get('DEBUG') == '1':
         level = logging.DEBUG
     else:
         level = logging.INFO
 
     if 'JOURNAL_STREAM' in os.environ:
         fmt = '[%(levelname)s] %(message)s'
+        fmt = logging.Formatter(fmt)
     else:
         fmt = '%(asctime)s [%(levelname)s] %(message)s'
+        fmt = MicrosecondFormatter(fmt)
 
-    fmt = logging.Formatter(fmt)
+    root = logging.getLogger()
+    root.setLevel(logging.ERROR)
+
+    h = logging.StreamHandler()
+    h.setFormatter(fmt)
+    root.addHandler(h)
 
     logger = logging.getLogger(name)
     logger.setLevel(level)
-    logger.handlers.clear()
-    logger.propagate = False
-
-    h = logging.StreamHandler()
-    h.setLevel(level)
-    h.setFormatter(fmt)
-    logger.addHandler(h)
-
     logger.addHandler(notify)
 
-    if level == logging.DEBUG:
-        rc_log = logging.getLogger('render_core')
-        rc_log.setLevel(logging.DEBUG)
+    rc_log = logging.getLogger('render_core')
+    rc_log.setLevel(level)
+
+    if TRACE:
         rc_log.propagate = False
         rc_log.handlers.clear()
 
-        h = logging.FileHandler('render_core.log')
-        h.setLevel(logging.DEBUG)
+        h = logging.FileHandler('render_core.log', 'w', encoding='utf-8')
         h.setFormatter(fmt)
         rc_log.addHandler(h)
 
@@ -120,7 +134,11 @@ def _get_logger(name):
 
 log = _get_logger(ME_LOWER)
 is_debug = log.isEnabledFor(logging.DEBUG)
-trace = log.debug if os.environ.get('TRACE') == '1' else lambda *_: None
+
+if TRACE:
+    trace = functools.partial(log.log, TRACE_LVL)
+else:
+    trace = lambda *_: None
 
 NOTIFY_LIMIT_INTERVAL_SEC = 20
 NOTIFY_LIMIT_BURST = 5
