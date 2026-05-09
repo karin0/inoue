@@ -9,23 +9,45 @@ from contextlib import contextmanager
 from telegram import Message
 
 from .ctx import get_ctx_msg
-from .text import truncate_text
-from .env import ME_LOWER, USER_ID, GROUP_ID, LOG_THREAD_ID
+from .text import truncate_text, escape, escape_pre
+from .env import MAX_TEXT_LENGTH, ME_LOWER, USER_ID, GROUP_ID, LOG_THREAD_ID
 
 
 class NotifyHandler(logging.Handler):
+    __slots__ = ('_revocable', '_suppressed')
+
     def __init__(self):
         super().__init__(logging.WARNING)
+        self.setFormatter(logging.Formatter())
         self._revocable = False
         self._suppressed = False
+
+    def _format2(self, record: logging.LogRecord) -> tuple[str, str | None]:
+        exc = record.exc_info
+        ext = record.exc_text
+        record.exc_info = record.exc_text = None
+        fmt = self.formatter
+        assert fmt
+
+        res = fmt.format(record).strip()
+        if not ext:
+            if not exc:
+                return truncate_text(res), None
+            ext = fmt.formatException(exc)
+
+        ext = truncate_text(ext, limit=MAX_TEXT_LENGTH - len(res) - 1)
+        res = f'{escape(res)}\n```\n{escape_pre(ext)}```'
+        return res, 'MarkdownV2'
 
     def emit(self, record: logging.LogRecord) -> None:
         if self._suppressed:
             return
-        text = truncate_text(self.format(record))
-        # Fetch the context before yielding to async code
+
+        # Fetch the context before yielding to async.
         asyncio.create_task(
-            do_notify(text, message=get_ctx_msg(), revocable=self._revocable)
+            do_notify(
+                *self._format2(record), message=get_ctx_msg(), revocable=self._revocable
+            )
         )
 
     @contextmanager
@@ -155,16 +177,18 @@ async def do_notify(
             text += f'\nreply_text: {type(e).__name__}: {e}'
             text = truncate_text(text)
 
-    if bot:
-        try:
-            if quiet:
-                await bot.send_message(
-                    GROUP_ID, text, parse_mode, disable_notification=True, **kwargs
-                )
-            else:
-                await bot.send_message(
-                    USER_ID, text, parse_mode, message_thread_id=LOG_THREAD_ID, **kwargs
-                )
-        except Exception:
-            with notify.suppress():
-                log.exception('do_notify: send_message failed')
+    if not bot:
+        raise RuntimeError('no bot')
+
+    try:
+        if quiet:
+            await bot.send_message(
+                GROUP_ID, text, parse_mode, disable_notification=True, **kwargs
+            )
+        else:
+            await bot.send_message(
+                USER_ID, text, parse_mode, message_thread_id=LOG_THREAD_ID, **kwargs
+            )
+    except Exception:
+        with notify.suppress():
+            log.exception('do_notify: send_message failed')

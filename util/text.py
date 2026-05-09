@@ -14,10 +14,12 @@ def shorten(s: str | None, limit: int = 30) -> str:
     return s
 
 
-def truncate_text(s: str) -> str:
+def truncate_text(s: str, limit: int = MAX_TEXT_LENGTH) -> str:
     s = s.strip()
-    if len(s) > MAX_TEXT_LENGTH:
-        s = s[: MAX_TEXT_LENGTH - 12] + '\n[truncated]'
+    if len(s) > limit:
+        if limit < 12:
+            return '[truncated]'[:limit] if limit > 0 else ''
+        s = s[: limit - 12] + '\n[truncated]'
     return s
 
 
