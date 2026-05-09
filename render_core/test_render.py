@@ -442,7 +442,7 @@ class TestRender(unittest.TestCase):
 
     def test_self_recursion(self):
         text = r'''
-bomb: ; n ?= "10"; n; n = "n - 1";
+bomb: ; n ?= 10; n; --n;
 n ? *bomb : Boom!;
 '''.strip()
         ctx = self.start()
@@ -848,9 +848,9 @@ n ?= m = "2";
         db = {}
         db['iter0'] = r'''
 iter: ;
-"m * m <= n and n % m == 0" ? n="n+2"; m="2"; :;
-"m * m <= n and n % m" ? m="m > 2 and m+2 or 3";
-"m * m > n" ? $n; n="n+2";  m="2" :;
+m * m <= n && n % m == 0 ? n+=2; m=2; :;
+m * m <= n && n % m ? m = m > 2 && m+2 || 3;
+m * m > n ? $n; n+=2;  m=2 :;
 '''
         db['iter1'] = 'iter1:;' + '*iter0;' * 100
         db['iter2'] = 'iter2:;' + '*iter1;' * 100
@@ -860,8 +860,8 @@ iter: ;
         mock_db(db.get)
 
         text = r'''
-        prime2: ; n ?= m = "2";
-"m * m > n" ? $n; n="n > 2 and n+2 or 3"; m="2" :;
+        prime2: ; n ?= m = 2;
+m * m > n ? $n; n=n > 2 && n+2 or 3; m=2 :;
 ''' + '*iter4;' * 100 + '*prime2;'
         result = self.render_it(text, e='out of gas')
         ans = '\n'.join(str(v) for v in self.iter_prime(53))
@@ -1096,9 +1096,9 @@ n="9"; *foo;
 
     def test_lambda_2(self):
         text = r'''
-fib = {@; x ↦ "x > 1 and (fib(x-1) + fib(x-2)) or x" };
-"fib(9)";
-.x="7"; *fib;
+fib = {@; x ↦ x > 1 && (fib(x-1) + fib(x-2)) || x };
+fib(9);
+.x=7; *fib;
 '''
         self.assertEqual(self.render_it(text), '34\n13')
 
@@ -1148,10 +1148,10 @@ a; b; a = $b ? Ok : Fail;'''
 
     def test_for_loop(self):
         text = r'''
-{ init ↦ n = "1"; out=; };
-{ cond ↦ "n<=9" };
-{ step ↦ n = "n+1" };
-{ body ↦ out = "out + str(n) + ' '" };
+{ init ↦ n = 1; out=; };
+{ cond ↦ n <= 9 };
+{ step ↦ ++n };
+{ body ↦ out = { out; n; ' ' } };
 *for; a = $out; a;'''
         self.render_it(self.STD + text, eq='1 2 3 4 5 6 7 8 9')
 
@@ -1159,10 +1159,10 @@ a; b; a = $b ? Ok : Fail;'''
         ctx = [5, 3, 8, 6, 2, 7, 4, 1]
         ctx = {f'a{i}': str(v) for i, v in enumerate(ctx)}
         text = r'''
-n="8";
-{ init ↦ i = "0" }
-{ cond ↦ "i<n" }
-{ step ↦ i = "i+1" }
+n=8;
+{ init ↦ i = 0 }
+{ cond ↦ i < n }
+{ step ↦ ++i }
 { body ↦ ({'v'; i}) = $({'a'; i}) }
 *for;
 
