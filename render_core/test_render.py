@@ -198,6 +198,8 @@ class TestRender(unittest.TestCase):
 
         self.render_it('{a = 16; ++a; a}', eq='17')
         self.render_it('{a = 16; --a; a}', eq='15')
+        self.render_it('{a = 16; x=++a; x; a}', eq='1717')
+        self.render_it('{a = 16; x=--a; x; a}', eq='1515')
 
     def test_compare(self):
         ctx = {'status': '200'}

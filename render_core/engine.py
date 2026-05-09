@@ -1154,7 +1154,9 @@ class Engine(Interpreter):
                 assert tree.children, tree
                 out = []
                 for ch in tree.children:
-                    val = self._unary(narrow(ch, Tree), allow_undef=allow_undef)
+                    val = self._unary(
+                        narrow(ch, Tree), captured=True, allow_undef=allow_undef
+                    )
                     trace('unary_chain (captured): %r', val)
                     if val != '':
                         out.append(val)
@@ -1359,6 +1361,7 @@ class Engine(Interpreter):
         self,
         tree: Tree,
         *,
+        captured: bool = False,
         as_str: bool = False,
         allow_undef: bool = False,
         allow_tco: Literal[False] = False,
@@ -1369,6 +1372,7 @@ class Engine(Interpreter):
         self,
         tree: Tree,
         *,
+        captured: bool = False,
         as_str: bool = False,
         allow_undef: bool = False,
         allow_tco: Literal[True],
@@ -1378,6 +1382,7 @@ class Engine(Interpreter):
         self,
         tree: Tree,
         *,
+        captured: bool = False,
         as_str: bool = False,
         allow_undef: bool = False,
         allow_tco: bool = False,
@@ -1395,11 +1400,11 @@ class Engine(Interpreter):
             # This means {name:=1} or {name:=0}.
             case '+':
                 self._ctx.setitem_with(key, 1, '+')
-                return ''
+                return self._ctx[key] if captured else ''
 
             case '-':
                 self._ctx.setitem_with(key, 0, '-')
-                return ''
+                return self._ctx[key] if captured else ''
 
             # Variable read: {$name}
             # Resolve from the current or the nearest outer scopes with the name defined.
@@ -1428,13 +1433,13 @@ class Engine(Interpreter):
 
             # Increment: {++name}
             case '++':
-                self._scope.do_augassign(key, operator.add, 1)
-                return ''
+                r = self._scope.do_augassign(key, operator.add, 1)
+                return r if captured else ''
 
             # Decrement: {--name}
             case '--':
-                self._scope.do_augassign(key, operator.sub, 1)
-                return ''
+                r = self._scope.do_augassign(key, operator.sub, 1)
+                return r if captured else ''
 
             case _:
                 raise ValueError(f'Bad unary op: {op}')

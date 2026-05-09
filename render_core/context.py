@@ -518,12 +518,17 @@ class ScopedContext[T]:
         op = DEFAULT_OPERATORS[type(node.op)]
         self.do_augassign(node.target.id, op, right)
 
-    def do_augassign(self, key: str, op: Callable[[Value, Value], Value], right: Value):
+    def do_augassign(
+        self,
+        key: str,
+        op: Callable[[Any, Any], Any],
+        right: Value,
+    ) -> Value:
         # Only modifying variables in the current scope is allowed.
         key = self.current_key(key)
         if (left := self._data.get(key)) is None:
             self._cb._error(f'undefined: {key}')
-            return
+            return ''
 
         val = op(left, right)
         trace('_eval_augassign: %s: %r %s %r = %r', key, left, op, right, val)
@@ -539,9 +544,10 @@ class ScopedContext[T]:
                 type(val),
             )
             self._cb._error('bad augassign')
-            return
+            return ''
 
         self._data[key] = val
+        return val
 
     def _eval_yield(self, node: ast.Yield) -> Value | None:
         if is_tracing:
