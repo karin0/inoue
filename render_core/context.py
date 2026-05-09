@@ -29,7 +29,13 @@ from .tco import Tco, TCO
 log = logging.getLogger(__package__)
 is_tracing = os.environ.get('TRACE') == '1'
 is_not_quiet = os.environ.get('TRACE_QUIET') != '1'
-trace = log.debug if is_tracing else lambda *_: None
+
+if is_tracing:
+    TRACE_LVL = 5
+
+    trace = functools.partial(log.log, TRACE_LVL)
+else:
+    trace = lambda *_: None
 
 
 class Box:
