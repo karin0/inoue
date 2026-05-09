@@ -14,7 +14,6 @@ from typing import (
     TypeVar,
     Literal,
     TYPE_CHECKING,
-    cast,
     overload,
     override,
 )
@@ -164,14 +163,14 @@ if is_tracing:
         x: Tree | Token, target_type: Type[T]
     ) -> T:
         assert isinstance(x, target_type), x
-        return cast(T, x)
+        return x
 
 else:
 
     def narrow(  # pyright: ignore[reportRedeclaration]
         x: Tree | Token, target_type: Type[T]
     ) -> T:
-        return cast(T, x)
+        return x  # type: ignore[return-value]
 
 
 # Abort the entire rendering, until the "root".
