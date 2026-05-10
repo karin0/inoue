@@ -728,11 +728,6 @@ async def handle_render_group(msg: Message, origin_id: int):
     else:
         log.info('No preview cache in group: %s -> %s', msg.id, origin_id)
 
-    if preview_cache:
-        left = tuple((id, name) for id, (_, name, _) in preview_cache.items())
-        log.warning('Preview cache not empty: %s', left)
-        preview_cache.clear()
-
 
 async def handle_render_inline_query(
     update: Update, bot_ctx: ContextTypes.DEFAULT_TYPE, query: InlineQuery, text: str
@@ -944,7 +939,15 @@ async def handle_render_doc(update: Update, msg: Message):
 
     info = []
     if name := ctx.engine.doc_name:
-        preview_cache[id] = (ctx, name, result)
+        preview_cache[id] = t = (ctx, name, result)
+
+        def cleanup():
+            if preview_cache.get(id) is t:
+                log.warning('Unused preview cache for doc: %s %s', id, name)
+                del preview_cache[id]
+
+        asyncio.get_event_loop().call_later(30, cleanup)
+
         old_by_id, old_by_name = db.save_doc(id, name, text)
 
         action = 'new doc:'
