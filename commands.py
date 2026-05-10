@@ -42,8 +42,7 @@ try:
 except ImportError:
 
     def reply_usage(msg: Message, sender: Sender):
-        text = rf'Hello, {escape(sender.name)}\!'
-        return reply_text(msg, text, 'MarkdownV2')
+        return reply_text(msg, f'Hello, {sender.name}!')
 
 
 REG_TEMPLATE_ARG = re.compile(r'\$(\*|\d+)')
