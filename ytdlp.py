@@ -32,7 +32,7 @@ from telegram import (
 from telegram.constants import ChatAction
 
 from dispatch import MessageArg, command
-from util import log, is_debug, reply_text, keep_chat_action, get_sender
+from util import log, is_debug, create_task, reply_text, keep_chat_action, get_sender
 from render_context import LRUDict
 from ffmpeg import (
     encode_voice,
@@ -632,7 +632,7 @@ async def handle_yt_chosen_result(
                     reply_markup=markup,
                 )
 
-            asyncio.create_task(worker())
+            create_task(worker())
 
     except Exception as e:
         log.exception('handle_yt_chosen_result: failed for %s', url)

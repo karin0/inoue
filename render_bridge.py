@@ -28,6 +28,7 @@ from render_core import Box, Value, Fragment, to_str
 from util import (
     log,
     get_context,
+    create_task,
     escape,
     html_escape,
     cleanup_text,
@@ -87,7 +88,7 @@ class Promise[T: PromiseResult](Box):
         factory: Callable[[Awaitable[T]], 'Promise[T]'],
         token: object,
     ):
-        self._task = asyncio.create_task(self._run(coro))
+        self._task = create_task(self._run(coro))
         self._factory = factory
         self._token = token
 

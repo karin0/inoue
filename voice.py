@@ -11,6 +11,7 @@ from ffmpeg import encode_voice
 from ytdlp import run_ytdlp, extract_url, Output
 from util import (
     log,
+    create_task,
     get_arg,
     escape,
     reply_text,
@@ -113,7 +114,7 @@ async def convert_voice(
         if queue.empty():
             queue.put_nowait(True)
 
-    asyncio.create_task(worker())
+    create_task(worker())
 
     try:
         # Report initial status before downloading the file.
@@ -177,7 +178,7 @@ async def try_handle_voice(msg: Message, *, parse_url: bool = False) -> bool:
             assert parsed is not None
             url, arg = parsed
             output = await run_ytdlp(url, audio_only=True)
-            asyncio.create_task(output.finish(msg, audio_only=True))
+            create_task(output.finish(msg, audio_only=True))
             info = output, output.duration
 
         if not is_sender_guest():

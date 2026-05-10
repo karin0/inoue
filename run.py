@@ -10,7 +10,7 @@ from typing import Awaitable, Callable, TypeVar
 from telegram import Message
 from telegram.constants import ChatAction
 
-from util import log, pre_block, reply_text, ME, MAX_TEXT_LENGTH
+from util import log, create_task, pre_block, reply_text, ME, MAX_TEXT_LENGTH
 from dispatch import command, MessageArg
 from misc import reply_file
 
@@ -62,7 +62,7 @@ async def _handle_cmd(msg: Message, bin: str, *args, **kwargs):
             else:
                 await asyncio.sleep(3)
 
-    asyncio.create_task(action())
+    create_task(action())
 
     try:
         return await __handle_cmd(msg, child, evt)
@@ -159,10 +159,10 @@ async def __handle_cmd(msg: Message, child: Process, evt: asyncio.Event | None):
         raise RuntimeError('stdout and stderr must be captured')
 
     q = asyncio.Queue()
-    asyncio.create_task(producer(q, child.stdout))
+    create_task(producer(q, child.stdout))
 
     q_err = asyncio.Queue()
-    asyncio.create_task(producer(q_err, child.stderr))
+    create_task(producer(q_err, child.stderr))
 
     async def send(content, do_quote):
         nonlocal evt
