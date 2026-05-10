@@ -5,21 +5,19 @@ import asyncio
 
 from telegram import Update, Bot, MessageOriginChannel
 from telegram.ext import (
-    ApplicationBuilder,
     ContextTypes,
     MessageHandler,
     CallbackQueryHandler,
     ChosenInlineResultHandler,
     InlineQueryHandler,
-    Application,
 )
-from telegram.error import NetworkError
 from telegram.constants import ChatType
 
 from util import (
     log,
     is_debug,
-    notify,
+    app,
+    post_init,
     pre_block,
     reply_text,
     ME,
@@ -27,15 +25,12 @@ from util import (
     CHAN_ID,
     GROUP_ID,
     TODO_ID,
-    DB_FILE,
     LOCK_FILE,
     get_sender,
-    init_util,
     get_msg,
     do_notify,
     try_reroute_cmd,
 )
-from db import db
 from gateway import add_handler, add_command_handler
 from dispatch import handle_callback_query, iter_commands
 from inoue import render_receipt
@@ -161,56 +156,16 @@ async def handle_chosen_inline(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         log.error('Bad chosen inline result: %s', result)
 
 
-async def post_init(app: Application) -> None:
-    bot: Bot = app.bot
-    init_util(bot)
-    db.connect(DB_FILE)
+def _post_init(bot: Bot):
     log.info('%s initiated: %s', ME, bot.bot)
-    await asyncio.gather(
+    return asyncio.gather(
         set_commands(bot),
         do_notify(*stats(bot.bot, f'{ME} initiated'), quiet=is_debug),
     )
 
 
-async def post_stop(_: Application) -> None:
-    db.close()
-
-
-async def handle_error(update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    e = context.error
-    if isinstance(e, NetworkError):
-        with notify.suppress():
-            log.error('Network error in update %s: %s: %s', update, type(e).__name__, e)
-    elif isinstance(e, Exception):
-        log.error(
-            'Exception in update %s: %s: %s', update, type(e).__name__, e, exc_info=e
-        )
-    else:
-        log.error('Unknown error in update %s: %s', update, e)
-
-
-def build_app():
-    builder = (
-        ApplicationBuilder()
-        .token(os.environ['TELEGRAM_BOT_TOKEN'])
-        .post_init(post_init)
-        .post_stop(post_stop)
-        .read_timeout(30)
-        .write_timeout(30)
-        .media_write_timeout(60)
-    )
-
-    # Looks like http://127.0.0.1:8081/
-    if url := os.environ.get('LOCAL_SERVER'):
-        log.info('Using local server: %s', url)
-        builder = (
-            builder.base_url(url + 'bot')
-            .base_file_url(url + 'file/bot')
-            .local_mode(True)
-        )
-
-    app = builder.build()
-    app.add_error_handler(handle_error)
+def init_app():
+    post_init(_post_init)
 
     for name, (func, permissive) in iter_commands():
         if name == 'rg':
@@ -223,8 +178,6 @@ def build_app():
     add_handler(app, CallbackQueryHandler, True, handle_callback_query)
     add_handler(app, InlineQueryHandler, True, handle_inline_query)
     add_handler(app, ChosenInlineResultHandler, True, handle_chosen_inline)
-
-    return app
 
 
 def get_lock():
@@ -245,7 +198,8 @@ def drop_lock():
 def main():
     log.info('Starting %s...', ME)
     get_lock()
-    build_app().run_polling()
+    init_app()
+    app.run_polling()
     log.info('%s stopped.', ME)
     drop_lock()
 

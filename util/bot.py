@@ -4,7 +4,7 @@ from typing import Awaitable, Callable, Sequence, Concatenate, TYPE_CHECKING
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-from telegram import Bot, Message, MessageEntity, InlineKeyboardMarkup, Update
+from telegram import Message, MessageEntity, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 from telegram.constants import ChatAction
 from telegram.error import BadRequest
@@ -14,13 +14,12 @@ from gateway import get_command_callback
 
 from .log import log
 from .text import truncate_text
+from .app import bot, create_task
 from .ctx import use_text_override
 from .env import USER_ID, CHAN_ID, GROUP_ID
 
 if TYPE_CHECKING:
     from dispatch import PTBHandler
-
-bot: Bot | None = None
 
 
 def get_msg_url(msg_id, chat_id=None) -> str:
@@ -191,7 +190,7 @@ async def _keep_action(msg: Message, action: ChatAction):
 @contextmanager
 def keep_chat_action(msg: Message, action: ChatAction):
     '''Re-send chat action every 4s so it stays visible during long operations.'''
-    task = asyncio.create_task(_keep_action(msg, action))
+    task = create_task(_keep_action(msg, action))
     try:
         yield task
     finally:

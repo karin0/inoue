@@ -42,11 +42,13 @@ class NotifyHandler(logging.Handler):
         return res, 'MarkdownV2'
 
     def emit(self, record: logging.LogRecord) -> None:
+        from . import create_task
+
         if self._suppressed:
             return
 
         # Fetch the context before yielding to async.
-        asyncio.create_task(
+        create_task(
             do_notify(
                 *self._format2(record), message=get_ctx_msg(), revocable=self._revocable
             )
@@ -148,12 +150,14 @@ notify_buf = []
 
 
 def flush_notify_buf():
+    from . import create_task
+
     if n := len(notify_buf):
         text = '\n'.join(notify_buf)
         text = truncate_text(text)
         notify_buf.clear()
         log.info('flushing %s buffered notifications (%s chars)', n, len(text))
-        asyncio.create_task(do_notify(text))
+        create_task(do_notify(text))
 
 
 async def do_notify(
@@ -165,10 +169,7 @@ async def do_notify(
     quiet: bool = False,
     **kwargs,
 ):
-    from .bot import reply_text
-    from . import _bot_util
-
-    bot = _bot_util.bot
+    from . import bot, reply_text
 
     loop = asyncio.get_event_loop()
     now = loop.time()
