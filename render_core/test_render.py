@@ -1248,6 +1248,7 @@ a[k] = '11';
 "a[i] + a[j] + int(a[k][1])";
 '''
         self.render_it(text, eq='7\n7\n42\n7\n50')
+        self.render_it('a[:];', e='bad subscript index')
 
     def test_context(self):
         ctx = OverriddenDict({}, {})

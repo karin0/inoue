@@ -1342,7 +1342,12 @@ class Engine(Interpreter):
     def _subscript(self, tree: Tree, allow_decimal: bool = False) -> str:
         assert tree.data == 'subscript', tree
         key = self._lvalue(tree.children[0], allow_decimal=allow_decimal)
-        val = self._expr(narrow(tree.children[1], Tree), permissive=True, as_str=True)
+        index = narrow(tree.children[1], Tree)
+        if index.data != 'expr':
+            # Slice is only valid in `_python()` context.
+            self._error('bad subscript index')
+            return key
+        val = self._expr(index, permissive=True, as_str=True)
         assert isinstance(val, str), val
         key = key.strip() + '.' + val.strip()
         self._check_iden(key)

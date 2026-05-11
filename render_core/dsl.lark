@@ -60,7 +60,9 @@ expr: literal
 ?expr_safe: unary_chain
           | code_block
 
-subscript: lvalue "[" expr "]"
+// Slice here is only for compatibility with Python expressions.
+subscript: lvalue "[" (expr | slice) "]"
+slice: expr? ":" expr?
 
 // Parentheses cannot be empty. Use '' for a empty value.
 ?paren: "(" expr ")"
@@ -89,7 +91,8 @@ python: py_term (py_op py_term)+ | py_term_safe
 // lose the outer positions.
 py_native: expr_safe
 py_paren: "(" python ")"
-py_subscript: py_term "[" py_expr "]"
+py_subscript: py_term "[" py_index "]"
+?py_index: py_expr | py_expr? ":" py_expr?
 py_call: py_term "(" (py_expr "," )* py_expr? ")"
 
 // Operators excluded for conflicts: `/`, `|` (repl), `^` (swap), `//` (comment).
