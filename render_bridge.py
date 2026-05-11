@@ -216,6 +216,7 @@ def trusted[**P, R](
 class Callbacks(Protocol):
     async def _update_text(self, seg: Segment) -> Value | None: ...
     def _error(self, msg: str) -> Any: ...
+    def _escalate(self) -> int | None: ...
 
 
 class Bridge(Box):
@@ -305,6 +306,11 @@ class Bridge(Box):
             return '\n'.join(res)
 
         return eval(code, locals=self._ctx)
+
+    @public
+    def escalate(self) -> None:
+        if (token := self._cb._escalate()) is not None:
+            self._trusted = token
 
     @public
     def edit_message(self, text) -> Promise:

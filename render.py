@@ -288,6 +288,7 @@ class RenderContext:
         '_doc_refs',
         '_render_time',
         '_trusted',
+        '_can_escalate',
         '_as_caption',
         'data',
         'engine',
@@ -315,13 +316,11 @@ class RenderContext:
         if overrides is None:
             overrides = {}
 
-        # We assume content from saved docs and USER_ID is trusted.
-        trusted = doc_id
-        source = None
+        trusted = source = None
 
         # Existing `overrides` are frozen and immutable in `Engine`, so this is safe.
         if user := update.effective_user:
-            if trusted is None and user.id == USER_ID:
+            if user.id == USER_ID:
                 trusted = USER_ID
             overrides['_user_id'] = user.id
             overrides['_user_name'] = source = user.full_name
@@ -339,7 +338,14 @@ class RenderContext:
 
         log.info('create_engine: %s', overrides)
 
+        # We assume contents from USER_ID and saved docs are trusted.
+        # However, docs (typically in ALLOWED_GUEST_DOC_PREFIXES) need to escalate
+        # explicitly if expanded from a guest context, declaring that their security
+        # does not rely on any context values, which can be spoofed by guests via
+        # callback data.
         self._trusted = trusted
+        self._can_escalate = trusted or doc_id
+
         self.data = OverriddenDict({}, overrides)
         bridge = Bridge(self.data, trusted, self)
 
@@ -368,6 +374,15 @@ class RenderContext:
             func, lock = self._update_callback
             async with lock:
                 return await func(spec)
+
+    def _escalate(self) -> int | None:
+        if (token := self._can_escalate) is not None:
+            log.info('Escalating privileges: %r %r', self._trusted, token)
+            self._trusted = token
+            self.data.overrides['_trusted'] = token
+            return token
+
+        log.warning('Escalation rejected: %r', self._trusted)
 
     def _doc_loader(self, name: str) -> str | None:
         row = get_doc(name, bool(self._trusted))
