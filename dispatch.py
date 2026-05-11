@@ -78,10 +78,19 @@ class Route[**P, R]:
         self._params = tuple(params)
         self._va = va_ty
 
-    def call(
+    def __repr__(self) -> str:
+        return f'<{"Public " if self._public else ""}Route: {self._func.__name__}>'
+
+    __str__ = __repr__
+
+    @property
+    def __name__(self) -> str:
+        return repr(self)
+
+    def __call__(
         self, update: Update, ctx: ContextTypes.DEFAULT_TYPE, argv: Iterable[str] = ()
     ) -> Coroutine[Any, Any, R]:
-        log.debug('Calling route: %s: %r', self._func.__name__, argv)
+        log.debug('Calling route: %s: %r', self, argv)
         if not (
             self._public
             or ((u := update.effective_user) is not None and u.id == USER_ID)
@@ -122,6 +131,8 @@ class Route[**P, R]:
 
 
 _cmd_handlers: dict[str, Route] = {}
+
+get_command_handler = _cmd_handlers.get
 
 
 @overload
@@ -167,14 +178,7 @@ def command[H: Handler](
 
 
 def iter_commands() -> Iterable[tuple[str, tuple[PTBHandler, bool]]]:
-    return (
-        (name, (route.call, route._public)) for name, route in _cmd_handlers.items()
-    )
-
-
-def get_command_handler(name: str) -> PTBHandler | None:
-    if (route := _cmd_handlers.get(name)) is not None:
-        return route.call
+    return ((name, (route, route._public)) for name, route in _cmd_handlers.items())
 
 
 _cb_handlers: dict[str, Route] = {}
@@ -215,7 +219,7 @@ def _dispatch_argv(
 ) -> Coroutine | None:
     args = data.split('_')
     if (route := map.get(args[0])) is not None:
-        return route.call(update, ctx, islice(args, 1, None))
+        return route(update, ctx, islice(args, 1, None))
 
 
 def handle_callback_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -230,7 +234,7 @@ def handle_callback_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     for filter_func, route in _cb_filters:
         if filter_func(data):
-            return route.call(update, ctx)
+            return route(update, ctx)
 
     if fut := _dispatch_argv(update, ctx, data, _cb_handlers):
         return fut
