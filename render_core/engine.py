@@ -1426,6 +1426,10 @@ class Engine(Interpreter):
             case '$':
                 return self._scope.get(key, as_str=as_str, allow_undef=allow_undef)
 
+            # Variable read, but no error on undefined: {$$name}
+            case '$$':
+                return self._scope.get(key, as_str=as_str, allow_undef=True)
+
             # Db doc expand: {*doc} (same as {:doc})
             case '*':
                 return self._doc_ref(key, allow_tco=allow_tco)
