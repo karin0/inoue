@@ -1,6 +1,6 @@
 import re
 
-from html import escape as html_escape
+from html import escape as html_escape  # noqa: F401
 
 from .env import MAX_TEXT_LENGTH
 

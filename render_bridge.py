@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import sys
 import time
@@ -161,7 +163,7 @@ def _inspect(func: Callable, name: str | None = None) -> tuple[str, bool]:
     sig = inspect.signature(func)
     is_method = 'self' in sig.parameters
 
-    if name in _funcs or name in _methods:
+    if name in _funcs or name in _methods:  # noqa: F821
         raise ValueError(f'{func} is already registered')
 
     return name, is_method
@@ -170,7 +172,7 @@ def _inspect(func: Callable, name: str | None = None) -> tuple[str, bool]:
 def public[**P, R](func: Callable[P, R], name: str | None = None) -> Callable[P, R]:
     name, is_method = _inspect(func, name=name)
     if is_method:
-        _methods[name] = None
+        _methods[name] = None  # noqa: F821
     else:
         _funcs[name] = func
     return func
@@ -194,7 +196,7 @@ def trusted[**P, R](
             log.debug('Bridge: authorized %s for %s', self._trusted, name)
             return func(self, *args, **kwargs)
 
-        _methods[name] = None
+        _methods[name] = None  # noqa: F821
         return wrapper
     else:
         func = cast(Callable[P, R], func)
@@ -207,7 +209,7 @@ def trusted[**P, R](
             log.debug('Bridge: authorized %s for %s', self._trusted, name)
             return func(*args, **kwargs)
 
-        _methods[name] = wrapper2
+        _methods[name] = wrapper2  # noqa: F821
         return wrapper2
 
 

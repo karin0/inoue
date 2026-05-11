@@ -41,7 +41,7 @@ from ytdlp import extract_url, handle_yt_inline_query, handle_yt_chosen_result
 from render import handle_render_doc, handle_render_group, handle_render_inline_query
 from commands import dispatch_cmd, set_commands, stats, reply_usage
 
-import misc, media, run
+import misc, media, run  # noqa: F401, E401
 
 
 async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

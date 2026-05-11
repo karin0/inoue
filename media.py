@@ -120,4 +120,4 @@ def handle_remove_media(msg: Message, chat_id: int, message_id: int):
             f'Removed {render_media(chat_id, message_id, title)}',
             'MarkdownV2',
         )
-    return reply_text(msg, f'Media not found.')
+    return reply_text(msg, 'Media not found.')

@@ -1,3 +1,4 @@
+# ruff: noqa: E402
 import os
 import sys
 import math
@@ -142,7 +143,7 @@ class TestRender(unittest.TestCase):
         ctx = {'name': 'Alice', 'role': 'Robot'}
         text = "I am {name}, a {role}."
         result = self.render_it(text, ctx)
-        self.assertEqual(result, f'I am Alice, a Robot.')
+        self.assertEqual(result, 'I am Alice, a Robot.')
 
     def test_flags(self):
         result, ctx_on = self.render_it_all(

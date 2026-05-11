@@ -85,6 +85,7 @@ class RGMatch:
     # end: int
 
     def segment(self, i: int, j: int, k: int) -> Segment:
+        # ruff: noqa: E741
         kw = self.match
         s = self.text
 

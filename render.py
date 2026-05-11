@@ -121,7 +121,7 @@ def get_env_flag[T](ctx: Mapping[str, Value], key: str, default: T = False) -> b
 def make_markup(
     path: str,
     ctx: Mapping[str, Value],
-    current_state: MarkupState | None,
+    current_state: 'MarkupState | None',
     doc_ids: dict[int, str] | None,
 ) -> tuple[InlineKeyboardMarkup | None, str | None]:
     # query data:
@@ -348,7 +348,10 @@ class RenderContext:
         self.data['os'] = self.data['sys'] = bridge
 
         this = weakref.ref(self)
-        doc_loader = lambda name: this()._doc_loader(name)  # type: ignore
+
+        def doc_loader(name: str) -> str | None:
+            return this()._doc_loader(name)  # type: ignore
+
         self.engine = Engine(self.data, doc_loader, funcs=bridge._get_func)
 
     def _error(self, msg: str) -> None:

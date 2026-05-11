@@ -86,7 +86,7 @@ def main():
 
     if args.dump_ctx:
         for k, v in engine.items():
-            print(f' ', k, '=', repr(v), file=sys.stderr)
+            print(' ', k, '=', repr(v), file=sys.stderr)
 
     print('Gas used:', engine._gas, file=sys.stderr)
     print(f'Time cost: {dt:.3f} secs', file=sys.stderr)

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import ast
 import weakref
@@ -35,7 +37,9 @@ if is_tracing:
 
     trace = functools.partial(log.log, TRACE_LVL)
 else:
-    trace = lambda *_: None
+
+    def trace(*_):
+        pass
 
 
 class Box:

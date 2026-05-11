@@ -13,5 +13,6 @@ dependencies = [
     "pillow>=10.0.0",
 ]
 optional-dependencies = { regex = ["regex>=2026.4.4"] }
+
 [dependency-groups]
-dev = ["black>=26.3.1"]
+dev = ["objgraph>=3.6.2", "ruff>=0.15.12", "black>=26.3.1"]

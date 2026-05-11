@@ -2,7 +2,9 @@ from typing import Callable, Iterable, Iterator, Literal
 from .context import trace, is_not_quiet
 
 if not is_not_quiet:
-    trace = lambda *_: None
+
+    def trace(*_):
+        pass
 
 
 type Chunk = tuple[bool, str] | tuple[Literal[False], str | None]

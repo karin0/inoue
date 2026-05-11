@@ -140,7 +140,10 @@ is_debug = log.isEnabledFor(logging.DEBUG)
 if TRACE:
     trace = functools.partial(log.log, TRACE_LVL)
 else:
-    trace = lambda *_: None
+
+    def trace(*args, **kwargs):
+        pass
+
 
 NOTIFY_LIMIT_INTERVAL_SEC = 20
 NOTIFY_LIMIT_BURST = 5

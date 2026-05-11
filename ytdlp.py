@@ -299,18 +299,24 @@ class Output:
         )
 
         if isinstance(msg_or_bot, Message):
-            wrap = lambda f: functools.partial(
-                f, do_quote=True, allow_sending_without_reply=True
-            )
+
+            def wrap(f):
+                return functools.partial(
+                    f, do_quote=True, allow_sending_without_reply=True
+                )
+
             send_audio = msg_or_bot.reply_audio
             send_video = msg_or_bot.reply_video
         else:
-            wrap = lambda f: functools.partial(
-                f,
-                YT_STAGING_CHAT_ID,
-                message_thread_id=YT_STAGING_MESSAGE_THREAD_ID,
-                disable_notification=True,
-            )
+
+            def wrap(f):
+                return functools.partial(
+                    f,
+                    YT_STAGING_CHAT_ID,
+                    message_thread_id=YT_STAGING_MESSAGE_THREAD_ID,
+                    disable_notification=True,
+                )
+
             send_audio = msg_or_bot.send_audio
             send_video = msg_or_bot.send_video
 
@@ -399,7 +405,10 @@ def ytdlp_task(url: str, audio_only: bool) -> Output:
     info = get_ytdlp(audio_only).extract_info(url)
 
     if is_debug and info:
-        default = lambda o: f'<default: {type(o).__name__}: {o!r}>'
+
+        def default(o):
+            return f'<default: {type(o).__name__}: {o!r}>'
+
         with open('last_ytdlp_info.json', 'w', encoding='utf-8') as fp:
             json.dump(info, fp, ensure_ascii=False, indent=2, default=default)
 
