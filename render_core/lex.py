@@ -333,16 +333,17 @@ class Chunker:
 # `;` is included so an explicit trailing `;` isn't doubled. `!` is excluded:
 # alone it's BRANCH_END (a terminator); the multi-char `!=` ends in `=`.
 # `.` covers Python attribute access (`obj.\n method()`).
-_NEWLINE_JOIN_AFTER = frozenset('?:=^|+-*/%&<>~,.([{↦⇒;\\')
+_NEWLINE_JOIN_AFTER = frozenset('?=^|+-*/%&<>~,.([{↦⇒;\\')
 
 # Chars whose presence at start-of-line marks the line as a continuation.
 # Only tokens that cannot plausibly *start* a statement: `|` (repl chain),
-# `?`/`:` (branch markers), `!` (BRANCH_END). Operators that double as
-# unary (`+`/`-`/`*`) are excluded — leading `+a` legitimately starts a
-# flag-set statement. `}` is included since `;` is unnecessary before it.
-_NEWLINE_JOIN_BEFORE = frozenset('|?:!}')
+# `?` (branch).
+# Operators that double as unary (`+`/`-`/`*`) are excluded — leading `+a`
+# legitimately starts a flag-set statement. `}` is included since `;` is
+# unnecessary before it.
+_NEWLINE_JOIN_BEFORE = frozenset('|?}')
 
-_ALL_SYMBOL = _NEWLINE_JOIN_BEFORE | _NEWLINE_JOIN_AFTER | frozenset(')]\'"')
+_ALL_SYMBOL = _NEWLINE_JOIN_BEFORE | _NEWLINE_JOIN_AFTER | frozenset(':!)]\'"')
 
 
 def normalize_block(text: str) -> str:
