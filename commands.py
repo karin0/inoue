@@ -83,7 +83,7 @@ async def dispatch_cmd(
         expanded = expand_template(template, cmd_args)
         if expanded.startswith('/'):
             return await dispatch_cmd(update, ctx, msg, expanded, depth + 1)
-        return await handle_cmd(msg, expanded)
+        raise RuntimeError(f'Bad command expansion: {expanded}')
 
     if handler := get_command_handler(cmd_name):
         with use_text_override(text):
