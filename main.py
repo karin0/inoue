@@ -98,7 +98,7 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         log.error('handle_msg: unauthorized update: %s', update)
         return
 
-    if not ((text := msg.text) and text.strip()):
+    if not ((text := msg.text) and (text := text.strip())):
         if (
             msg.forum_topic_created
             or msg.forum_topic_edited
@@ -111,7 +111,7 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         with open('out.ogg', 'rb') as f:
             return await msg.reply_voice(f, do_quote=True)
 
-    # Be more careful, since you won't be able to log in again within 10 minutes.
+    # Be careful, since you won't be able to log in again within 10 minutes.
     if text == '/Please log out now/':
         await reply_text(msg, 'See you next time!')
         if await ctx.bot.log_out():
