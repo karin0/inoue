@@ -106,8 +106,7 @@ def auth(func: PTBHandler, *, permissive: bool = False) -> PTBHandler:
             if is_guest and msg:
                 from commands import reply_usage
 
-                assert sender is not None
-                await reply_usage(msg, sender)
+                await reply_usage(msg)
             return
 
         with use_context(update, ctx, msg, sender):

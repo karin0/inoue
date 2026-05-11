@@ -32,7 +32,7 @@ from telegram import (
 from telegram.constants import ChatAction
 
 from dispatch import MessageArg, command
-from util import log, is_debug, create_task, reply_text, keep_chat_action, get_sender
+from util import log, is_debug, create_task, reply_text, keep_chat_action, get_context
 from render_context import LRUDict
 from ffmpeg import (
     encode_voice,
@@ -643,7 +643,7 @@ async def handle_yt_chosen_result(
         return
 
     # Upload to staging chat to get file_id, then edit inline message.
-    stage_caption = f'{url}\n{get_sender()} {result_id} {arg}'.strip()
+    stage_caption = f'{url}\n{get_context().sender} {result_id} {arg}'.strip()
     staging = await output.finish(bot, audio_only=audio_only, caption=stage_caption)
 
     if media := staging.audio:

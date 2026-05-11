@@ -26,7 +26,7 @@ from util import (
     GROUP_ID,
     TODO_ID,
     LOCK_FILE,
-    get_sender,
+    get_context,
     get_msg,
     do_notify,
     try_reroute_cmd,
@@ -45,16 +45,20 @@ import misc, media, run
 
 
 async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    sender = get_sender()
-    is_guest = bool(sender and sender.is_guest)
-    if not is_guest and (post := update.edited_channel_post or update.channel_post):
+    context = get_context()
+    log.debug('handle_msg: sender: %s', context.sender)
+    if (
+        (sender := context.sender) is not None
+        and sender.id in (USER_ID, CHAN_ID)
+        and (post := update.edited_channel_post or update.channel_post)
+    ):
         return await handle_render_doc(update, post)
 
     if not (msg := get_msg(update)):
         return
 
     if msg.chat_id == TODO_ID:
-        if sender and sender.id == USER_ID:
+        if context.sender_is_host():
             return await handle_todo_msg(msg)
         raise ValueError(f'Unauthorized todo: {msg}')
 
@@ -83,9 +87,8 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if origin:
         return await msg.reply_text(*pre_block(str(origin)), do_quote=True)
 
-    if is_guest:
-        assert sender is not None
-        await reply_usage(msg, sender)
+    if context.sender_is_guest():
+        await reply_usage(msg)
         return
 
     # Privileged operations are only allowed in private chats, even if it's from

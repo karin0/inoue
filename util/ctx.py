@@ -23,27 +23,42 @@ class Context(NamedTuple):
     msg: Message | None
     sender: Sender | None
 
+    @property
+    def sender_name(self) -> str:
+        if (sender := self.sender) is not None:
+            return sender.name
+        return '<?>'
+
+    def sender_is_guest(self) -> bool:
+        if (sender := self.sender) is not None:
+            return sender.is_guest
+        return False
+
+    def sender_is_host(self) -> bool:
+        if (sender := self.sender) is not None:
+            return sender.id == USER_ID
+        return False
+
 
 current_context: ContextVar[Context | None] = ContextVar(
     'current_context', default=None
 )
 
-get_context = current_context.get
+
+def get_context() -> Context:
+    if (ctx := current_context.get()) is not None:
+        return ctx
+    raise RuntimeError('No context')
 
 
-def get_ctx_msg() -> Message | None:
-    if ctx := get_context():
-        return ctx.msg
-
-
-def get_sender() -> Sender | None:
-    if ctx := get_context():
+def get_ctx_sender() -> Sender | None:
+    if (ctx := current_context.get()) is not None:
         return ctx.sender
 
 
-def is_sender_guest() -> bool:
-    sender = get_sender()
-    return sender.is_guest if sender else True
+def get_ctx_msg() -> Message | None:
+    if (ctx := current_context.get()) is not None:
+        return ctx.msg
 
 
 @contextmanager
@@ -87,7 +102,8 @@ def use_text_override(text: str):
 
 
 def get_arg(m: Message) -> str:
-    s = text_override.get() or m.text or m.caption or ''
+    if (s := text_override.get()) is None:
+        s = m.text or m.caption or ''
 
     if not s.startswith('/'):
         return s.strip()

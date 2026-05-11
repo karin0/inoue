@@ -314,11 +314,7 @@ class Bridge(Box):
         return self._promise(asyncio.sleep(seconds))
 
     async def _reroute_cmd(self, cmd: str) -> Fragment[Raw | str] | Raw | str | None:
-        if (ctx := get_context()) is None:
-            self._cb._error('no context')
-            log.error('Bridge: no context for command: %r', cmd)
-            return None
-
+        ctx = get_context()
         r = await reroute_cmd(ctx.update, ctx.ptb, cmd)
         log.info('Bridge: exec %r returned %r', cmd, r)
         if r is None:

@@ -20,8 +20,7 @@ from util import (
     pre_block_raw,
     reply_text,
     use_text_override,
-    get_sender,
-    Sender,
+    get_context,
     ME,
     CHAN_ID,
     TRUSTED_IDS,
@@ -39,10 +38,11 @@ from dispatch import (
 
 try:
     from env import reply_usage
-except ImportError:
+except ImportError as e:
+    log.info('Using default reply_usage: %s', e)
 
-    def reply_usage(msg: Message, sender: Sender):
-        return reply_text(msg, f'Hello, {sender.name}!')
+    def reply_usage(msg: Message):
+        return reply_text(msg, f'Hello, {get_context().sender_name}!')
 
 
 REG_TEMPLATE_ARG = re.compile(r'\$(\*|\d+)')
@@ -173,7 +173,4 @@ def handle_start(
     if (fut := dispatch_start(update, ctx, arg)) is not None:
         return fut
 
-    if (sender := get_sender()) is None:
-        raise RuntimeError('No sender')
-
-    return reply_usage(msg, sender)
+    return reply_usage(msg)

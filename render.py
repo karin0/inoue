@@ -36,7 +36,7 @@ from db import db
 from util import (
     USER_ID,
     log,
-    get_sender,
+    get_context,
     list_env,
     get_msg_url,
     reply_text,
@@ -671,10 +671,8 @@ REG_DOC_REF = re.compile(r'[*:]\s*(\w+)\s*;')
 
 
 def get_doc(name: str, trusted: bool | None = None) -> tuple[int | None, str] | None:
-    if not (sender := get_sender()):
-        raise RuntimeError('get_doc: no sender')
-
-    if sender.is_guest:
+    context = get_context()
+    if context.sender_is_guest():
         if any(name.startswith(prefix) for prefix in ALLOWED_GUEST_DOC_PREFIXES):
             log.info('get_doc: allowed guest access to doc: %s', name)
         else:
@@ -684,7 +682,7 @@ def get_doc(name: str, trusted: bool | None = None) -> tuple[int | None, str] | 
     row = db.get_doc(name)
     if row is None and DOC_SEARCH_PATH and os.path.basename(name) == name:
         if trusted is None:
-            trusted = sender.id == USER_ID
+            trusted = context.sender_is_host()
         log.info(
             'get_doc: searching doc %s, trusted=%s in %r',
             name,

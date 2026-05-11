@@ -16,7 +16,7 @@ from util import (
     escape,
     reply_text,
     keep_chat_action,
-    is_sender_guest,
+    get_context,
 )
 
 VOICE_ASSETS_DIR = 'assets/voice'
@@ -181,8 +181,8 @@ async def try_handle_voice(msg: Message, *, parse_url: bool = False) -> bool:
             create_task(output.finish(msg, audio_only=True))
             info = output, output.duration
 
-        if not is_sender_guest():
-            quality = True
+        if get_context().sender_is_host():
+            quality = 'Q' not in arg
         elif arg:
             quality = 'q' in arg
         else:
