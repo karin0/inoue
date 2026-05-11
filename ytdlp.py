@@ -392,6 +392,8 @@ def get_ytdlp(audio_only: bool) -> 'YoutubeDL':
         'outtmpl': OUTTMPL,
         'writethumbnail': True,
         'max_filesize': MAX_FILE_SIZE,
+        # Disable the generic extractor to prevent SSRF.
+        'allowed_extractors': ('default', '-generic'),
     }
 
     _instances[audio_only] = ydl = YoutubeDL(cast(Any, opts))
