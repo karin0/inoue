@@ -319,6 +319,8 @@ class Bridge(Box):
 
     @public
     def sleep(self, seconds: float) -> Promise[None]:
+        if self._trusted is None and seconds > 60:
+            raise ValueError('sleep: too long')
         return self._promise(asyncio.sleep(seconds))
 
     async def _reroute_cmd(self, cmd: str) -> Fragment[Raw | str] | Raw | str | None:
