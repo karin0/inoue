@@ -1196,7 +1196,7 @@ class Engine(Interpreter):
         allow_undef: bool = False,
     ) -> Value:
         key = token.value.strip()
-        if permissive and self._check_iden(key):
+        if permissive and self._check_iden(key, error=False):
             return self._scope.get(key, as_str=as_str, allow_undef=allow_undef)
         if not as_str and key.isdecimal() and (key[0] != '0' or key == '0'):
             return int(key)
@@ -1305,21 +1305,30 @@ class Engine(Interpreter):
         # Not necessarily str!
         return to_str(val) if as_str else val
 
-    def _check_iden(self, key: str) -> bool:
+    def _check_iden(
+        self, key: str, error: bool = True, allow_decimal: bool = False
+    ) -> bool:
         if not key:
-            self._error('empty identifier')
+            if error:
+                self._error('empty identifier')
+            return False
+
+        if not allow_decimal and key.isdecimal():
+            if error:
+                self._error('use `$` for decimal identifiers: ' + repr(key))
             return False
 
         if any(c.isspace() for c in key):
-            self._error('bad identifier: ' + repr(key))
+            if error:
+                self._error('bad identifier: ' + repr(key))
             return False
 
         return True
 
     # Lark didn't distinguish VAR from LITERAL, so we have to strip manually.
-    def _iden(self, tree: Tree | Token) -> str:
+    def _iden(self, tree: Tree | Token, allow_decimal: bool = False) -> str:
         key = narrow(tree, Token).value.strip()
-        self._check_iden(key)
+        self._check_iden(key, allow_decimal=allow_decimal)
         return key
 
     def _expr_iden(self, tree: Tree) -> str:
@@ -1327,24 +1336,24 @@ class Engine(Interpreter):
         # {k=a; $(k)} means {$a}.
         assert tree.data == 'expr', tree
         key = self._expr(tree, permissive=True, as_str=True).strip()
-        self._check_iden(key)
+        self._check_iden(key, allow_decimal=True)
         return key
 
-    def _subscript(self, tree: Tree) -> str:
+    def _subscript(self, tree: Tree, allow_decimal: bool = False) -> str:
         assert tree.data == 'subscript', tree
-        key = self._lvalue(tree.children[0])
-        val = self._expr(tree.children[1], permissive=True, as_str=True)
+        key = self._lvalue(tree.children[0], allow_decimal=allow_decimal)
+        val = self._expr(narrow(tree.children[1], Tree), permissive=True, as_str=True)
         assert isinstance(val, str), val
         key = key.strip() + '.' + val.strip()
         self._check_iden(key)
         return key
 
-    def _lvalue(self, tree: Tree | Token) -> str:
+    def _lvalue(self, tree: Tree | Token, allow_decimal: bool = False) -> str:
         if isinstance(tree, Tree):
             if tree.data == 'expr':
                 return self._expr_iden(tree)
-            return self._subscript(tree)
-        return self._iden(tree)
+            return self._subscript(tree, allow_decimal=allow_decimal)
+        return self._iden(tree, allow_decimal=allow_decimal)
 
     def _get_by_raw_key(
         self, key: str, *, as_str: bool = False, allow_undef: bool = False
@@ -1393,7 +1402,7 @@ class Engine(Interpreter):
         name = tree.children[1]
 
         # `allow_undef` does not affect nested expressions in dynamic identifiers.
-        key = self._lvalue(name)
+        key = self._lvalue(name, allow_decimal=True)
         trace('_unary: op=%r key=%r', op, key)
 
         match op:
