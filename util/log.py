@@ -37,8 +37,11 @@ class NotifyHandler(logging.Handler):
                 return truncate_text(res), None
             ext = fmt.formatException(exc)
 
-        ext = truncate_text(ext, limit=MAX_TEXT_LENGTH - len(res) - 1)
-        res = f'{escape(res)}\n```\n{escape_pre(ext)}```'
+        record.exc_info = exc
+        record.exc_text = ext
+
+        new_ext = truncate_text(ext, limit=MAX_TEXT_LENGTH - len(res) - 1)
+        res = f'{escape(res)}\n```\n{escape_pre(new_ext)}```'
         return res, 'MarkdownV2'
 
     def emit(self, record: logging.LogRecord) -> None:
