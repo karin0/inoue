@@ -188,7 +188,7 @@ async def do_notify(
         return
     notify_moments.append(now)
 
-    if m := message or get_ctx_msg():
+    if not quiet and (m := message or get_ctx_msg()) is not None:
         try:
             if revocable:
                 return await reply_text(m, text, parse_mode, **kwargs)
@@ -198,9 +198,6 @@ async def do_notify(
             traceback.print_exc()
             text += f'\nreply_text: {type(e).__name__}: {e}'
             text = truncate_text(text)
-
-    if not bot:
-        raise RuntimeError('no bot')
 
     try:
         if quiet:
