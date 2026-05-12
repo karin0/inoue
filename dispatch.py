@@ -5,7 +5,10 @@ from typing import Any, Callable, Iterable, Coroutine, Awaitable, Type, overload
 from telegram import CallbackQuery, Message, Update, Bot
 from telegram.ext import ContextTypes
 
-from util import USER_ID, log, get_arg, get_msg
+from util.log import log
+from util.app import bot
+from util.env import USER_ID
+from util.ctx import get_arg, get_msg, get_context
 
 type MessageArg = str
 type CallbackData = str
@@ -26,9 +29,7 @@ CALLBACK_PARAM_TYPES = (
 
 type Handler[**P, R] = Callable[P, Awaitable[R]]
 
-type PTBHandler[T] = Callable[
-    [Update, ContextTypes.DEFAULT_TYPE], Coroutine[Any, Any, T]
-]
+type UpdateHandler[R] = Callable[[Update], Awaitable[R]]
 
 
 def _unwrap[T](x: T | None) -> T:
@@ -88,7 +89,7 @@ class Route[**P, R]:
         return repr(self)
 
     def __call__(
-        self, update: Update, ctx: ContextTypes.DEFAULT_TYPE, argv: Iterable[str] = ()
+        self, update: Update, argv: Iterable[str] = ()
     ) -> Coroutine[Any, Any, R]:
         log.debug('Calling route: %s: %r', self, argv)
         if not (
@@ -103,7 +104,7 @@ class Route[**P, R]:
             if ty is Update:
                 args.append(update)
             elif ty is ContextTypes.DEFAULT_TYPE:
-                args.append(ctx)
+                args.append(get_context().ptb)
             elif ty is Message:
                 args.append(get_msg(update))
             elif ty is MessageArg:
@@ -113,7 +114,7 @@ class Route[**P, R]:
             elif ty is CallbackData:
                 args.append(_unwrap(_unwrap(update.callback_query).data))
             elif ty is Bot:
-                args.append(ctx.bot)
+                args.append(bot)
             elif ty is str:
                 args.append(next(it))
             elif ty is int:
@@ -177,7 +178,7 @@ def command[H: Handler](
     return decorator(func)
 
 
-def iter_commands() -> Iterable[tuple[str, tuple[PTBHandler, bool]]]:
+def iter_commands() -> Iterable[tuple[str, tuple[UpdateHandler, bool]]]:
     return ((name, (route, route._public)) for name, route in _cmd_handlers.items())
 
 
@@ -215,17 +216,14 @@ def callback_query(
 
 
 def _dispatch_argv(
-    update: Update, ctx: ContextTypes.DEFAULT_TYPE, data: str, map: dict[str, Route]
+    update: Update, data: str, map: dict[str, Route]
 ) -> Coroutine | None:
     args = data.split('_')
     if (route := map.get(args[0])) is not None:
-        return route(update, ctx, islice(args, 1, None))
+        return route(update, islice(args, 1, None))
 
 
-def handle_callback_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if (query := update.callback_query) is None:
-        raise ValueError('No callback_query')
-
+def handle_callback_query(query: CallbackQuery, update: Update):
     if not (data := query.data):
         raise ValueError('No data in cq')
 
@@ -234,9 +232,9 @@ def handle_callback_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     for filter_func, route in _cb_filters:
         if filter_func(data):
-            return route(update, ctx)
+            return route(update)
 
-    if fut := _dispatch_argv(update, ctx, data, _cb_handlers):
+    if fut := _dispatch_argv(update, data, _cb_handlers):
         return fut
 
     raise ValueError(f'Bad callback query: {data}')
@@ -261,7 +259,5 @@ def start(key: str, *, public: bool = False) -> Callable[[Handler], Handler]:
     return decorator
 
 
-def dispatch_start(
-    update: Update, ctx: ContextTypes.DEFAULT_TYPE, arg: MessageArg
-) -> Coroutine | None:
-    return _dispatch_argv(update, ctx, arg, _start_handlers) if arg else None
+def dispatch_start(update: Update, arg: MessageArg) -> Coroutine | None:
+    return _dispatch_argv(update, arg, _start_handlers) if arg else None

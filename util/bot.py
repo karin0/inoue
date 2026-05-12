@@ -1,25 +1,21 @@
 import asyncio
 
-from typing import Awaitable, Callable, Sequence, Concatenate, TYPE_CHECKING
+from typing import Awaitable, Callable, Sequence, Concatenate
 from contextlib import contextmanager
 from contextvars import ContextVar
 
 from telegram import Message, MessageEntity, InlineKeyboardMarkup, Update
-from telegram.ext import ContextTypes
 from telegram.constants import ChatAction
 from telegram.error import BadRequest
 
 from db import db
-from gateway import get_command_callback
+from dispatch import get_command_handler, UpdateHandler
 
 from .log import log
 from .text import truncate_text
 from .app import bot, create_task
 from .ctx import use_text_override
 from .env import USER_ID, CHAN_ID, GROUP_ID
-
-if TYPE_CHECKING:
-    from dispatch import PTBHandler
 
 
 def get_msg_url(msg_id, chat_id=None) -> str:
@@ -89,9 +85,9 @@ async def try_send_text_or_not_modified[**P, R](
         raise
 
 
-reroute_capture: ContextVar[
-    tuple[int, int, list[tuple[str, str | None]] | None] | None
-] = ContextVar('reroute_capture', default=None)
+reroute_capture: ContextVar[tuple[int, int, list[tuple[str, str | None]]] | None] = (
+    ContextVar('reroute_capture', default=None)
+)
 
 
 # Note: the return value could be `None` if `allow_not_modified` is set.
@@ -130,10 +126,9 @@ async def reply_text(
         (reroute := reroute_capture.get()) is not None
         and reroute[0] == m.chat_id
         and reroute[1] == m.message_id
-        and (buf := reroute[2]) is not None
     ):
         log.info('reply_text: reroute_capture: %s', key)
-        buf.append((text, parse_mode))
+        reroute[2].append((text, parse_mode))
 
         # Do not try to edit the reply, or we will mess up the response of the
         # capturing context (`/render`).
@@ -197,7 +192,7 @@ def keep_chat_action(msg: Message, action: ChatAction):
         task.cancel()
 
 
-def _extract_cmd_callback(text: str | None) -> PTBHandler | None:
+def _extract_cmd_handler(text: str | None) -> UpdateHandler | None:
     if text and text[0] == '/':
         p = min(
             x
@@ -205,47 +200,35 @@ def _extract_cmd_callback(text: str | None) -> PTBHandler | None:
             if x > 0
         )
         cmd = text[1:p]
-        callback = get_command_callback(cmd)
-        log.debug('_extract_cmd_callback: %r -> %r %r %r', text, p, cmd, callback)
+        callback = get_command_handler(cmd)
+        log.debug('route_cmd: %r -> %r %r %r', text, p, cmd, callback)
         if callback is not None:
-            log.info('reroute: %s: dispatching to %s', cmd, callback)
+            log.info('route_cmd: %s: dispatching to %s', cmd, callback)
             return callback
-        log.debug('reroute: command not found: %s', cmd)
+        log.debug('route_cmd: command not found: %s', cmd)
 
 
-async def _do_reroute_cmd[T: list[tuple[str, str | None]] | None](
-    update: Update,
-    ctx: ContextTypes.DEFAULT_TYPE,
-    callback: PTBHandler,
-    msg: Message,
-    buf: T,
-) -> T | None:
-    if reroute_capture.get():
-        log.warning('reroute: already in reroute_cmd: %s', update)
-        return None
-
-    token = reroute_capture.set((msg.chat_id, msg.message_id, buf))
-    try:
-        await callback(update, ctx)
-    finally:
-        reroute_capture.reset(token)
-
-    return buf
+def route_cmd(update: Update, msg: Message) -> Awaitable | None:
+    if (callback := _extract_cmd_handler(msg.text)) is not None:
+        return callback(update)
 
 
 async def reroute_cmd(
-    update: Update, ctx: ContextTypes.DEFAULT_TYPE, text: str
+    update: Update, text: str
 ) -> Sequence[tuple[str, str | None]] | None:
     if (msg := update.effective_message) is None:
         raise RuntimeError('No message')
 
-    if (callback := _extract_cmd_callback(text)) is not None:
+    if reroute_capture.get() is not None:
+        log.warning('reroute: already in reroute_cmd: %s', update)
+        return None
+
+    if (callback := _extract_cmd_handler(text)) is not None:
         with use_text_override(text):
-            return await _do_reroute_cmd(update, ctx, callback, msg, [])
-
-
-def try_reroute_cmd(
-    update: Update, ctx: ContextTypes.DEFAULT_TYPE, msg: Message
-) -> Awaitable | None:
-    if (callback := _extract_cmd_callback(msg.text)) is not None:
-        return _do_reroute_cmd(update, ctx, callback, msg, None)
+            buf = []
+            token = reroute_capture.set((msg.chat_id, msg.message_id, buf))
+            try:
+                await callback(update)
+            finally:
+                reroute_capture.reset(token)
+            return buf

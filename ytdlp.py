@@ -32,7 +32,15 @@ from telegram import (
 from telegram.constants import ChatAction
 
 from dispatch import MessageArg, command
-from util import log, is_debug, create_task, reply_text, keep_chat_action, get_context
+from util import (
+    log,
+    is_debug,
+    bot,
+    create_task,
+    reply_text,
+    keep_chat_action,
+    get_context,
+)
 from render_context import LRUDict
 from ffmpeg import (
     encode_voice,
@@ -613,7 +621,6 @@ async def _finish_voice(
 
 
 async def handle_yt_chosen_result(
-    bot: Bot,
     result_id: str,
     parsed: tuple[str, str],
     inline_message_id: str,

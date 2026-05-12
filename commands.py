@@ -2,7 +2,6 @@ import re
 import shlex
 import asyncio
 
-from telegram.ext import ContextTypes
 from telegram import (
     Message,
     User,
@@ -66,7 +65,6 @@ def expand_template(template: str, args_str: str) -> str:
 # Provided `text` must start with '/'.
 async def dispatch_cmd(
     update: Update,
-    ctx: ContextTypes.DEFAULT_TYPE,
     msg: Message,
     text: str,
     depth: int = 0,
@@ -82,12 +80,12 @@ async def dispatch_cmd(
     if template := db.get_command(cmd_name):
         expanded = expand_template(template, cmd_args)
         if expanded.startswith('/'):
-            return await dispatch_cmd(update, ctx, msg, expanded, depth + 1)
+            return await dispatch_cmd(update, msg, expanded, depth + 1)
         raise RuntimeError(f'Bad command expansion: {expanded}')
 
     if handler := get_command_handler(cmd_name):
         with use_text_override(text):
-            return await handler(update, ctx)
+            return await handler(update)
 
     return await handle_cmd(msg, content)
 
@@ -167,10 +165,8 @@ async def handle_greet(msg: Message, bot: Bot):
 
 
 @command
-def handle_start(
-    update: Update, ctx: ContextTypes.DEFAULT_TYPE, msg: Message, arg: MessageArg
-):
-    if (fut := dispatch_start(update, ctx, arg)) is not None:
+def handle_start(update: Update, msg: Message, arg: MessageArg):
+    if (fut := dispatch_start(update, arg)) is not None:
         return fut
 
     return reply_usage(msg)

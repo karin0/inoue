@@ -1,162 +1,153 @@
 import os
 import sys
+import time
 import atexit
 import asyncio
 
-from telegram import Update, Bot, MessageOriginChannel
-from telegram.ext import (
-    ContextTypes,
-    MessageHandler,
-    CallbackQueryHandler,
-    ChosenInlineResultHandler,
-    InlineQueryHandler,
-)
-from telegram.constants import ChatType
+from telegram import Message, Update, Bot, User, MessageOriginChannel
+from telegram.ext import ContextTypes, BaseHandler
+from telegram.constants import ChatID
 
 from util import (
     log,
+    notify,
     is_debug,
     app,
     post_init,
-    pre_block,
-    reply_text,
+    Sender,
     ME,
     USER_ID,
     CHAN_ID,
     GROUP_ID,
-    TODO_ID,
+    GUEST_USER_IDS,
+    IGNORE_CHAT_IDS,
     LOCK_FILE,
-    get_context,
-    get_msg,
+    trace,
     do_notify,
-    try_reroute_cmd,
+    shorten,
+    use_context,
 )
-from gateway import add_handler, add_command_handler
-from dispatch import handle_callback_query, iter_commands
-from inoue import render_receipt
-from rg import handle_rg
-from voice import try_handle_voice
-from todo import handle_todo_msg
-from ytdlp import extract_url, handle_yt_inline_query, handle_yt_chosen_result
-from render import handle_render_doc, handle_render_group, handle_render_inline_query
-from commands import dispatch_cmd, set_commands, stats, reply_usage
+from dispatch import handle_callback_query
+from commands import set_commands, stats, reply_usage
+from handlers import handle_msg, handle_post, handle_inline_query, handle_chosen_inline
 
 import misc, media, run  # noqa: F401, E401
 
 
-async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    context = get_context()
-    log.debug('handle_msg: sender: %s', context.sender)
-    if (
-        (sender := context.sender) is not None
-        and sender.id in (USER_ID, CHAN_ID)
-        and (post := update.edited_channel_post or update.channel_post)
-    ):
-        return await handle_render_doc(update, post)
+async def handle_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    # ruff: noqa: E731
+    t0 = time.perf_counter()
 
-    if not (msg := get_msg(update)):
-        return
+    effective_msg = update.effective_message
+    src = None
+    sender_id = None
+    sender_name = None
+    valid = False
 
-    if msg.chat_id == TODO_ID:
-        if context.sender_is_host():
-            return await handle_todo_msg(msg)
-        raise ValueError(f'Unauthorized todo: {msg}')
+    if sender := update.effective_sender:
+        sender_id = sender.id
+        if isinstance(sender, User):
+            sender_name = sender.full_name
+            src = f'{sender_name} ({sender.name} {sender_id})'
+            valid = sender_id == USER_ID
+        else:  # Chat
+            sender_name = sender.title
+            src = f'{sender_name} [{sender.type} {sender_id}]'
 
-    # `render` handles Doc messages that are forwarded from CHAN_ID to its discussion group.
-    if (
-        isinstance(origin := msg.forward_origin, MessageOriginChannel)
-        and msg.is_automatic_forward
-        and msg.chat_id == GROUP_ID
-        and origin.chat.id == CHAN_ID
-    ):
-        return await handle_render_group(msg, origin.message_id)
-
-    # Reroute if the text starts with a command.
-    # This allows commands to be sent as any styled text (pre/quote), rather than
-    # a canonical BOT_COMMAND entity.
-    if (fut := try_reroute_cmd(update, ctx, msg)) is not None:
-        return await fut
-
-    if msg.chat.type != ChatType.PRIVATE:
-        return
-
-    if await try_handle_voice(msg):
-        return
-
-    # ID Bot
-    if origin:
-        return await msg.reply_text(*pre_block(str(origin)), do_quote=True)
-
-    if context.sender_is_guest():
-        await reply_usage(msg)
-        return
-
-    # Privileged operations are only allowed in private chats, even if it's from
-    # USER_ID.
-    if msg.chat_id != USER_ID:
-        # This should not happen since non-private chats are already skipped.
-        log.error('handle_msg: unauthorized update: %s', update)
-        return
-
-    if not ((text := msg.text) and (text := text.strip())):
-        if (
-            msg.forum_topic_created
-            or msg.forum_topic_edited
-            or msg.forum_topic_closed
-            or msg.forum_topic_reopened
-        ):
-            log.debug('Ignoring forum_topic: %s', msg)
+    if chat := update.effective_chat:
+        if chat.id in IGNORE_CHAT_IDS:
             return
 
-        with open('out.ogg', 'rb') as f:
-            return await msg.reply_voice(f, do_quote=True)
+        if chat.id != sender_id:
+            src2 = f'{chat.title} {{{chat.type} {chat.id}}}'
+            src = f'{src} @ {src2}' if src else src2
 
-    # Be careful, since you won't be able to log in again within 10 minutes.
-    if text == '/Please log out now/':
-        await reply_text(msg, 'See you next time!')
-        if await ctx.bot.log_out():
-            log.info('log_out: success')
-            sys.exit(1)
-        else:
-            log.error('log_out: failed')
+        if not valid:
+            # Only `handle_msg` accepts messages that are not from USER_ID.
+            valid = chat.id == CHAN_ID or (
+                # The content must be from CHAN_ID to be trusted, even if
+                # auto-forwarded to GROUP_ID.
+                chat.id == GROUP_ID
+                and (msg := effective_msg)
+                and (from_user := msg.from_user)
+                and from_user.id == ChatID.SERVICE_CHAT
+                and msg.is_automatic_forward
+                and isinstance(origin := msg.forward_origin, MessageOriginChannel)
+                and origin.chat.id == CHAN_ID
+            )
+
+    if is_guest := not valid and sender_id in GUEST_USER_IDS:
+        src = f'{src} (guest)'
+        valid = True
+
+    if sender_id is not None:
+        sender = Sender(sender_id, sender_name or '', is_guest)
+    else:
+        sender = None
+
+    trace('Update from %s: %s', src, update)
+
+    post = None
+    if (msg := update.message) is not None:
+        log.info('%s: msg %s', src, shorten(msg.text))
+        func = lambda: handle_msg(msg, update)
+    elif (msg := update.edited_message) is not None:
+        log.info('%s: edited %s', src, shorten(msg.text))
+        func = lambda: handle_msg(msg, update)
+    elif (post := update.channel_post) is not None:
+        log.info('%s: channel post %s', src, shorten(post.text))
+        func = lambda: handle_post(post, sender)
+    elif (post := update.edited_channel_post) is not None:
+        log.info('%s: edited post %s', src, shorten(post.text))
+        func = lambda: handle_post(post, sender)
+    elif (callback := update.callback_query) is not None:
+        if isinstance(callback.message, Message):
+            msg = callback.message
+        log.info('%s: callback %s', src, callback.data)
+        func = lambda: handle_callback_query(callback, update)
+    elif (query := update.inline_query) is not None:
+        log.info('%s: inline %s', src, query.query)
+        func = lambda: handle_inline_query(query)
+    elif (chosen := update.chosen_inline_result) is not None:
+        log.info('%s: chosen %s %s', src, chosen.result_id, chosen.query)
+        func = lambda: handle_chosen_inline(chosen)
+    else:
+        log.info('%s: unhandled: %s', src, update)
+        func = None
+
+    if (item := msg or post) != effective_msg:
+        log.warning('Message mismatch: %s vs %s', item, effective_msg)
+
+    if not valid:
+        log.warning(
+            'Drop unauthorized update from %s: %s\nSender: %s\nChat: %s',
+            src,
+            update,
+            sender,
+            chat,
+        )
+        func = None
+
+    if func is None:
+        if is_guest and msg:
+            await reply_usage(msg)
         return
 
-    if text.startswith('/'):
-        return await dispatch_cmd(update, ctx, msg, text)
+    with use_context(update, ctx, msg, sender):
+        try:
+            if (fut := func()) is not None:
+                await fut
+        except Exception as e:
+            with notify.revocable():
+                # Can be edited to successful responses later after user edits
+                log.exception('handle_update: %s: %s', type(e).__name__, e)
 
-    if '\n' not in text:
-        return await handle_rg(msg, text)
-
-    await reply_text(msg, *pre_block(render_receipt(text)))
-
-
-async def handle_inline_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    query = update.inline_query
-    assert query
-    if data := query.query.strip():
-        if (parsed := extract_url(data)) is not None:
-            await handle_yt_inline_query(query, parsed)
-        else:
-            await handle_render_inline_query(update, ctx, query, data)
+    log.debug('Exiting after %.3f secs', time.perf_counter() - t0)
 
 
-async def handle_chosen_inline(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    result = update.chosen_inline_result
-    assert result
-    result_id = result.result_id
-    if result_id.startswith('yt_'):
-        query = result.query.strip()
-        if result.inline_message_id and (parsed := extract_url(query)) is not None:
-            await handle_yt_chosen_result(
-                ctx.bot,
-                result_id,
-                parsed,
-                result.inline_message_id,
-            )
-        else:
-            log.warning('Invalid chosen inline result: %s', result)
-    elif not result_id.startswith('noop'):
-        log.error('Bad chosen inline result: %s', result)
+class Handler(BaseHandler):
+    def check_update(self, update):
+        return True
 
 
 def _post_init(bot: Bot):
@@ -169,18 +160,7 @@ def _post_init(bot: Bot):
 
 def init_app():
     post_init(_post_init)
-
-    for name, (func, permissive) in iter_commands():
-        if name == 'rg':
-            names = (name, *(f'{name}{off}' for off in range(0, 5)))
-        else:
-            names = (name,)
-        add_command_handler(app, names, func, permissive=permissive)
-
-    add_handler(app, MessageHandler, True, None, handle_msg)
-    add_handler(app, CallbackQueryHandler, True, handle_callback_query)
-    add_handler(app, InlineQueryHandler, True, handle_inline_query)
-    add_handler(app, ChosenInlineResultHandler, True, handle_chosen_inline)
+    app.add_handler(Handler(handle_update))
 
 
 def get_lock():

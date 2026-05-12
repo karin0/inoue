@@ -324,8 +324,7 @@ class Bridge(Box):
         return self._promise(asyncio.sleep(seconds))
 
     async def _reroute_cmd(self, cmd: str) -> Fragment[Raw | str] | Raw | str | None:
-        ctx = get_context()
-        r = await reroute_cmd(ctx.update, ctx.ptb, cmd)
+        r = await reroute_cmd(get_context().update, cmd)
         log.info('Bridge: exec %r returned %r', cmd, r)
         if r is None:
             self._cb._error(f'exec failed for {cmd!r}')

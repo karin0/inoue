@@ -18,25 +18,23 @@ from typing import (
 )
 
 from telegram import (
-    Bot,
     CallbackQuery,
     InlineQuery,
     InlineQueryResultArticle,
     InputMediaPhoto,
     InputMediaDocument,
     InputTextMessageContent,
-    Update,
     Message,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
-from telegram.ext import ContextTypes
 from telegram.constants import MessageLimit, ReactionEmoji
 
 from db import db
 from util import (
     USER_ID,
     log,
+    bot,
     get_context,
     list_env,
     get_msg_url,
@@ -298,7 +296,6 @@ class RenderContext:
 
     def __init__(
         self,
-        update: Update,
         overrides: dict[str, Value] | None = None,
         markup_state: MarkupState | None = None,
         as_caption: bool = False,
@@ -320,6 +317,7 @@ class RenderContext:
         trusted = source = None
 
         # Existing `overrides` are frozen and immutable in `Engine`, so this is safe.
+        update = get_context().update
         if user := update.effective_user:
             if user.id == USER_ID:
                 trusted = USER_ID
@@ -596,7 +594,7 @@ class RenderContext:
 
 
 @command(public=True)
-def handle_render(update: Update, msg: Message, arg: MessageArg):
+def handle_render(msg: Message, arg: MessageArg):
     target = msg.reply_to_message
     text = target and (target.text or target.caption or '').strip()
 
@@ -620,7 +618,7 @@ def handle_render(update: Update, msg: Message, arg: MessageArg):
         db['r-' + path] = text
         doc_id = None
 
-    ctx = RenderContext(update, doc_id=doc_id, path=path)
+    ctx = RenderContext(doc_id=doc_id, path=path)
     ctx.set_update_callback(create_reply_callback(msg, ctx.data))
     return ctx.render(text)
 
@@ -760,9 +758,7 @@ async def handle_render_group(msg: Message, origin_id: int):
         log.info('No preview cache in group: %s -> %s', msg.id, origin_id)
 
 
-async def handle_render_inline_query(
-    update: Update, bot_ctx: ContextTypes.DEFAULT_TYPE, query: InlineQuery, text: str
-):
+async def handle_render_inline_query(query: InlineQuery, text: str):
     if doc_ref := is_doc_ref(text):
         path, row = doc_ref
         if path is None:
@@ -783,10 +779,8 @@ async def handle_render_inline_query(
     else:
         doc_id = path = None
 
-    ctx = RenderContext(update, doc_id=doc_id, path=path)
-    ctx.data['_env.footer'] = Element(
-        (Bold('via '), '@', bot_ctx.bot.username, ' ', text)
-    )
+    ctx = RenderContext(doc_id=doc_id, path=path)
+    ctx.data['_env.footer'] = Element((Bold('via '), '@', bot.username, ' ', text))
     rendered = ctx.render_text(text)
     result, parse_mode, markup = await ctx.to_response(rendered)
 
@@ -811,7 +805,7 @@ async def handle_render_inline_query(
 
 
 @callback_query(filter=lambda data: data[0] in CALLBACK_SPECIAL, public=True)
-def handle_render_callback(update: Update, callback: CallbackQuery, data: CallbackData):
+def handle_render_callback(callback: CallbackQuery, data: CallbackData):
     flags = {}
     clicked_button = None
 
@@ -870,7 +864,6 @@ def handle_render_callback(update: Update, callback: CallbackQuery, data: Callba
     as_caption = bool(msg is not None and getattr(msg, 'caption', None))
 
     ctx = RenderContext(
-        update,
         overrides=dict(flags),
         markup_state=(flags, data),
         doc_id=doc_id,
@@ -960,12 +953,12 @@ def _report(
     out.append(f'{escape(action)} {msg_info}')
 
 
-async def handle_render_doc(update: Update, msg: Message):
+async def handle_render_doc(msg: Message):
     if not (text := msg.text) or not (text := text.strip()):
         return
 
     id = msg.message_id
-    ctx = RenderContext(update, doc_id=id)
+    ctx = RenderContext(doc_id=id)
     result = ctx.render_text(text)
 
     info = []
@@ -1029,7 +1022,7 @@ def handle_ls(msg: Message, arg: MessageArg):
 
 
 @command
-async def handle_submit(update: Update, msg: Message, arg: MessageArg, bot: Bot):
+async def handle_submit(msg: Message, arg: MessageArg):
     from util import CHAN_ID, MAX_TEXT_LENGTH, pre_block
 
     if not DOC_OVERRIDE_DIR:
@@ -1047,7 +1040,7 @@ async def handle_submit(update: Update, msg: Message, arg: MessageArg, bot: Bot)
         return await reply_text(msg, f'Too long: {length}')
 
     m = await bot.send_message(CHAN_ID, *pre_block(text))
-    name = await handle_render_doc(update, m) or arg
+    name = await handle_render_doc(m) or arg
 
     if (r := db.get_doc(name)) is not None:
         old_url = get_msg_url(r[0])
