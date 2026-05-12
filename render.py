@@ -18,6 +18,7 @@ from typing import (
 )
 
 from telegram import (
+    Bot,
     CallbackQuery,
     InlineQuery,
     InlineQueryResultArticle,
@@ -683,6 +684,7 @@ def create_reply_callback(msg: Message, data: Mapping[str, Value]) -> UpdateCall
 
 
 DOC_SEARCH_PATH = list_env('DOC_SEARCH_PATH', ':')
+DOC_OVERRIDE_DIR = os.environ.get('DOC_OVERRIDE_DIR')
 ALLOWED_GUEST_DOC_PREFIXES = list_env('ALLOWED_GUEST_DOC_PREFIXES')
 
 REG_DOC_REF = re.compile(r'[*:]\s*(\w+)\s*;')
@@ -697,23 +699,36 @@ def get_doc(name: str, trusted: bool | None = None) -> tuple[int | None, str] | 
             log.info('get_doc: disallowed guest access to doc: %s', name)
             return None
 
+    if trusted is None:
+        trusted = context.sender_is_host()
+    trusted = trusted and os.path.basename(name) == name
+
+    if not trusted:
+        return db.get_doc(name)
+
+    if DOC_OVERRIDE_DIR and os.path.isfile(
+        file := os.path.join(DOC_OVERRIDE_DIR, name + '.m')
+    ):
+        with open(file, encoding='utf-8') as fp:
+            text = fp.read()
+        log.info('get_doc: loaded doc %s from override dir', name)
+        return None, text
+
     row = db.get_doc(name)
-    if row is None and DOC_SEARCH_PATH and os.path.basename(name) == name:
-        if trusted is None:
-            trusted = context.sender_is_host()
+
+    if row is None and DOC_SEARCH_PATH:
         log.info(
             'get_doc: searching doc %s, trusted=%s in %r',
             name,
             trusted,
             DOC_SEARCH_PATH,
         )
-        if trusted:
-            for d in DOC_SEARCH_PATH:
-                for ext in ('.m', '.txt'):
-                    if os.path.isfile(file := os.path.join(d, name + ext)):
-                        with open(file, encoding='utf-8') as fp:
-                            text = fp.read()
-                        return None, text
+        for d in DOC_SEARCH_PATH:
+            for ext in ('.m', '.txt'):
+                if os.path.isfile(file := os.path.join(d, name + ext)):
+                    with open(file, encoding='utf-8') as fp:
+                        text = fp.read()
+                    return None, text
     return row
 
 
@@ -995,6 +1010,7 @@ async def handle_render_doc(update: Update, msg: Message):
 
     res = truncate_text(('\n' if len(info) > 2 else ' ').join(info))
     await asyncio.gather(do_notify(res, 'MarkdownV2', quiet=True), set_reaction)
+    return name
 
 
 @command
@@ -1010,3 +1026,45 @@ def handle_ls(msg: Message, arg: MessageArg):
         lines.append(line)
 
     return reply_text(msg, '\n'.join(lines), parse_mode='MarkdownV2')
+
+
+@command
+async def handle_submit(update: Update, msg: Message, arg: MessageArg, bot: Bot):
+    from util import CHAN_ID, MAX_TEXT_LENGTH, pre_block
+
+    if not DOC_OVERRIDE_DIR:
+        return await reply_text(msg, 'DOC_OVERRIDE_DIR is unset.')
+
+    if os.path.basename(arg) != arg:
+        return await reply_text(msg, 'Bad name.')
+
+    file = os.path.join(DOC_OVERRIDE_DIR, arg + '.m')
+    with open(file, encoding='utf-8') as fp:
+        text = fp.read()
+
+    length = len(text)
+    if length > MAX_TEXT_LENGTH:
+        return await reply_text(msg, f'Too long: {length}')
+
+    m = await bot.send_message(CHAN_ID, *pre_block(text))
+    name = await handle_render_doc(update, m) or arg
+
+    if (r := db.get_doc(name)) is not None:
+        old_url = get_msg_url(r[0])
+    else:
+        old_url = None
+
+    dst = file + '.old'
+    if os.path.exists(dst):
+        n = 1
+        while os.path.exists(dst := f'{file}.old.{n}'):
+            n += 1
+
+    os.rename(file, dst)
+    log.info('Renamed %s -> %s', file, dst)
+
+    info = f'{length} chars ({name})\nNew: {get_msg_url(m.message_id)}'
+    if old_url is not None:
+        info = f'{info}\nOld: {old_url}'
+
+    await reply_text(msg, info)
