@@ -55,7 +55,7 @@ def pre_block(s: str, *, do_truncate: bool = True) -> Content:
 
 
 def pre_block_raw(s: str, *, lang: str = '') -> str:
-    return f'```{lang}\n{escape_pre(s)}\n```'
+    return f'```{lang}\n{escape_pre(s)}```'
 
 
 reg_cleanup = re.compile(r'\n{3,}')
