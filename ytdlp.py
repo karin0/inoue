@@ -304,16 +304,8 @@ class Output:
             thumbnail and len(thumbnail),
         )
 
-        if isinstance(msg_or_bot, Message):
-
-            def wrap(f):
-                return functools.partial(
-                    f, do_quote=True, allow_sending_without_reply=True
-                )
-
-            send_audio = msg_or_bot.reply_audio
-            send_video = msg_or_bot.reply_video
-        else:
+        if isinstance(msg_or_bot, Bot):
+            # XXX: `msg` might be a proxy, so we check for `Bot` here.
 
             def wrap(f):
                 return functools.partial(
@@ -326,6 +318,17 @@ class Output:
             send_audio = msg_or_bot.send_audio
             send_video = msg_or_bot.send_video
 
+        else:
+
+            def wrap(f):
+                return functools.partial(
+                    f, do_quote=True, allow_sending_without_reply=True
+                )
+
+            send_audio = msg_or_bot.reply_audio
+            send_video = msg_or_bot.reply_video
+
+        log.debug('finish: %r %r %r', msg_or_bot, send_audio, send_video)
         with open(self.path, 'rb') as fp:
             if audio_only:
                 performer = truncate(performer, 64) if performer else None

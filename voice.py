@@ -17,6 +17,7 @@ from util import (
     reply_text,
     keep_chat_action,
     get_context,
+    InlineMessageProxy,
 )
 
 VOICE_ASSETS_DIR = 'assets/voice'
@@ -114,12 +115,10 @@ async def convert_voice(
         if queue.empty():
             queue.put_nowait(True)
 
-    from util import InlineMessageProxy
-
     if isinstance(msg, InlineMessageProxy):
         msg._defer()
 
-    task = asyncio.create_task(worker())
+    task = create_task(worker())
     try:
         # Report initial status before downloading the file.
         queue.put_nowait(True)
@@ -158,7 +157,7 @@ async def convert_voice(
         queue.put_nowait(None)
         await task
         if isinstance(msg, InlineMessageProxy):
-            await msg._finalize()
+            await msg._flush()
 
 
 def extract_media(
@@ -185,7 +184,12 @@ async def try_handle_voice(msg: Message, *, parse_url: bool = False) -> bool:
             assert parsed is not None
             url, arg = parsed
             output = await run_ytdlp(url, audio_only=True)
-            create_task(output.finish(msg, audio_only=True))
+            if isinstance(msg, InlineMessageProxy):
+                # XXX: An inline message cannot contain two media, so we skip
+                # sending the original audio.
+                log.info('voice: skipping audio for inline message')
+            else:
+                create_task(output.finish(msg, audio_only=True))
             info = output, output.duration
 
         if get_context().sender_is_host():

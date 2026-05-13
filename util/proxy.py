@@ -1,12 +1,27 @@
 from __future__ import annotations
-from typing import Awaitable, Callable, Type
+from typing import Any, Awaitable, Callable, Concatenate, NamedTuple, cast
+from functools import partial
 
 from telegram import (
-    InlineQueryResult,
+    Message,
+    Audio,
+    Video,
+    Document,
+    PhotoSize,
+    Voice,
     InlineKeyboardMarkup,
+    InlineQueryResult,
     InlineQueryResultArticle,
+    InlineQueryResultCachedAudio,
+    InlineQueryResultCachedVideo,
+    InlineQueryResultCachedPhoto,
+    InlineQueryResultCachedDocument,
     InlineQueryResultCachedVoice,
     InputTextMessageContent,
+    InputMediaAudio,
+    InputMediaVideo,
+    InputMediaPhoto,
+    InputMediaDocument,
 )
 from telegram.constants import MessageLimit
 
@@ -16,8 +31,6 @@ from .text import html_escape, escape, shorten, truncate_text
 from .env import MEDIA_STAGING_CHAT_ID, MEDIA_STAGING_MESSAGE_THREAD_ID
 
 type InlineMessageIdFactory[T] = Callable[[T, InlineQueryResult], Awaitable[str]]
-
-type MediaResult = InlineQueryResultCachedVoice
 
 
 class InlineMessageProxy[T]:
@@ -51,18 +64,32 @@ class InlineMessageProxy[T]:
         self._reply_markup: InlineKeyboardMarkup | None = None
         self._disable_web_page_preview: bool | None = None
         self._inline_message_id: str | InlineMessageIdFactory[T] = inline_message_id
-        self._media: tuple[Type[MediaResult], str, str] | None = None
+        self._media: RepliedMedia | None = None
         self._deferred = False
         self._dirty = False
 
-    def __getattr__(self, item):
-        return getattr(self._msg, item, None)
+    def __getattr__(self, item: str):
+        key = item.removeprefix('reply_')
+        if len(key) != len(item):
+            if key in MEDIA_TYP:
+                return partial(self._reply_media, key, getattr(bot, 'send_' + key))
+            if key != 'to_message':
+                log.error('InlineMessageProxy: unimplemented reply method: %s', item)
 
-    async def _finalize(self):
+        r = getattr(self._msg, item, None)
+        log.debug('InlineMessageProxy: getattr: %s -> %r', item, r)
+        return r
+
+    async def _flush(self):
         if self._dirty:
             await self._emit(True)
 
     def _defer(self):
+        # XXX: When a voice media comes, we cannot edit the message to include
+        # the voice, since there is no `InputMediaVoice`.
+        # In that case, the caller must use `_defer()` in advance to defer the
+        # emission until the voice is ready, like in `handle_yt_chosen_result`.
+        # See `voice.py`.
         if isinstance(self._inline_message_id, str):
             log.warning(
                 'InlineMessageProxy: cannot defer after the inline message is emitted: %s',
@@ -74,12 +101,11 @@ class InlineMessageProxy[T]:
 
     async def _emit(self, force: bool = False) -> None:
         if not self._fragments and self._media is None:
-            # TODO: handle media
             log.info('InlineMessageProxy: nothing to emit')
             return
 
         if self._deferred and not force:
-            log.info('InlineMessageProxy: emitting deferred')
+            log.debug('InlineMessageProxy: emitting deferred')
             self._dirty = True
             return
 
@@ -116,37 +142,46 @@ class InlineMessageProxy[T]:
 
         self._dirty = False
         if isinstance(mid := self._inline_message_id, str):
-            # XXX: When a voice media comes, we cannot edit the text message to
-            # include the media. In that case, the caller must use `_defer()`
-            # in advance to defer the emission until the media is ready.
-            # See `voice.py`.
-            # For other media types, we can use `edit_message_media` like in
-            # `handle_yt_chosen_result`, which is not implemented yet.
             log.info('InlineMessageProxy: editing inline message: %s', mid)
-            await bot.edit_message_text(
-                text,
-                parse_mode=parse_mode,
-                reply_markup=self._reply_markup,
-                inline_message_id=mid,
-            )
+            if (
+                self._media is not None
+                and (input := self._media.as_input()) is not None
+            ):
+                typ, media = input
+                media: Any
+                await bot.edit_message_media(
+                    typ(media, caption=text or None, parse_mode=parse_mode),
+                    reply_markup=self._reply_markup,
+                    inline_message_id=mid,
+                )
+            else:
+                await bot.edit_message_text(
+                    text,
+                    parse_mode=parse_mode,
+                    reply_markup=self._reply_markup,
+                    inline_message_id=mid,
+                    disable_web_page_preview=self._disable_web_page_preview,
+                )
         else:
             log.info('InlineMessageProxy: emitting inline result: %s', mid)
             if self._media is not None:
-                typ, field, value = self._media
+                typ, kwargs = self._media.as_cached()
+                kwargs: dict[str, Any]
                 result = typ(
                     id='noop',
-                    title=shorten(text) or 'Media',
                     caption=text or None,
                     parse_mode=parse_mode,
                     reply_markup=self._reply_markup,
-                    **{field: value},  # type: ignore
+                    **kwargs,
                 )
             else:
                 result = InlineQueryResultArticle(
                     id='noop',
                     title=shorten(text) or 'Text',
                     input_message_content=InputTextMessageContent(
-                        text, parse_mode=parse_mode
+                        text,
+                        parse_mode=parse_mode,
+                        disable_web_page_preview=self._disable_web_page_preview,
                     ),
                     reply_markup=self._reply_markup,
                 )
@@ -167,12 +202,14 @@ class InlineMessageProxy[T]:
         self, text: str = '', parse_mode: str | None = None, *, force: bool = False
     ) -> RepliedMessage:
         idx = len(self._fragments)
+        if not text:
+            parse_mode = None
         self._fragments.append((text, parse_mode))
         if text or force:
-            await self._emit(force)
+            await self._emit()
         return RepliedMessage(self, idx)
 
-    async def reply_text(
+    def reply_text(
         self,
         text: str,
         parse_mode: str | None = None,
@@ -181,7 +218,7 @@ class InlineMessageProxy[T]:
         disable_web_page_preview: bool | None = None,
         do_quote: bool = False,
         **kwargs,
-    ) -> RepliedMessage:
+    ) -> Awaitable[RepliedMessage]:
         if reply_markup is not None:
             self._set_reply_markup(reply_markup)
 
@@ -193,39 +230,80 @@ class InlineMessageProxy[T]:
         ):
             log.warning('InlineMessageProxy: ignored extra args: %s, %s', args, kwargs)
 
-        return await self._push(text, parse_mode)
+        return self._push(text, parse_mode)
 
-    async def reply_voice(
-        self, voice, *args, do_quote: bool = False, **kwargs
+    async def _reply_media[**P](
+        self,
+        key: str,
+        send: Callable[Concatenate[int, P], Awaitable[Message]],
+        *args: P.args,
+        **kwargs: P.kwargs,
     ) -> RepliedMessage:
+        kwargs.pop('do_quote', None)
+        input = kwargs.get(key)
+        if input is None:
+            input = args[0]
+        log.debug('InlineMessageProxy: reply_%s: %s', key, type(input))
+
+        caption = cast(str, kwargs.get('caption') or '')
+        parse_mode = cast(str | None, kwargs.get('parse_mode'))
+
         if self._media is not None:
             log.warning(
-                'InlineMessageProxy: ignored extra voice: %s, %s, %s',
-                voice,
+                'InlineMessageProxy: ignored extra media: %s, %s, %s',
+                input,
                 args,
                 kwargs,
             )
-            return await self._push()
+            return await self._push(caption, parse_mode)
 
-        if isinstance(voice, str):
-            file_id = voice
+        if isinstance(input, str):
+            media = RepliedMedia.from_file_id(key, input)
         else:
-            msg = await bot.send_voice(
+            # Not a `file_id` yet. Send it to get one.
+            msg: Message = await send(
                 MEDIA_STAGING_CHAT_ID,
-                voice,
                 *args,
                 **kwargs,
-                message_thread_id=MEDIA_STAGING_MESSAGE_THREAD_ID,
+                message_thread_id=MEDIA_STAGING_MESSAGE_THREAD_ID,  # type: ignore
             )
-            if (voice := msg.voice) is None:
-                raise ValueError('Staged voice not sent')
-            file_id = voice.file_id
+            media = RepliedMedia.from_msg(msg, key)
+            if media is None:
+                if (media := RepliedMedia.from_msg(msg, 'document')) is None:
+                    log.warning('InlineMessageProxy: media unsent: %r', msg)
+                    return await self._push(caption, parse_mode)
+                log.debug('InlineMessageProxy: document fallback: %r', media)
+            else:
+                log.debug('InlineMessageProxy: media: %r', media)
 
-        self._media = (InlineQueryResultCachedVoice, 'voice_file_id', file_id)
-        log.debug('InlineMessageProxy: media: %r', self._media)
-        return await self._push(
-            kwargs.get('caption', ''), kwargs.get('parse_mode'), force=True
+        self._media = media
+        return await self._push(caption, parse_mode, force=True)
+
+    async def reply_copy(
+        self, *args, do_quote: bool = False, **kwargs
+    ) -> RepliedMessage:
+        # `copy_message` does not return a `Message` to retrieve its content.
+        msg = await bot.forward_message(
+            MEDIA_STAGING_CHAT_ID,
+            *args,
+            **kwargs,
+            message_thread_id=MEDIA_STAGING_MESSAGE_THREAD_ID,
         )
+
+        for key in MEDIA_TYP:
+            if (media := RepliedMedia.from_msg(msg, key)) is not None:
+                log.debug('InlineMessageProxy: copied media: %r', msg)
+                if self._media is not None:
+                    log.warning('InlineMessageProxy: ignored media: %r', msg)
+                else:
+                    log.debug('InlineMessageProxy: copied media: %r', msg)
+                    self._media = media
+                break
+        else:
+            log.debug('InlineMessageProxy: copy: %r', msg)
+
+        # XXX: This drops the original entities.
+        return await self._push(msg.text or msg.caption or '', None, force=True)
 
     async def reply_chat_action(self, *args, **kwargs):
         log.info('InlineMessageProxy: ignored chat action: %s, %s', args, kwargs)
@@ -267,3 +345,66 @@ class RepliedMessage:
             proxy._reply_markup = None
             await proxy._emit()
         return self
+
+
+type CachedMedia = InlineQueryResultCachedAudio | InlineQueryResultCachedVideo | InlineQueryResultCachedPhoto | InlineQueryResultCachedDocument | InlineQueryResultCachedVoice
+type InputMedia = InputMediaAudio | InputMediaVideo | InputMediaPhoto | InputMediaDocument
+type Media = Audio | Video | Document | PhotoSize | Voice
+
+MDT = {'title': 'noop'}
+
+# `InlineQueryResultCachedAudio` accepts no `title`.
+# `InputMediaVideo` requires `supports_streaming=True`.
+# `InputMediaVoice` does not exist.
+# `PhotoSize` occurs as a sequence in `Message`.
+# `Document` can occur as a fallback.
+
+MEDIA_TYP: dict[
+    str, tuple[type[CachedMedia], type[InputMedia] | None, dict[str, str]]
+] = {
+    'voice': (InlineQueryResultCachedVoice, None, MDT),
+    'audio': (InlineQueryResultCachedAudio, InputMediaAudio, {}),
+    'video': (
+        InlineQueryResultCachedVideo,
+        cast(type[InputMediaVideo], partial(InputMediaVideo, supports_streaming=True)),
+        MDT,
+    ),
+    'photo': (InlineQueryResultCachedPhoto, InputMediaPhoto, MDT),
+    'document': (InlineQueryResultCachedDocument, InputMediaDocument, MDT),
+}
+
+
+class RepliedMedia(NamedTuple):
+    key: str
+    media: Media | str
+    file_id: str
+
+    @classmethod
+    def from_msg(cls, msg: Message, key: str) -> RepliedMedia | None:
+        media: Media | tuple[PhotoSize, ...] | None
+        # Do not use `is not None` here, in case the sequence is empty.
+        if media := getattr(msg, key):
+            if isinstance(media, (tuple, list)):
+                media = media[-1]
+            return cls(key, media, media.file_id)
+
+    @classmethod
+    def from_file_id(cls, key: str, file_id: str) -> RepliedMedia:
+        return cls(key, file_id, file_id)
+
+    def __repr__(self) -> str:
+        return f'{self.key}: {self.media!r})'
+
+    __str__ = __repr__
+
+    def as_cached(self) -> tuple[type[CachedMedia], dict[str, str]]:
+        typ, _, d = MEDIA_TYP[self.key]
+        return typ, {**d, self.key + '_file_id': self.file_id}
+
+    def as_input(self) -> tuple[type[InputMedia], Media | str] | None:
+        if (typ := MEDIA_TYP[self.key][1]) is not None:
+            return typ, self.media
+        log.warning(
+            'RepliedMedia: InputMedia is unavailable for %s, consider using `InlineMessageProxy._defer()`',
+            self.key,
+        )
