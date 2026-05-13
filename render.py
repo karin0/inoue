@@ -28,7 +28,7 @@ from telegram import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
-from telegram.constants import MessageLimit, ReactionEmoji
+from telegram.constants import MessageLimit, ReactionEmoji, KeyboardButtonStyle
 
 from db import db
 from util import (
@@ -240,21 +240,39 @@ def make_markup(
     log.debug('make_markup: final state %s (%s)', state, current_data)
 
     if current_data:
-        row.append(InlineKeyboardButton('🔄', callback_data=current_data))
+        row.append(
+            InlineKeyboardButton(
+                '🔄', callback_data=current_data, style=KeyboardButtonStyle.PRIMARY
+            )
+        )
 
     if doc_ids:
         if len(doc_ids) == 1:
             doc_id = next(iter(doc_ids))
-            row.append(InlineKeyboardButton('🔗', get_msg_url(doc_id)))
+            row.append(
+                InlineKeyboardButton(
+                    '🔗', get_msg_url(doc_id), style=KeyboardButtonStyle.SUCCESS
+                )
+            )
         else:
             for doc_id, doc_name in doc_ids.items():
-                row.append(InlineKeyboardButton(f'🔗{doc_name}', get_msg_url(doc_id)))
+                row.append(
+                    InlineKeyboardButton(
+                        f'🔗{doc_name}',
+                        get_msg_url(doc_id),
+                        style=KeyboardButtonStyle.SUCCESS,
+                    )
+                )
 
     if len(row) <= 1:
         return None, None
 
     row[0] = InlineKeyboardButton(
-        ('⏪ ' if current_data else '🔄 ') + shorten(path[1:]), callback_data=path
+        ('⏪ ' if current_data else '🔄 ') + shorten(path[1:]),
+        callback_data=path,
+        style=(
+            KeyboardButtonStyle.DANGER if current_data else KeyboardButtonStyle.PRIMARY
+        ),
     )
     row_ = cast(list[InlineKeyboardButton], row)
 
