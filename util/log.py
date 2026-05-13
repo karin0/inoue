@@ -194,9 +194,17 @@ async def do_notify(
     if not quiet and (m := message or get_ctx_msg()) is not None:
         try:
             if revocable:
-                return await reply_text(m, text, parse_mode, **kwargs)
+                return await reply_text(
+                    m, text, parse_mode, disable_web_page_preview=True, **kwargs
+                )
             else:
-                return await m.reply_text(text, parse_mode, do_quote=True, **kwargs)
+                return await m.reply_text(
+                    text,
+                    parse_mode,
+                    do_quote=True,
+                    disable_web_page_preview=True,
+                    **kwargs,
+                )
         except Exception as e:
             traceback.print_exc()
             text += f'\nreply_text: {type(e).__name__}: {e}'
@@ -205,11 +213,21 @@ async def do_notify(
     try:
         if quiet:
             await bot.send_message(
-                GROUP_ID, text, parse_mode, disable_notification=True, **kwargs
+                GROUP_ID,
+                text,
+                parse_mode,
+                disable_notification=True,
+                disable_web_page_preview=True,
+                **kwargs,
             )
         else:
             await bot.send_message(
-                USER_ID, text, parse_mode, message_thread_id=LOG_THREAD_ID, **kwargs
+                USER_ID,
+                text,
+                parse_mode,
+                message_thread_id=LOG_THREAD_ID,
+                disable_web_page_preview=True,
+                **kwargs,
             )
     except Exception:
         with notify.suppress():

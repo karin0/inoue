@@ -98,7 +98,7 @@ async def reply_text(
     parse_mode: str | None = None,
     reply_markup: InlineKeyboardMarkup | None = None,
     *,
-    disable_web_page_preview: bool = False,
+    disable_web_page_preview: bool | None = None,
     allow_not_modified: bool = False,
 ) -> Message | None:
     if not isinstance(m, Message):
@@ -107,7 +107,12 @@ async def reply_text(
         log.debug('reply_text: found proxy: %s', m)
         return cast(
             Message,
-            await m.reply_text(text, parse_mode=parse_mode, reply_markup=reply_markup),
+            await m.reply_text(
+                text,
+                parse_mode=parse_mode,
+                reply_markup=reply_markup,
+                disable_web_page_preview=disable_web_page_preview,
+            ),
         )
 
     chat_kind = encode_chat_id(m)

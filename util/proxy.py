@@ -34,6 +34,7 @@ class InlineMessageProxy[T]:
         '_msg',
         '_fragments',
         '_reply_markup',
+        '_disable_web_page_preview',
         '_inline_message_id',
         '_media',
         '_deferred',
@@ -47,7 +48,8 @@ class InlineMessageProxy[T]:
     ) -> None:
         self._msg = msg
         self._fragments: list[tuple[str, str | None]] = []
-        self._reply_markup = None
+        self._reply_markup: InlineKeyboardMarkup | None = None
+        self._disable_web_page_preview: bool | None = None
         self._inline_message_id: str | InlineMessageIdFactory[T] = inline_message_id
         self._media: tuple[Type[MediaResult], str, str] | None = None
         self._deferred = False
@@ -175,11 +177,16 @@ class InlineMessageProxy[T]:
         text: str,
         parse_mode: str | None = None,
         *args,
+        reply_markup: InlineKeyboardMarkup | None = None,
+        disable_web_page_preview: bool | None = None,
         do_quote: bool = False,
         **kwargs,
     ) -> RepliedMessage:
-        if (markup := kwargs.pop('reply_markup', None)) is not None:
-            self._set_reply_markup(markup)
+        if reply_markup is not None:
+            self._set_reply_markup(reply_markup)
+
+        if disable_web_page_preview is not None:
+            self._disable_web_page_preview = disable_web_page_preview
 
         if any(x is not None for x in args) or any(
             x is not None for x in kwargs.values()
