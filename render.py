@@ -1022,6 +1022,15 @@ def handle_ls(msg: Message, arg: MessageArg):
 
 
 @command
+async def handle_rm(msg: Message, arg: MessageArg):
+    names = arg.split()
+    if not names:
+        return await reply_text(msg, 'Usage: /rm <name1> [name2 ...]')
+    db.delete_docs(names)
+    return await reply_text(msg, f'Deleted {len(names)} docs.')
+
+
+@command
 async def handle_submit(msg: Message, arg: MessageArg):
     from util import CHAN_ID, MAX_TEXT_LENGTH, pre_block
 

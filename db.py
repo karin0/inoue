@@ -122,6 +122,13 @@ class DataStore:
             query = 'SELECT id, name, LENGTH(text) FROM Doc ORDER BY id;'
             yield from self.conn.execute(query)
 
+    def delete_docs(self, names: Sequence[str]):
+        with self.conn:
+            for name in names:
+                r = self.conn.execute('DELETE FROM Doc WHERE name = ?;', (name,))
+                if not r.rowcount:
+                    raise KeyError(name)
+
     def get(self, key: str, default: str | None = None) -> str | None:
         cursor = self.conn.execute('SELECT value FROM KV WHERE key = ?;', (key,))
         if row := cursor.fetchone():
