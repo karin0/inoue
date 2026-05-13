@@ -40,6 +40,8 @@ from util import (
     reply_text,
     keep_chat_action,
     get_context,
+    MEDIA_STAGING_CHAT_ID,
+    MEDIA_STAGING_MESSAGE_THREAD_ID,
 )
 from render_context import LRUDict
 from ffmpeg import (
@@ -133,10 +135,6 @@ THUMB_MAX_SIDE = 320
 THUMB_QUALITY_STEPS = (90, 80, 70, 60, 50, 40, 30)
 THUMB_SCALE_STEPS = (1.0, 0.85, 0.7, 0.55, 0.4)
 
-YT_STAGING_CHAT_ID = int(os.environ['YT_STAGING_CHAT_ID'])
-YT_STAGING_MESSAGE_THREAD_ID = (
-    int(os.environ.get('YT_STAGING_MESSAGE_THREAD_ID', 0)) or None
-)
 
 # max_workers=1 to serialize yt-dlp invocations.
 _executor = ThreadPoolExecutor(max_workers=1)
@@ -320,8 +318,8 @@ class Output:
             def wrap(f):
                 return functools.partial(
                     f,
-                    YT_STAGING_CHAT_ID,
-                    message_thread_id=YT_STAGING_MESSAGE_THREAD_ID,
+                    MEDIA_STAGING_CHAT_ID,
+                    message_thread_id=MEDIA_STAGING_MESSAGE_THREAD_ID,
                     disable_notification=True,
                 )
 
@@ -583,9 +581,9 @@ async def _finish_voice(
     duration = media_duration(duration)
 
     msg = await bot.send_voice(
-        YT_STAGING_CHAT_ID,
+        MEDIA_STAGING_CHAT_ID,
         data,
-        message_thread_id=YT_STAGING_MESSAGE_THREAD_ID,
+        message_thread_id=MEDIA_STAGING_MESSAGE_THREAD_ID,
         duration=duration,
         disable_notification=True,
     )

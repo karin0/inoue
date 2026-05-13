@@ -80,16 +80,17 @@ def use_context(
         current_context.reset(token)
 
 
-def get_msg(update: Update) -> Message:
-    # Unlike update.effective_message, channel posts and callback queries
-    # are ignored here.
-    if m := update.message or update.edited_message:
-        return m
-
-    raise ValueError('No message')
-
-
+msg_override: ContextVar[Message | None] = ContextVar('msg_override', default=None)
 text_override: ContextVar[str | None] = ContextVar('text_override', default=None)
+
+
+@contextmanager
+def use_msg_override(m: Message):
+    token = msg_override.set(m)
+    try:
+        yield
+    finally:
+        msg_override.reset(token)
 
 
 @contextmanager
@@ -101,10 +102,23 @@ def use_text_override(text: str):
         text_override.reset(token)
 
 
-def get_arg(m: Message) -> str:
-    if (s := text_override.get()) is None:
-        s = m.text or m.caption or ''
+def get_msg(update: Update) -> Message:
+    # Unlike update.effective_message, channel posts and callback queries
+    # are ignored here.
+    if m := msg_override.get() or update.message or update.edited_message:
+        return m
 
+    raise ValueError('No message')
+
+
+def get_text(m: Message) -> str:
+    if (s := text_override.get()) is not None:
+        return s
+    return m.text or m.caption or ''
+
+
+def get_arg(m: Message) -> str:
+    s = get_text(m)
     if not s.startswith('/'):
         return s.strip()
 

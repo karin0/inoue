@@ -29,7 +29,13 @@ from util import (
 )
 from dispatch import handle_callback_query
 from commands import set_commands, stats, reply_usage
-from handlers import handle_msg, handle_post, handle_inline_query, handle_chosen_inline
+from handlers import (
+    handle_msg,
+    handle_post,
+    handle_inline_query,
+    handle_chosen_inline,
+    handle_guest,
+)
 
 import misc, media, run  # noqa: F401, E401
 
@@ -37,6 +43,10 @@ import misc, media, run  # noqa: F401, E401
 async def handle_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # ruff: noqa: E731
     t0 = time.perf_counter()
+
+    from future import patch_update
+
+    update = patch_update(update)
 
     effective_msg = update.effective_message
     src = None
@@ -111,6 +121,9 @@ async def handle_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif (chosen := update.chosen_inline_result) is not None:
         log.info('%s: chosen %s %s', src, chosen.result_id, chosen.query)
         func = lambda: handle_chosen_inline(chosen)
+    elif (post := update.guest_message) is not None:
+        log.info('%s: guest message %s', src, shorten(post.text))
+        func = lambda: handle_guest(post, update)
     else:
         log.info('%s: unhandled: %s', src, update)
         func = None
@@ -127,6 +140,8 @@ async def handle_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             chat,
         )
         func = None
+    elif is_guest and msg is None:
+        log.warning('Guest update without message: %s', update)
 
     if func is None:
         if is_guest and msg:

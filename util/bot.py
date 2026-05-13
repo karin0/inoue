@@ -1,10 +1,10 @@
 import asyncio
 
-from typing import Awaitable, Callable, Sequence, Concatenate
+from typing import Awaitable, Callable, Sequence, Concatenate, cast
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-from telegram import Message, MessageEntity, InlineKeyboardMarkup, Update
+from telegram import Message, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
 from telegram.error import BadRequest
 
@@ -14,8 +14,9 @@ from dispatch import get_command_handler, UpdateHandler
 from .log import log
 from .text import truncate_text
 from .app import bot, create_task
-from .ctx import use_text_override
+from .ctx import get_text, use_text_override
 from .env import USER_ID, CHAN_ID, GROUP_ID
+from .proxy import InlineMessageProxy
 
 
 def get_msg_url(msg_id, chat_id=None) -> str:
@@ -92,7 +93,7 @@ reroute_capture: ContextVar[tuple[int, int, list[tuple[str, str | None]]] | None
 
 # Note: the return value could be `None` if `allow_not_modified` is set.
 async def reply_text(
-    m: Message,
+    m: Message | InlineMessageProxy,
     text: str,
     parse_mode: str | None = None,
     reply_markup: InlineKeyboardMarkup | None = None,
@@ -100,6 +101,15 @@ async def reply_text(
     entities: Sequence[MessageEntity] | None = None,
     allow_not_modified: bool = False,
 ) -> Message | None:
+    if not isinstance(m, Message):
+        # XXX: Skip for `InlineMessageProxy`, since we won't receive updates for
+        # edited guest messages anyway.
+        log.debug('reply_text: found proxy: %s', m)
+        return cast(
+            Message,
+            await m.reply_text(text, parse_mode=parse_mode, reply_markup=reply_markup),
+        )
+
     chat_kind = encode_chat_id(m)
     if chat_kind == 'c':
         log.warning('reply_text: channel chat: %s', m)
@@ -192,7 +202,7 @@ def keep_chat_action(msg: Message, action: ChatAction):
         task.cancel()
 
 
-def _extract_cmd_handler(text: str | None) -> UpdateHandler | None:
+def _extract_cmd_handler(text: str) -> UpdateHandler | None:
     if text and text[0] == '/':
         p = min(
             x
@@ -209,7 +219,7 @@ def _extract_cmd_handler(text: str | None) -> UpdateHandler | None:
 
 
 def route_cmd(update: Update, msg: Message) -> Awaitable | None:
-    if (callback := _extract_cmd_handler(msg.text)) is not None:
+    if (callback := _extract_cmd_handler(get_text(msg))) is not None:
         return callback(update)
 
 

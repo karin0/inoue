@@ -114,8 +114,12 @@ async def convert_voice(
         if queue.empty():
             queue.put_nowait(True)
 
-    create_task(worker())
+    from util import InlineMessageProxy
 
+    if isinstance(msg, InlineMessageProxy):
+        msg._defer()
+
+    task = asyncio.create_task(worker())
     try:
         # Report initial status before downloading the file.
         queue.put_nowait(True)
@@ -152,6 +156,9 @@ async def convert_voice(
         queue.put_nowait(result)
     finally:
         queue.put_nowait(None)
+        await task
+        if isinstance(msg, InlineMessageProxy):
+            await msg._finalize()
 
 
 def extract_media(

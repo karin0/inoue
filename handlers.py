@@ -1,4 +1,5 @@
 import sys
+from typing import cast
 
 from telegram import (
     Message,
@@ -7,20 +8,25 @@ from telegram import (
     ChosenInlineResult,
     InlineQuery,
 )
-from telegram.constants import ChatType
+from telegram.constants import ChatType, MessageEntityType
 
+from future import answer_guest_query
 from util import (
     log,
     bot,
     pre_block,
     reply_text,
     get_context,
+    get_text,
+    use_msg_override,
+    use_text_override,
     route_cmd,
     Sender,
     USER_ID,
     CHAN_ID,
     GROUP_ID,
     TODO_ID,
+    InlineMessageProxy,
 )
 from inoue import render_receipt
 from rg import handle_rg
@@ -68,20 +74,9 @@ async def handle_msg(msg: Message, update: Update):
 
     # ID Bot
     if origin:
-        return await msg.reply_text(*pre_block(str(origin)), do_quote=True)
+        return await reply_text(msg, *pre_block(str(origin)))
 
-    if context.sender_is_guest():
-        await reply_usage(msg)
-        return
-
-    # Privileged operations are only allowed in private chats, even if it's from
-    # USER_ID.
-    if msg.chat_id != USER_ID:
-        # This should not happen since non-private chats are already skipped.
-        log.error('handle_msg: unauthorized update: %s', update)
-        return
-
-    if not ((text := msg.text) and (text := text.strip())):
+    if not (text := get_text(msg).strip()):
         if (
             msg.forum_topic_created
             or msg.forum_topic_edited
@@ -93,6 +88,17 @@ async def handle_msg(msg: Message, update: Update):
 
         with open('out.ogg', 'rb') as f:
             return await msg.reply_voice(f, do_quote=True)
+
+    # Warning: Always check the sender's identity from the `context` rather than
+    # `msg` itself, since it could be a mocked one from relayed callback queries
+    # or guest messages.
+    if context.sender_is_guest():
+        await reply_usage(msg)
+        return
+
+    if not context.sender_is_host():
+        log.error('handle_msg: unauthorized update: %s', update)
+        return
 
     # Be careful, since you won't be able to log in again within 10 minutes.
     if text == '/Please log out now/':
@@ -131,3 +137,28 @@ async def handle_chosen_inline(result: ChosenInlineResult):
             log.warning('Invalid chosen inline result: %s', result)
     elif not result_id.startswith('noop'):
         log.error('Bad chosen inline result: %s', result)
+
+
+async def handle_guest(msg: Message, update: Update):
+    # ruff: noqa: E741
+    log.debug('handle_guest: %s', msg)
+    assert msg.text and msg.entities
+
+    text = msg.text.encode('utf-16-le')
+    for ent in msg.entities:
+        if ent.type == MessageEntityType.MENTION:
+            l = ent.offset << 1
+            r = (ent.offset + ent.length) << 1
+            part = text[l:r].decode('utf-16-le')
+            if part == '@' + bot.username:
+                left = text[:l].decode('utf-16-le').rstrip()
+                right = text[r:].decode('utf-16-le').lstrip()
+                text = (left + ' ' + right).strip()
+                log.info('handle_guest: extracted text: %s', text)
+                break
+    else:
+        raise ValueError(f'missing MENTION entity in guest message: {msg}')
+
+    msg = cast(Message, InlineMessageProxy(msg, answer_guest_query))
+    with use_msg_override(msg), use_text_override(text):
+        await handle_msg(msg, update)
