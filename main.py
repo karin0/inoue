@@ -155,7 +155,9 @@ async def handle_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             with notify.revocable():
                 # Can be edited to successful responses later after user edits
-                log.exception('handle_update: %s: %s', type(e).__name__, e)
+                log.exception(
+                    'handle_update: %s: %s\nFrom: %s', type(e).__name__, e, src
+                )
 
     log.debug('Exiting after %.3f secs', time.perf_counter() - t0)
 

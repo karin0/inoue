@@ -33,13 +33,15 @@ async def handle_error(update, context: ContextTypes.DEFAULT_TYPE) -> None:
     e = context.error
     if isinstance(e, NetworkError):
         with notify.suppress():
-            log.error('Network error in update %s: %s: %s', update, type(e).__name__, e)
+            log.exception(
+                'Network error in update %s: %s: %s', update, type(e).__name__, e
+            )
     elif isinstance(e, Exception):
-        log.error(
+        log.exception(
             'Exception in update %s: %s: %s', update, type(e).__name__, e, exc_info=e
         )
     else:
-        log.error('Unknown error in update %s: %s', update, e)
+        log.exception('Unknown error in update %s: %s', update, e)
 
 
 def _build_app() -> Application:
