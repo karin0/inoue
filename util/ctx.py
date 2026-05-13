@@ -85,10 +85,14 @@ text_override: ContextVar[str | None] = ContextVar('text_override', default=None
 
 
 @contextmanager
-def use_msg_override(m: Message):
+def use_msg_override(m: Message, text: str):
     token = msg_override.set(m)
     try:
-        yield
+        text_token = text_override.set(text)
+        try:
+            yield
+        finally:
+            text_override.reset(text_token)
     finally:
         msg_override.reset(token)
 

@@ -20,7 +20,6 @@ from util import (
     get_context,
     get_text,
     use_msg_override,
-    use_text_override,
     route_cmd,
     Sender,
     USER_ID,
@@ -162,7 +161,7 @@ async def handle_guest(msg: Message, update: Update):
         raise ValueError(f'missing MENTION entity in guest message: {msg}')
 
     msg = cast(Message, InlineMessageProxy(msg, answer_guest_query))
-    with use_msg_override(msg), use_text_override(text):
+    with use_msg_override(msg, text):
         await handle_msg(msg, update)
 
 
@@ -173,13 +172,17 @@ async def handle_relay_callback(
     text = data[data.index('_') + 1 :]
     msg = query.message
 
-    if (mid := query.inline_message_id) is not None:
-        msg = cast(Message, InlineMessageProxy(query, mid))
-    elif not isinstance(msg, Message):
-        raise ValueError(f'No message in callback query: {query}')
+    if not isinstance(msg, Message):
+        if (mid := query.inline_message_id) is not None:
+            # A guest message created the callback with `/run`.
+            # We will edit our answer to the guest query with `InlineMessageProxy`,
+            # which behaves like a continuation of `handle_guest`.
+            msg = cast(Message, InlineMessageProxy(query, mid))
+        else:
+            raise ValueError(f'No message in callback query: {query}')
 
     log.debug('relay: %r %s', msg, text)
-    with use_msg_override(msg), use_text_override(text):
+    with use_msg_override(msg, text):
         await handle_msg(msg, update)
 
     await query.answer()
