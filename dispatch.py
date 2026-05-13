@@ -124,8 +124,6 @@ class Route[**P, R]:
 
         if self._va is not None:
             args.extend(map(self._va, it))
-        elif (v := next(it, None)) is not None:
-            raise ValueError(f'Too many arguments: {args}, {v}')
 
         log.debug('Injected to %s: %r', self._func.__name__, args)
         return self._func(*args)
@@ -223,21 +221,25 @@ def _dispatch_argv(
         return route(update, islice(args, 1, None))
 
 
-def handle_callback_query(query: CallbackQuery, update: Update):
+async def handle_callback_query(query: CallbackQuery, update: Update):
     if not (data := query.data):
         raise ValueError('No data in cq')
 
     if data == 'noop':
         return query.answer()
 
-    for filter_func, route in _cb_filters:
-        if filter_func(data):
-            return route(update)
+    try:
+        for filter_func, route in _cb_filters:
+            if filter_func(data):
+                return await route(update)
 
-    if fut := _dispatch_argv(update, data, _cb_handlers):
-        return fut
+        if fut := _dispatch_argv(update, data, _cb_handlers):
+            return await fut
 
-    raise ValueError(f'Bad callback query: {data}')
+        raise ValueError(f'Bad callback query: {data}')
+    except Exception as e:
+        await query.answer('Error', show_alert=True)
+        raise e
 
 
 _start_handlers: dict[str, Route] = {}

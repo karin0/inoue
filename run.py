@@ -5,12 +5,12 @@ import codecs
 import subprocess
 
 from asyncio.subprocess import Process
-from typing import Awaitable, Callable, TypeVar
+from typing import Awaitable, Callable, cast
 
-from telegram import Message
+from telegram import Message, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction
 
-from util import log, create_task, pre_block, reply_text, ME, MAX_TEXT_LENGTH
+from util import log, create_task, pre_block, reply_text, get_text, ME, MAX_TEXT_LENGTH
 from dispatch import command, MessageArg
 from misc import reply_file
 
@@ -162,8 +162,10 @@ async def __handle_cmd(msg: Message, child: Process, evt: asyncio.Event | None):
     q_err = asyncio.Queue()
     create_task(producer(q_err, child.stderr))
 
+    final_msg: Message | None = None
+
     async def send(content, do_quote):
-        nonlocal evt
+        nonlocal evt, final_msg
         text, parse_mode = content
         if parse_mode == 'file':
             try:
@@ -174,7 +176,12 @@ async def __handle_cmd(msg: Message, child: Process, evt: asyncio.Event | None):
                     do_quote=True,
                 )
         else:
-            r = await msg.reply_text(text, parse_mode, do_quote=do_quote)
+            r = await msg.reply_text(
+                text,
+                parse_mode,
+                do_quote=do_quote,
+            )
+            final_msg = r
         if evt:
             evt.set()
             evt = None
@@ -187,5 +194,19 @@ async def __handle_cmd(msg: Message, child: Process, evt: asyncio.Event | None):
         child.terminate()
 
     r = await child.wait()
+
+    text = get_text(msg)
+    data = 'relay_' + text
+    if len(data) <= InlineKeyboardButton.MAX_CALLBACK_DATA:
+        markup = InlineKeyboardMarkup.from_button(
+            InlineKeyboardButton(text, callback_data=data)
+        )
+    else:
+        markup = None
+
     if r or evt:
-        await msg.reply_text(f'{child.pid} exited with {r}', do_quote=True)
+        await msg.reply_text(
+            f'{child.pid} exited with {r}', do_quote=True, reply_markup=markup
+        )
+    elif (m := cast(Message | None, final_msg)) and markup:
+        await m.edit_reply_markup(markup)

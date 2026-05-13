@@ -7,6 +7,7 @@ from telegram import (
     Update,
     ChosenInlineResult,
     InlineQuery,
+    CallbackQuery,
 )
 from telegram.constants import ChatType, MessageEntityType
 
@@ -35,6 +36,7 @@ from todo import handle_todo_msg
 from ytdlp import extract_url, handle_yt_inline_query, handle_yt_chosen_result
 from render import handle_render_doc, handle_render_group, handle_render_inline_query
 from commands import dispatch_cmd, reply_usage
+from dispatch import callback_query, CallbackData
 
 
 def handle_post(channel_post: Message, sender: Sender | None):
@@ -162,3 +164,22 @@ async def handle_guest(msg: Message, update: Update):
     msg = cast(Message, InlineMessageProxy(msg, answer_guest_query))
     with use_msg_override(msg), use_text_override(text):
         await handle_msg(msg, update)
+
+
+@callback_query('relay')
+async def handle_relay_callback(
+    query: CallbackQuery, data: CallbackData, update: Update
+):
+    text = data[data.index('_') + 1 :]
+    msg = query.message
+
+    if (mid := query.inline_message_id) is not None:
+        msg = cast(Message, InlineMessageProxy(query, mid))
+    elif not isinstance(msg, Message):
+        raise ValueError(f'No message in callback query: {query}')
+
+    log.debug('relay: %r %s', msg, text)
+    with use_msg_override(msg), use_text_override(text):
+        await handle_msg(msg, update)
+
+    await query.answer()
