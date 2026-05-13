@@ -20,25 +20,23 @@ def parse_sort(arg: str) -> Iterable[int]:
 @command(public=True)
 def handle_sort(msg: Message, arg: MessageArg):
     if not arg:
-        return msg.reply_text('Usage: /sort 114 514 1919 810 ...')
+        return reply_text(msg, 'Usage: /sort 114 514 1919 810 ...')
     res = '\n'.join(str(x) for x in sorted(parse_sort(arg)))
     return reply_text(msg, *pre_block(res))
 
 
 @command('fetch')
-async def reply_file(msg: Message, path: MessageArg) -> Message:
+def reply_file(msg: Message, path: MessageArg):
     if not path:
-        return await msg.reply_text('Usage: /fetch <file path>', do_quote=True)
+        return reply_text(msg, 'Usage: /fetch <file path>')
 
     size = os.path.getsize(path)
     if size > 20 << 20:
-        return await msg.reply_text(f'File too large: {size} bytes', do_quote=True)
+        return reply_text(msg, f'File too large: {size} bytes')
 
     filename = os.path.basename(path)
     if not os.path.splitext(filename)[1]:
         filename += '.txt'
 
     with open(path, 'rb') as fp:
-        return await msg.reply_document(
-            fp, filename=filename, caption=path, do_quote=True
-        )
+        return msg.reply_document(fp, filename=filename, caption=path, do_quote=True)

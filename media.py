@@ -67,7 +67,7 @@ def render_media(chat_id: int, message_id: int, title: str) -> str:
 @command(public=True)
 def handle_play(msg: Message):
     if not (media := db.random_media()):
-        return msg.reply_text('No saved media.', do_quote=True)
+        return reply_text(msg, 'No saved media.')
 
     chat_id, message_id = media
     log.info('Forwarding saved media: %s/%s -> %s', chat_id, message_id, msg.chat_id)
@@ -78,7 +78,7 @@ def handle_play(msg: Message):
 def handle_playlist(msg: Message):
     items = list(db.iter_media())
     if not items:
-        return msg.reply_text('No saved media.', do_quote=True)
+        return reply_text(msg, 'No saved media.')
 
     lines = []
     for i, (chat_id, message_id, title, _) in enumerate(items, 1):
@@ -90,10 +90,10 @@ def handle_playlist(msg: Message):
             f'{escape(f'{i}.')} [{title_text}]({msg_url}) \\| [play]({play_url}) \\| [remove]({unsave_url})'
         )
 
-    return msg.reply_text(
+    return reply_text(
+        msg,
         '\n'.join(lines),
         'MarkdownV2',
-        do_quote=True,
         disable_web_page_preview=True,
     )
 

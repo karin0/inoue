@@ -98,7 +98,7 @@ async def reply_text(
     parse_mode: str | None = None,
     reply_markup: InlineKeyboardMarkup | None = None,
     *,
-    entities: Sequence[MessageEntity] | None = None,
+    disable_web_page_preview: bool = False,
     allow_not_modified: bool = False,
 ) -> Message | None:
     if not isinstance(m, Message):
@@ -122,8 +122,9 @@ async def reply_text(
             text,
             parse_mode=parse_mode,
             reply_markup=reply_markup,
-            entities=entities,
+            disable_web_page_preview=disable_web_page_preview,
             do_quote=True,
+            allow_sending_without_reply=True,
         )
 
         if save:
@@ -159,7 +160,7 @@ async def reply_text(
             resp_msg_id,
             parse_mode=parse_mode,
             reply_markup=reply_markup,
-            entities=entities,
+            disable_web_page_preview=disable_web_page_preview,
         )
     except Exception as e:
         # Cache expired, remove it first for other coroutines.

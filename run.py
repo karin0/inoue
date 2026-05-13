@@ -80,14 +80,12 @@ async def producer(q: asyncio.Queue, pipe: asyncio.StreamReader):
 
 reg_file = re.compile(r'^' + re.escape(ME.upper()) + r'_SEND_FILE=(.+)$', re.M)
 
-T = TypeVar('T')
-
 SEND_LIMIT = 5
 
 
-async def consumer(
+async def consumer[T](
     q: asyncio.Queue,
-    send: Callable[[tuple[str, str | None], T], Awaitable[Message]],
+    send: Callable[[tuple[str, str | None], T], Awaitable[Message | None]],
     arg: T,
 ):
     msg: Message | None = None

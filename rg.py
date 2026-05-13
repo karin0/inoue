@@ -205,7 +205,7 @@ async def do_show(i: int, j: int, k: int | None, alt_off: int | None):
     with open(os.path.join(query.cwd, file.path), 'rb') as fp:
         with mmap.mmap(fp.fileno(), 0, access=mmap.ACCESS_READ) as mm:
             if not (sect := Section.discover(mm, off)):
-                return await message.reply_text('Unable to show the section.')
+                return await reply_text(message, 'Unable to show the section.')
 
             text = sect.decode(mm)
 
