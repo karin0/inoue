@@ -258,7 +258,10 @@ class Bridge(Box):
                 )
             else:
                 cnt += 1
-        log.debug('Bridge: destroyed, removed %d temp files', cnt)
+        if cnt:
+            log.info('Bridge: removed %d temp files', cnt)
+        else:
+            log.debug('Bridge: removed %d temp files', cnt)
 
     def _get_func(self, name: str) -> Callable[..., Value | None] | None:
         if name.startswith('_') or name.endswith('_'):
