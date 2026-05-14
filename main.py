@@ -169,9 +169,10 @@ class Handler(BaseHandler):
 
 def _post_init(bot: Bot):
     log.info('%s initiated: %s', ME, bot.bot)
+    if is_debug:
+        return set_commands(bot)
     return asyncio.gather(
-        set_commands(bot),
-        do_notify(*stats(bot.bot, f'{ME} initiated'), quiet=is_debug),
+        set_commands(bot), do_notify(*stats(bot.bot, f'{ME} initiated'))
     )
 
 
