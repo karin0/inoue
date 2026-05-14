@@ -3,7 +3,7 @@ import re
 import time
 import asyncio
 import weakref
-from io import BytesIO
+import builtins
 from itertools import chain, islice
 from typing import (
     Container,
@@ -11,8 +11,6 @@ from typing import (
     Mapping,
     Callable,
     Awaitable,
-    BinaryIO,
-    Protocol,
     Type,
     cast,
 )
@@ -21,8 +19,6 @@ from telegram import (
     CallbackQuery,
     InlineQuery,
     InlineQueryResultArticle,
-    InputMediaPhoto,
-    InputMediaDocument,
     InputTextMessageContent,
     Message,
     InlineKeyboardMarkup,
@@ -33,6 +29,7 @@ from telegram.constants import MessageLimit, ReactionEmoji, KeyboardButtonStyle
 from db import db
 from util import (
     USER_ID,
+    CHAN_ID,
     log,
     bot,
     get_context,
@@ -46,6 +43,9 @@ from util import (
     cleanup_text,
     do_notify,
     encode_chat_id,
+    Responder,
+    PhotoPayload,
+    DocumentPayload,
 )
 from segments import (
     Segment,
@@ -334,24 +334,26 @@ class RenderContext:
 
         trusted = source = None
 
+        context = get_context()
+        if (sender := context.sender) is not None and sender.id in (USER_ID, CHAN_ID):
+            overrides['_trusted'] = trusted = sender.id
+
         # Existing `overrides` are frozen and immutable in `Engine`, so this is safe.
-        update = get_context().update
-        if user := update.effective_user:
-            if user.id == USER_ID:
-                trusted = USER_ID
+        update = context.update
+        if (user := update.effective_user) is not None:
             overrides['_user_id'] = user.id
             overrides['_user_name'] = source = user.full_name
-        if chat := update.effective_chat:
+        if (chat := update.effective_chat) is not None:
             overrides['_chat_id'] = chat.id
             if title := chat.title:
                 overrides['_chat_title'] = title
                 source = f'{title} @ {source}' if source else title
         if source:
             overrides['_source'] = source
-        if msg := update.effective_message:
+        if (msg := update.effective_message) is not None:
             overrides['_msg_id'] = msg.message_id
-        if trusted is not None:
-            overrides['_trusted'] = trusted
+            if (reply := msg.reply_to_message) is not None:
+                overrides['_replied'] = repr(reply)
 
         log.info('create_engine: %s', overrides)
 
@@ -445,9 +447,11 @@ class RenderContext:
         log.debug('_format_response: %r', seg)
         ctx = self.data
         do_cleanup = get_env_flag(ctx, 'cleanup', True)
+        self._as_caption = as_caption = self._as_caption or has_media(ctx)
 
         if not seg:
-            seg = '[empty]'
+            if not as_caption:
+                seg = '[empty]'
             text_only = True
         elif isinstance(seg, str):
             if do_cleanup:
@@ -484,10 +488,14 @@ class RenderContext:
         func = get_renderer(parse_mode)
         out = []
 
-        if self._as_caption or has_media(ctx):
-            limit = MessageLimit.CAPTION_LENGTH
+        if self._trusted and (val := get_env(ctx, 'limit')):
+            limit = val if isinstance(val, int) else int(to_str(val))
         else:
-            limit = MessageLimit.MAX_TEXT_LENGTH
+            limit = (
+                MessageLimit.CAPTION_LENGTH
+                if as_caption
+                else MessageLimit.MAX_TEXT_LENGTH
+            )
 
         fmt = Formatter(limit)
         for part in self._format_seg(fmt, seg, state):
@@ -563,7 +571,8 @@ class RenderContext:
             omitted = length + footer_len - fmt.length
 
         if footer_len == fmt.length:
-            fmt.try_append('[empty?]')
+            if not self._as_caption:
+                fmt.try_append('[empty?]' if is_first else '[empty?]\n')
         elif not is_first and not isinstance(fmt.segments[-1], (Pre, BlockQuote)):
             # Add a newline between the body and the footers, unless the body ends
             # with a block (which already implies a line break).
@@ -641,43 +650,28 @@ def handle_render(msg: Message, arg: MessageArg):
     return ctx.render(text)
 
 
-class ReplyMediaFunc(Protocol):
-    def __call__(
-        self,
-        msg: Message,
-        content: BinaryIO,
-        /,
-        *,
-        caption: str | None,
-        parse_mode: str | None,
-        reply_markup: InlineKeyboardMarkup | None,
-    ) -> Awaitable[Message]: ...
+type AllowedMedia = PhotoPayload | DocumentPayload
 
 
-type AllowedMedia = InputMediaPhoto | InputMediaDocument
-
-
-def _extract_media(
-    val: Value, typ: Type[AllowedMedia], reply_func: ReplyMediaFunc
-) -> tuple[BinaryIO, Type[AllowedMedia], ReplyMediaFunc] | None:
+def _extract_media(val: Value, typ: Type[AllowedMedia]) -> AllowedMedia | None:
     if isinstance(val, LocalPath):
-        content = open(val.path, 'rb')
+        content = typ(val.path)
     elif isinstance(val, bytes):
-        content = BytesIO(val)
+        content = typ(val)
     else:
         return None
-    log.info('Opened %s: %s', typ.__name__, repr(val)[:50])
-    return content, typ, reply_func
+    log.info('render: Media %s: %s', typ.__name__, repr(val)[:50])
+    return content
 
 
-def open_media(data: Mapping[str, Value]):
+def extract_media(data: Mapping[str, Value]):
     if photo := get_env(data, 'photo'):
-        r = _extract_media(photo, InputMediaPhoto, Message.reply_photo)
+        r = _extract_media(photo, PhotoPayload)
         if r is not None:
             return r
 
     if document := get_env(data, 'document'):
-        r = _extract_media(document, InputMediaDocument, Message.reply_document)
+        r = _extract_media(document, DocumentPayload)
         if r is not None:
             return r
 
@@ -687,14 +681,12 @@ def has_media(data: Mapping[str, Value]) -> bool:
 
 
 def create_reply_callback(msg: Message, data: Mapping[str, Value]) -> UpdateCallback:
-    async def do_reply(spec: MessageSpec):
-        if (media := open_media(data)) is not None:
-            content, _, reply_func = media
-            with content as fp:
-                return await reply_func(
-                    msg, fp, caption=spec[0], parse_mode=spec[1], reply_markup=spec[2]
-                )
-        return await reply_text(msg, *spec, allow_not_modified=True)
+    rs = Responder(msg)
+
+    def do_reply(spec: MessageSpec):
+        return rs.reply(
+            *spec, media=extract_media(data), allow_not_modified=True, cached=True
+        )
 
     return do_reply
 
@@ -904,24 +896,20 @@ def create_callback_query_callback(
     answered = False
 
     async def edit_callback_message(spec: MessageSpec):
-        nonlocal answered
+        nonlocal answered, as_caption
 
         text, parse_mode, markup = spec
-        if as_caption:
-            if (media := open_media(data)) is not None:
-                content, typ, _ = media
-                with content as fp:
-                    r = await callback.edit_message_media(
-                        typ(fp, caption=text, parse_mode=parse_mode),
-                        reply_markup=markup,
-                    )
-            else:
-                r = await try_send_text_or_not_modified(
-                    callback.edit_message_caption,
-                    text,
-                    parse_mode=parse_mode,
-                    reply_markup=markup,
-                )
+        if (media := extract_media(data)) is not None:
+            with media.as_input(text, parse_mode) as input_media:
+                r = await callback.edit_message_media(input_media, reply_markup=markup)
+            as_caption = True
+        elif as_caption:
+            r = await try_send_text_or_not_modified(
+                callback.edit_message_caption,
+                text,
+                parse_mode=parse_mode,
+                reply_markup=markup,
+            )
         else:
             r = await try_send_text_or_not_modified(
                 callback.edit_message_text,

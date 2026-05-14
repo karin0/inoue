@@ -465,4 +465,6 @@ async def handle_rg(msg: Message, arg: MessageArg):
 
     idx = push_query(query)
     text, markup = render_query_menu(query, idx)
-    query.message = await reply_text(msg, text, parse_mode='HTML', reply_markup=markup)
+    m = await reply_text(msg, text, parse_mode='HTML', reply_markup=markup)
+    assert isinstance(m, Message)
+    query.message = m

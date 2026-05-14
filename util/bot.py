@@ -1,14 +1,12 @@
 import asyncio
 
-from typing import Awaitable, Callable, Sequence, Concatenate, cast
+from typing import Awaitable, Callable, Sequence, Concatenate
 from contextlib import contextmanager
-from contextvars import ContextVar
 
 from telegram import Message, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
 from telegram.error import BadRequest
 
-from db import db
 from dispatch import get_command_handler, UpdateHandler
 
 from .log import log
@@ -16,7 +14,7 @@ from .text import truncate_text
 from .app import bot, create_task
 from .ctx import get_text, use_text_override
 from .env import USER_ID, CHAN_ID, GROUP_ID
-from .proxy import InlineMessageProxy
+from .responder import Responder, reroute_capture
 
 
 def get_msg_url(msg_id, chat_id=None) -> str:
@@ -86,107 +84,24 @@ async def try_send_text_or_not_modified[**P, R](
         raise
 
 
-reroute_capture: ContextVar[tuple[int, int, list[tuple[str, str | None]]] | None] = (
-    ContextVar('reroute_capture', default=None)
-)
-
-
-# Note: the return value could be `None` if `allow_not_modified` is set.
-async def reply_text(
-    m: Message | InlineMessageProxy,
+def reply_text(
+    m: Message,
     text: str,
     parse_mode: str | None = None,
     reply_markup: InlineKeyboardMarkup | None = None,
     *,
     disable_web_page_preview: bool | None = None,
     allow_not_modified: bool = False,
-) -> Message | None:
-    if not isinstance(m, Message):
-        # XXX: Skip for `InlineMessageProxy`, since we won't receive updates for
-        # edited guest messages anyway.
-        log.debug('reply_text: found proxy: %s', m)
-        return cast(
-            Message,
-            await m.reply_text(
-                text,
-                parse_mode=parse_mode,
-                reply_markup=reply_markup,
-                disable_web_page_preview=disable_web_page_preview,
-            ),
-        )
-
-    chat_kind = encode_chat_id(m)
-    if chat_kind == 'c':
-        log.warning('reply_text: channel chat: %s', m)
-    key = f'{chat_kind}-{m.message_id}'
-
-    # Can only be called when `key` is missing in the cache.
-    async def _do_reply_text(save: bool = True):
-        resp = await try_send_text(
-            m.reply_text,
-            text,
-            parse_mode=parse_mode,
-            reply_markup=reply_markup,
-            disable_web_page_preview=disable_web_page_preview,
-            do_quote=True,
-            allow_sending_without_reply=True,
-        )
-
-        if save:
-            val = str(resp.message_id)
-            db[key] = val
-            log.debug('Sending new response: %s -> %s', key, val)
-        return resp
-
-    if (
-        (reroute := reroute_capture.get()) is not None
-        and reroute[0] == m.chat_id
-        and reroute[1] == m.message_id
-    ):
-        log.info('reply_text: reroute_capture: %s', key)
-        reroute[2].append((text, parse_mode))
-
-        # Do not try to edit the reply, or we will mess up the response of the
-        # capturing context (`/render`).
-        return await _do_reply_text(save=False)
-
-    if not (resp_msg_id := db.get(key)):
-        return await _do_reply_text()
-
-    resp_msg_id = int(resp_msg_id)
-    log.debug('Editing cached response: %s -> %s', key, resp_msg_id)
-
-    assert bot is not None
-    try:
-        resp = await try_send_text(
-            bot.edit_message_text,
-            text,
-            m.chat.id,
-            resp_msg_id,
-            parse_mode=parse_mode,
-            reply_markup=reply_markup,
-            disable_web_page_preview=disable_web_page_preview,
-        )
-    except Exception as e:
-        # Cache expired, remove it first for other coroutines.
-        # We don't bypass 'Message is not modified' here, as the user side cannot
-        # distinguish whether the message is being updated.
-        # This behavior can be overridden by `allow_not_modified`.
-        e = str(e)
-        if 'Message is not modified' not in e:
-            del db[key]
-            fmt = 'Failed to edit response: %s -> %s: %s: %s'
-            log.warning(fmt, key, resp_msg_id, type(e).__name__, e)
-        elif allow_not_modified:
-            log.info('Message not modified: %s -> %s', key, resp_msg_id)
-            return None
-        else:
-            del db[key]
-
-        return await _do_reply_text()
-
-    assert isinstance(resp, Message)
-    return resp
+) -> Awaitable[Message | bool]:
+    '''Compatibility alias before we move to `Responder`.'''
+    return Responder(m).reply(
+        text,
+        parse_mode,
+        reply_markup,
+        disable_web_page_preview=disable_web_page_preview,
+        allow_not_modified=allow_not_modified,
+        cached=True,
+    )
 
 
 async def _keep_action(msg: Message, action: ChatAction):

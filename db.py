@@ -154,6 +154,10 @@ class DataStore:
             if r.rowcount == 0:
                 raise KeyError(key)
 
+    def discard(self, key: str):
+        with self.conn:
+            self.conn.execute('DELETE FROM KV WHERE key = ?;', (key,))
+
     def iter_prefix(self, prefix: str) -> Iterable[str]:
         cursor = self.conn.execute(
             'SELECT key FROM KV WHERE key LIKE ? ORDER BY key;', (prefix + '%',)

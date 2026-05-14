@@ -228,6 +228,7 @@ class InlineMessageProxy[T]:
         reply_markup: InlineKeyboardMarkup | None = None,
         disable_web_page_preview: bool | None = None,
         do_quote: bool = False,
+        allow_sending_without_reply: bool = False,
         **kwargs,
     ) -> Awaitable[RepliedMessage]:
         if reply_markup is not None:
@@ -251,6 +252,7 @@ class InlineMessageProxy[T]:
         **kwargs: P.kwargs,
     ) -> RepliedMessage:
         kwargs.pop('do_quote', None)
+        kwargs.pop('allow_sending_without_reply', None)
         input = kwargs.get(key)
         if input is None:
             input = args[0]
@@ -287,7 +289,11 @@ class InlineMessageProxy[T]:
         return await self._push(caption, parse_mode, force=True)
 
     async def reply_copy(
-        self, *args, do_quote: bool = False, **kwargs
+        self,
+        *args,
+        do_quote: bool = False,
+        allow_sending_without_reply: bool = False,
+        **kwargs,
     ) -> RepliedMessage:
         # `copy_message` does not return a `Message` to retrieve its content.
         msg = await bot.forward_message(

@@ -82,7 +82,9 @@ async def convert_voice(
 
         # This needs to be serialized with a queue.
         if status is None:
-            status = await reply_text(msg, text, 'MarkdownV2')
+            r = await reply_text(msg, text, 'MarkdownV2')
+            assert isinstance(r, Message)
+            status = r
         else:
             await status.edit_text(text, 'MarkdownV2')
 
