@@ -971,6 +971,12 @@ def _report(
     out.append(f'{escape(action)} {msg_info}')
 
 
+def cleanup_preview_cache(doc_id: int, val_id: int, name: str):
+    if id(preview_cache.get(doc_id)) == val_id:
+        log.warning('Unused preview cache for doc: %s %s', doc_id, name)
+        del preview_cache[doc_id]
+
+
 async def handle_render_doc(msg: Message):
     if not (text := msg.text) or not (text := text.strip()):
         return
@@ -982,13 +988,9 @@ async def handle_render_doc(msg: Message):
     info = []
     if name := ctx.engine.doc_name:
         preview_cache[id] = t = (ctx, name, result)
-
-        def cleanup():
-            if preview_cache.get(id) is t:
-                log.warning('Unused preview cache for doc: %s %s', id, name)
-                del preview_cache[id]
-
-        asyncio.get_event_loop().call_later(30, cleanup)
+        asyncio.get_event_loop().call_later(
+            30, cleanup_preview_cache, id, builtins.id(t), name
+        )
 
         old_by_id, old_by_name = db.save_doc(id, name, text)
 
