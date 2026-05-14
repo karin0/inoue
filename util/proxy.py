@@ -195,8 +195,9 @@ class InlineMessageProxy[T]:
                     ),
                     reply_markup=self._reply_markup,
                 )
-            log.debug('InlineMessageProxy: inline result: %s', result)
-            self._inline_message_id = await mid(self._msg, result)
+            log.debug('InlineMessageProxy: emitting inline result: %s, %s', result, mid)
+            self._inline_message_id = r = await mid(self._msg, result)
+            log.info('InlineMessageProxy: emitted inline message: %s', r)
 
     def _set_reply_markup(self, reply_markup: InlineKeyboardMarkup | None):
         if reply_markup is not None:
@@ -310,7 +311,7 @@ class InlineMessageProxy[T]:
         return await self._push(msg.text or msg.caption or '', None, force=True)
 
     async def reply_chat_action(self, *args, **kwargs):
-        log.info('InlineMessageProxy: ignored chat action: %s, %s', args, kwargs)
+        log.debug('InlineMessageProxy: ignored chat action: %s, %s', args, kwargs)
 
 
 class RepliedMessage:

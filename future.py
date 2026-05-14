@@ -90,5 +90,5 @@ async def answer_guest_query(msg: Message, result: InlineQueryResult) -> str:
             'result': result,
         },
     )
-    log.info('future: answerGuestQuery: %s', r)
+    log.debug('future: answerGuestQuery: %s', r)
     return r['inline_message_id']
