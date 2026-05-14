@@ -1,0 +1,213 @@
+import os
+import asyncio
+from io import BytesIO
+from pathlib import Path
+from typing import Awaitable, cast
+
+from PIL import Image
+from pathvalidate import sanitize_filename
+
+from telegram import Animation, Document, Message, PhotoSize, Sticker
+from telegram.constants import ChatAction
+
+from dispatch import command
+from ffmpeg import run_ffmpeg
+from util import bot, log, reply_text, keep_chat_action, get_text
+
+STICKER_SIDE = 512
+MAX_FILE_SIZE = 10 << 20
+MAX_WEBM_SIZE = 256_000
+
+LOTTIE_TO_GIF = 'lottie_to_gif.sh'
+ASSETS_DIR = 'assets/sticker'
+
+WEBM_ARGS = (
+    '-vf',
+    f'scale=w={STICKER_SIDE}:h={STICKER_SIDE}:force_original_aspect_ratio=decrease',
+    '-c:v',
+    'libvpx-vp9',
+    '-f',
+    'webm',
+    '-an',
+    'pipe:1',
+)
+
+
+def to_webp(src: str, msg: Message) -> bytes:
+    img = Image.open(src)
+    log.info('to_webp: %s, %d x %d', img.format, *img.size)
+    img.thumbnail((STICKER_SIDE, STICKER_SIDE), Image.Resampling.LANCZOS)
+    if img.mode not in ('RGBA', 'RGB', 'P'):
+        img = img.convert('RGBA')
+
+    if 'rembg' in get_text(msg):
+        log.info('to_webp: invoking rembg!')
+        from rembg import remove
+
+        img = cast(Image.Image, remove(img))
+
+    buf = BytesIO()
+    img.save(buf, 'webp', lossless=True)
+    return buf.getvalue()
+
+
+async def to_webm(src: str) -> bytes:
+    base = ('-t', '3', '-i', src)
+    data = await run_ffmpeg(
+        *base, '-lossless', '1', *WEBM_ARGS, desc='webm/lossless', capture=True
+    )
+    if len(data) <= MAX_WEBM_SIZE:
+        return data
+    log.info('Lossless webm too large (%d B), retrying lossy', len(data))
+    return await run_ffmpeg(*base, *WEBM_ARGS, desc='webm/lossy', capture=True)
+
+
+async def webm_to_gif(src: str) -> bytes:
+    return await run_ffmpeg(
+        '-i', src, '-c:v', 'gif', '-f', 'gif', 'pipe:1', desc='webm/gif', capture=True
+    )
+
+
+async def tgs_to_gif(path: str) -> bytes:
+    proc = await asyncio.create_subprocess_exec(
+        LOTTIE_TO_GIF,
+        path,
+        '--output',
+        '-',
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    out, err = await proc.communicate()
+    if proc.returncode:
+        raise RuntimeError(f'lottie_to_gif failed: {err.decode(errors="replace")}')
+    return out
+
+
+class TooLarge(ValueError):
+    pass
+
+
+async def download(media: Sticker | PhotoSize | Animation | Document, ext: str) -> str:
+    if (media.file_size or 0) > MAX_FILE_SIZE:
+        raise TooLarge
+
+    f = await bot.get_file(media.file_id)
+    if f.file_path and os.path.isfile(f.file_path):
+        log.info('sticker: Local: %s', os.path.basename(f.file_path))
+        return f.file_path
+
+    if file_name := getattr(media, 'file_name', f.file_path):
+        ext = os.path.splitext(file_name)[1].lower() or ext
+
+    dst = os.path.join(ASSETS_DIR, sanitize_filename(media.file_unique_id + ext))
+    if os.path.isfile(dst):
+        log.info('sticker: Cached: %s', dst)
+        return dst
+
+    os.makedirs(ASSETS_DIR, exist_ok=True)
+    await f.download_to_drive(dst)
+    log.info('sticker: Downloaded: %s', dst)
+    return dst
+
+
+async def send(
+    msg: Message,
+    data: bytes | str | Awaitable[bytes],
+    base: str | None,
+    ext: str,
+    caption: str | None = None,
+    raw: bool = False,
+):
+    name = (base and os.path.splitext(base)[0] or 'out') + ext
+    if isinstance(data, str):
+        data_ = Path(data)
+        log.info('sticker: send: %s (%s)', name, data_.name)
+    elif isinstance(data, bytes):
+        data_ = data
+        log.info('sticker: send: %s (%d B)', name, len(data))
+    else:
+        data_ = await cast(Awaitable[bytes], data)
+        log.info('sticker: send: %s (%d B)', name, len(data_))
+
+    return await msg.reply_document(
+        data_,
+        filename=name,
+        caption=caption,
+        do_quote=True,
+        allow_sending_without_reply=True,
+        disable_content_type_detection=raw,
+    )
+
+
+async def _try_handle_sticker(msg: Message, src: Message) -> bool:
+    if sti := src.sticker:
+        base, emoji = sti.set_name, sti.emoji
+        if sti.is_video:
+            with keep_chat_action(msg, ChatAction.UPLOAD_VIDEO):
+                path = await download(sti, '.webm')
+                await asyncio.gather(
+                    send(msg, path, base, '.webm', emoji, raw=True),
+                    send(msg, webm_to_gif(path), base, '.gif', emoji, raw=True),
+                )
+        elif sti.is_animated:
+            with keep_chat_action(msg, ChatAction.UPLOAD_VIDEO):
+                path = await download(sti, '.tgs')
+                await send(msg, tgs_to_gif(path), base, '.gif', emoji, raw=True)
+        else:
+            with keep_chat_action(msg, ChatAction.UPLOAD_PHOTO):
+                path = await download(sti, '.webp')
+                await send(msg, path, base, '.webp', emoji, raw=True)
+        return True
+
+    if photos := src.photo:
+        ph = next(
+            (p for p in photos if p.width >= STICKER_SIDE or p.height >= STICKER_SIDE),
+            photos[-1],
+        )
+        with keep_chat_action(msg, ChatAction.UPLOAD_PHOTO):
+            path = await download(ph, '.jpg')
+            await send(msg, to_webp(path, msg), None, '.webp')
+        return True
+
+    if ani := src.animation:
+        with keep_chat_action(msg, ChatAction.UPLOAD_VIDEO):
+            path = await download(ani, '.mp4')
+            await send(msg, to_webm(path), ani.file_name, '.webm')
+        return True
+
+    if doc := src.document:
+        mime = doc.mime_type or ''
+        name = doc.file_name or ''
+        ext = os.path.splitext(name)[1].lower()
+        if ext == '.gif' or mime.startswith('video'):
+            with keep_chat_action(msg, ChatAction.UPLOAD_VIDEO):
+                path = await download(doc, ext)
+                await send(msg, to_webm(path), name, '.webm')
+        elif mime.startswith('image'):
+            with keep_chat_action(msg, ChatAction.UPLOAD_PHOTO):
+                path = await download(doc, ext)
+                await send(msg, to_webp(path, msg), name, '.webp')
+        else:
+            return False
+        return True
+
+    return False
+
+
+async def try_handle_sticker(msg: Message) -> bool:
+    try:
+        return await _try_handle_sticker(msg, msg) or (
+            (m := msg.reply_to_message) is not None
+            and await _try_handle_sticker(msg, m)
+        )
+    except TooLarge:
+        await reply_text(msg, 'File is too large.')
+        return True
+
+
+@command(public=True)
+async def handle_sticker(msg: Message):
+    if not await try_handle_sticker(msg):
+        await reply_text(
+            msg, 'Send or reply to a photo/animation to convert it into a sticker.'
+        )

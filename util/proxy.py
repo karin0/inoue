@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Any, Awaitable, Callable, Concatenate, NamedTuple, cast
+from typing import Any, Awaitable, Callable, Concatenate, NamedTuple, TypeGuard, cast
 from functools import partial
 
 from telegram import (
@@ -9,6 +9,7 @@ from telegram import (
     Document,
     PhotoSize,
     Voice,
+    Sticker,
     InlineKeyboardMarkup,
     InlineQueryResult,
     InlineQueryResultArticle,
@@ -17,6 +18,7 @@ from telegram import (
     InlineQueryResultCachedPhoto,
     InlineQueryResultCachedDocument,
     InlineQueryResultCachedVoice,
+    InlineQueryResultCachedSticker,
     InputTextMessageContent,
     InputMediaAudio,
     InputMediaVideo,
@@ -163,17 +165,25 @@ class InlineMessageProxy[T]:
                     disable_web_page_preview=self._disable_web_page_preview,
                 )
         else:
-            log.info('InlineMessageProxy: emitting inline result: %s', mid)
             if self._media is not None:
                 typ, kwargs = self._media.as_cached()
                 kwargs: dict[str, Any]
-                result = typ(
-                    id='noop',
-                    caption=text or None,
-                    parse_mode=parse_mode,
-                    reply_markup=self._reply_markup,
-                    **kwargs,
-                )
+                if supports_caption(typ):
+                    result = typ(
+                        id='noop',
+                        caption=text or None,
+                        parse_mode=parse_mode,
+                        reply_markup=self._reply_markup,
+                        **kwargs,
+                    )
+                else:
+                    if text:
+                        log.warning(
+                            'InlineMessageProxy: dropped text for media: %r, %r',
+                            self._media,
+                            text,
+                        )
+                    result = typ(id='noop', reply_markup=self._reply_markup, **kwargs)
             else:
                 result = InlineQueryResultArticle(
                     id='noop',
@@ -267,14 +277,10 @@ class InlineMessageProxy[T]:
                 **kwargs,
                 message_thread_id=MEDIA_STAGING_MESSAGE_THREAD_ID,  # type: ignore
             )
-            media = RepliedMedia.from_msg(msg, key)
-            if media is None:
-                if (media := RepliedMedia.from_msg(msg, 'document')) is None:
-                    log.warning('InlineMessageProxy: media unsent: %r', msg)
-                    return await self._push(caption, parse_mode)
-                log.debug('InlineMessageProxy: document fallback: %r', media)
-            else:
-                log.debug('InlineMessageProxy: media: %r', media)
+            if (media := RepliedMedia.from_msg(msg, key)) is None:
+                log.warning('InlineMessageProxy: media unsent: %r', msg)
+                return await self._push(caption, parse_mode)
+            log.debug('InlineMessageProxy: media: %r', media)
 
         self._media = media
         return await self._push(caption, parse_mode, force=True)
@@ -290,15 +296,13 @@ class InlineMessageProxy[T]:
             message_thread_id=MEDIA_STAGING_MESSAGE_THREAD_ID,
         )
 
-        for key in MEDIA_TYP:
-            if (media := RepliedMedia.from_msg(msg, key)) is not None:
+        if (media := RepliedMedia.from_msg(msg)) is not None:
+            log.debug('InlineMessageProxy: copied media: %r', msg)
+            if self._media is not None:
+                log.warning('InlineMessageProxy: ignored media: %r', msg)
+            else:
                 log.debug('InlineMessageProxy: copied media: %r', msg)
-                if self._media is not None:
-                    log.warning('InlineMessageProxy: ignored media: %r', msg)
-                else:
-                    log.debug('InlineMessageProxy: copied media: %r', msg)
-                    self._media = media
-                break
+                self._media = media
         else:
             log.debug('InlineMessageProxy: copy: %r', msg)
 
@@ -347,9 +351,16 @@ class RepliedMessage:
         return self
 
 
-type CachedMedia = InlineQueryResultCachedAudio | InlineQueryResultCachedVideo | InlineQueryResultCachedPhoto | InlineQueryResultCachedDocument | InlineQueryResultCachedVoice
+type CachedMediaWithCaption = InlineQueryResultCachedAudio | InlineQueryResultCachedVideo | InlineQueryResultCachedPhoto | InlineQueryResultCachedDocument | InlineQueryResultCachedVoice
+type CachedMedia = CachedMediaWithCaption | InlineQueryResultCachedSticker
+
 type InputMedia = InputMediaAudio | InputMediaVideo | InputMediaPhoto | InputMediaDocument
-type Media = Audio | Video | Document | PhotoSize | Voice
+type Media = Audio | Video | Document | PhotoSize | Voice | Sticker
+
+
+def supports_caption(typ: type[CachedMedia]) -> TypeGuard[type[CachedMediaWithCaption]]:
+    return typ is not InlineQueryResultCachedSticker
+
 
 MDT = {'title': 'noop'}
 
@@ -357,7 +368,7 @@ MDT = {'title': 'noop'}
 # `InputMediaVideo` requires `supports_streaming=True`.
 # `InputMediaVoice` does not exist.
 # `PhotoSize` occurs as a sequence in `Message`.
-# `Document` can occur as a fallback.
+# `InlineQueryResultCachedSticker` accepts neither `caption` nor `title`.
 
 MEDIA_TYP: dict[
     str, tuple[type[CachedMedia], type[InputMedia] | None, dict[str, str]]
@@ -371,6 +382,7 @@ MEDIA_TYP: dict[
     ),
     'photo': (InlineQueryResultCachedPhoto, InputMediaPhoto, MDT),
     'document': (InlineQueryResultCachedDocument, InputMediaDocument, MDT),
+    'sticker': (InlineQueryResultCachedSticker, None, {}),
 }
 
 
@@ -380,13 +392,21 @@ class RepliedMedia(NamedTuple):
     file_id: str
 
     @classmethod
-    def from_msg(cls, msg: Message, key: str) -> RepliedMedia | None:
+    def from_msg(cls, msg: Message, key: str | None = None) -> RepliedMedia | None:
         media: Media | tuple[PhotoSize, ...] | None
         # Do not use `is not None` here, in case the sequence is empty.
-        if media := getattr(msg, key):
+        if key is not None and (media := getattr(msg, key)):
             if isinstance(media, (tuple, list)):
                 media = media[-1]
             return cls(key, media, media.file_id)
+
+        for k in MEDIA_TYP:
+            if media := getattr(msg, k):
+                if key is not None:
+                    log.debug('RepliedMedia: fallback: %s -> %s', key, k)
+                if isinstance(media, (tuple, list)):
+                    media = media[-1]
+                return cls(k, media, media.file_id)
 
     @classmethod
     def from_file_id(cls, key: str, file_id: str) -> RepliedMedia:

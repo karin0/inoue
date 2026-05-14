@@ -43,8 +43,7 @@ async def run_ffmpeg(
         sys.stderr.buffer.flush()
 
     ret = proc.returncode
-    if not desc:
-        desc = prog
+    desc = f'{prog} ({desc})' if desc else prog
 
     if capture:
         log.info('%s finished with %s, output %s bytes', desc, ret, len(out))
@@ -111,7 +110,7 @@ async def encode_opus(
         '-f',
         'ogg',
         'pipe:1',
-        desc=f'ffmpeg (voice/{settings})',
+        desc=f'voice/{settings}',
         capture=True,
     )
     return out, ' '.join(args)
@@ -273,7 +272,7 @@ async def encode_video_note(src: str, duration: float) -> str:
         '-movflags',
         '+faststart',
         dst,
-        desc=f'ffmpeg (video note/{video_bitrate_k}k)',
+        desc=f'video note/{video_bitrate_k}k',
     )
 
     log.info('Video note encoded into %d bytes', os.path.getsize(dst))

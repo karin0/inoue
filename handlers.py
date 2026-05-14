@@ -31,6 +31,7 @@ from util import (
 from inoue import render_receipt
 from rg import handle_rg
 from voice import try_handle_voice
+from sticker import try_handle_sticker
 from todo import handle_todo_msg
 from ytdlp import extract_url, handle_yt_inline_query, handle_yt_chosen_result
 from render import handle_render_doc, handle_render_group, handle_render_inline_query
@@ -70,7 +71,7 @@ async def handle_msg(msg: Message, update: Update):
     if msg.chat.type != ChatType.PRIVATE:
         return
 
-    if await try_handle_voice(msg):
+    if await try_handle_voice(msg) or await try_handle_sticker(msg):
         return
 
     # ID Bot

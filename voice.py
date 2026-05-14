@@ -163,9 +163,12 @@ async def convert_voice(
 def extract_media(
     msg: Message,
 ) -> tuple[Media, int | timedelta] | None:
-    if media := msg.document:
-        return media, 0
-    if media := (msg.audio or msg.video):
+    if (media := msg.document) is not None:
+        mime = media.mime_type
+        log.debug('voice: document mime: %s', mime)
+        if mime and (mime.startswith('audio') or mime.startswith('video')):
+            return media, 0
+    elif (media := msg.audio or msg.video) is not None:
         return media, media.duration
 
 
