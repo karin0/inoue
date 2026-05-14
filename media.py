@@ -65,8 +65,11 @@ def render_media(chat_id: int, message_id: int, title: str) -> str:
 
 
 @command(public=True)
-def handle_play(msg: Message):
-    if not (media := db.random_media()):
+def handle_play(msg: Message, arg: MessageArg):
+    if arg:
+        if not (media := db.get_media(int(arg))):
+            return reply_text(msg, 'Media not found.')
+    elif not (media := db.random_media()):
         return reply_text(msg, 'No saved media.')
 
     chat_id, message_id = media
@@ -74,50 +77,46 @@ def handle_play(msg: Message):
     return msg.reply_copy(chat_id, message_id, do_quote=True)
 
 
-@command
-def handle_playlist(msg: Message):
-    items = list(db.iter_media())
-    if not items:
-        return reply_text(msg, 'No saved media.')
-
-    lines = []
-    for i, (chat_id, message_id, title, _) in enumerate(items, 1):
-        msg_url = get_msg_url(message_id, chat_id)
-        play_url = get_deep_link_url(f'play_{chat_id}_{message_id}')
-        unsave_url = get_deep_link_url(f'unsave_{chat_id}_{message_id}')
-        title_text = render_title(title)
-        lines.append(
-            f'{escape(f'{i}.')} [{title_text}]({msg_url}) \\| [play]({play_url}) \\| [remove]({unsave_url})'
-        )
-
-    return reply_text(
-        msg,
-        '\n'.join(lines),
-        'MarkdownV2',
-        disable_web_page_preview=True,
+def _format_item(row: tuple[int, int, int, str, int]) -> str:
+    id, chat_id, message_id, title, unix = row
+    msg_url = get_msg_url(message_id, chat_id)
+    play_url = get_deep_link_url(f'play_{id}')
+    unsave_url = get_deep_link_url(f'unsave_{id}')
+    title_text = render_title(title)
+    return (
+        f'{escape(f'{id}.')} [{title_text}]({msg_url}) '
+        f'\\| ![{unix}](tg://time?unix={unix}&format=DT) '
+        f'\\| [play]({play_url}) \\| [remove]({unsave_url})'
     )
 
 
+@command
+def handle_playlist(msg: Message):
+    if not (text := '\n'.join(map(_format_item, db.iter_media()))):
+        return reply_text(msg, 'No saved media.')
+
+    return reply_text(msg, text, 'MarkdownV2', disable_web_page_preview=True)
+
+
 @start('play')
-def handle_play_media(msg: Message, chat_id: int, message_id: int):
-    if not db.has_media(chat_id, message_id):
+def handle_play_media(msg: Message, id: int):
+    if (media := db.get_media(id)) is None:
         return reply_text(msg, 'Media not found.')
 
     return msg.get_bot().forward_message(
         msg.chat_id,
-        chat_id,
-        message_id,
+        *media,
         message_thread_id=msg.message_thread_id,
     )
 
 
 @start('unsave')
-def handle_remove_media(msg: Message, chat_id: int, message_id: int):
-    title = db.delete_media(chat_id, message_id)
-    if title is not None:
-        return reply_text(
-            msg,
-            f'Removed {render_media(chat_id, message_id, title)}',
-            'MarkdownV2',
-        )
-    return reply_text(msg, 'Media not found.')
+def handle_remove_media(msg: Message, id: int):
+    if (row := db.delete_media(id)) is None:
+        return reply_text(msg, 'Media not found.')
+
+    return reply_text(
+        msg,
+        f'Removed {render_media(*row)}',
+        'MarkdownV2',
+    )

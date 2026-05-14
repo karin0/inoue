@@ -208,6 +208,13 @@ class DataStore:
             )
         return not existing
 
+    def get_media(self, id: int) -> tuple[int, int] | None:
+        cursor = self.conn.execute(
+            'SELECT chat_id, message_id FROM Media WHERE id = ?;', (id,)
+        )
+        if row := cursor.fetchone():
+            return row[0], row[1]
+
     def random_media(self) -> tuple[int, int] | None:
         cursor = self.conn.execute(
             'SELECT chat_id, message_id FROM Media ORDER BY RANDOM() LIMIT 1;'
@@ -231,26 +238,19 @@ class DataStore:
         )
         return cursor.fetchone() is not None
 
-    def iter_media(self) -> Iterable[tuple[int, int, str, str]]:
-        yield from self.conn.execute(
-            'SELECT chat_id, message_id, title, saved_at FROM Media ORDER BY id DESC;'
+    def iter_media(self) -> Iterable[tuple[int, int, int, str, int]]:
+        return self.conn.execute(
+            'SELECT id, chat_id, message_id, title, unixepoch(saved_at) FROM Media ORDER BY id ASC;'
         )
 
-    def delete_media(self, chat_id: int, message_id: int) -> str | None:
+    def delete_media(self, id: int) -> tuple[int, int, str] | None:
         with self.conn:
             cursor = self.conn.execute(
-                'SELECT title FROM Media WHERE chat_id = ? AND message_id = ?;',
-                (chat_id, message_id),
+                'SELECT chat_id, message_id, title FROM Media WHERE id = ?;', (id,)
             )
-            title_row = cursor.fetchone()
-            if title_row is None:
-                return None
-
-            self.conn.execute(
-                'DELETE FROM Media WHERE chat_id = ? AND message_id = ?;',
-                (chat_id, message_id),
-            )
-        return title_row[0]
+            if (row := cursor.fetchone()) is not None:
+                self.conn.execute('DELETE FROM Media WHERE id = ?;', (id,))
+        return row
 
     def add_todo(self, text: str):
         with self.conn:
