@@ -20,8 +20,10 @@ from util import (
     get_context,
     get_text,
     use_msg_override,
+    use_text_override,
     route_cmd,
     Sender,
+    Context,
     USER_ID,
     CHAN_ID,
     GROUP_ID,
@@ -68,15 +70,27 @@ async def handle_msg(msg: Message, update: Update):
     if (fut := route_cmd(update, msg)) is not None:
         return await fut
 
-    if msg.chat.type != ChatType.PRIVATE:
-        return
+    chat = msg.chat
+    if chat.type != ChatType.PRIVATE and (update.message or update.edited_message):
+        # For a message update in an ordinary group, we only handle it if a command
+        # is matched or we are mentioned, or we will get flooded when we are added
+        # as admins.
+        if (text := strip_mention(msg)) is None:
+            log.debug('Not mentioned: %s', msg)
+            return
+        with use_text_override(text):
+            return await _handle_msg(msg, update, context)
 
+    return await _handle_msg(msg, update, context)
+
+
+async def _handle_msg(msg: Message, update: Update, context: Context):
     if await try_handle_voice(msg) or await try_handle_sticker(msg):
         return
 
     # ID Bot
-    if origin:
-        return await reply_text(msg, *pre_block(str(origin)))
+    if msg.forward_origin:
+        return await reply_text(msg, *pre_block(str(msg.forward_origin)))
 
     if not (text := get_text(msg).strip()):
         if (
@@ -91,19 +105,24 @@ async def handle_msg(msg: Message, update: Update):
         with open('out.ogg', 'rb') as f:
             return await msg.reply_voice(f, do_quote=True)
 
-    # Warning: Always check the sender's identity from the `context` rather than
-    # `msg` itself, since it could be a mocked one from relayed callback queries
-    # or guest messages.
+    # We always check the sender's identity from the `context` rather than `msg`
+    # itself, since it could be a mocked one from relayed callback queries or
+    # guest messages.
     if context.sender_is_guest():
         await reply_usage(msg)
         return
 
-    if not context.sender_is_host():
+    # Administration is only allowed for the host in their own private chat.
+    if not (
+        context.sender_is_host()
+        and msg.chat.type == ChatType.PRIVATE
+        and msg.chat.id == USER_ID
+    ):
         log.error('handle_msg: unauthorized update: %s', update)
         return
 
-    # Be careful, since you won't be able to log in again within 10 minutes.
     if text == '/Please log out now/':
+        # Be careful, since you won't be able to log in again within 10 minutes.
         await reply_text(msg, 'See you next time!')
         if await bot.log_out():
             log.info('log_out: success')
@@ -141,13 +160,17 @@ async def handle_chosen_inline(result: ChosenInlineResult):
         log.error('Bad chosen inline result: %s', result)
 
 
-async def handle_guest(msg: Message, update: Update):
+def strip_mention(msg: Message) -> str | None:
     # ruff: noqa: E741
-    log.debug('handle_guest: %s', msg)
-    assert msg.text and msg.entities
+    if msg.text:
+        text, entities = msg.text, msg.entities
+    elif msg.caption:
+        text, entities = msg.caption, msg.caption_entities
+    else:
+        return None
 
-    text = msg.text.encode('utf-16-le')
-    for ent in msg.entities:
+    text = text.encode('utf-16-le')
+    for ent in entities:
         if ent.type == MessageEntityType.MENTION:
             l = ent.offset << 1
             r = (ent.offset + ent.length) << 1
@@ -156,9 +179,13 @@ async def handle_guest(msg: Message, update: Update):
                 left = text[:l].decode('utf-16-le').rstrip()
                 right = text[r:].decode('utf-16-le').lstrip()
                 text = (left + ' ' + right).strip()
-                log.info('handle_guest: extracted text: %s', text)
-                break
-    else:
+                log.info('strip_mention: extracted text: %s', text)
+                return text
+
+
+async def handle_guest(msg: Message, update: Update):
+    log.debug('handle_guest: %s', msg)
+    if (text := strip_mention(msg)) is None:
         raise ValueError(f'missing MENTION entity in guest message: {msg}')
 
     msg = cast(Message, InlineMessageProxy(msg, answer_guest_query))
