@@ -12,7 +12,6 @@ from ytdlp import run_ytdlp, extract_url, Output
 from util import (
     log,
     create_task,
-    get_arg,
     escape,
     reply_text,
     get_context,
@@ -37,6 +36,7 @@ async def convert_voice(
     raw_duration: timedelta | float,
     bitrate_k: int,
     quality: bool,
+    quiet: bool,
 ) -> None:
     log.info('Attachment: %s', attachment)
 
@@ -71,61 +71,58 @@ async def convert_voice(
     else:
         info = rf'Processing: _Untitled_ \({escape(attrs)}\)'
 
-    status: EditHandle | None = None
-    settings: list[str | None] = [info]
-    queue = asyncio.Queue()
+    if quiet:
+        task = None
 
-    async def _refresh():
-        nonlocal status
+        def report(idx: int, text: str):
+            log.debug('Status %s: %s', idx, text)
 
-        if settings:
-            text = '\n'.join(s for s in settings if s)
-        else:
-            text = info
+    else:
+        queue = asyncio.Queue()
+        status: EditHandle | None = None
+        settings: list[str | None] = [info]
 
-        # This needs to be serialized with a queue.
-        if status is None:
-            status = await rs.reply_cached(text, 'MarkdownV2')
-        else:
-            await status.edit_text(text, 'MarkdownV2')
+        async def _refresh():
+            nonlocal status
 
-    async def worker():
-        while True:
-            r = await queue.get()
-            if r is None:
-                return
+            if settings:
+                text = '\n'.join(s for s in settings if s)
+            else:
+                text = info
 
-            if isinstance(r, tuple):
-                duration, data, _ = r
-                await rs.reply(
-                    media=VoicePayload(
-                        data, math.ceil(duration) if duration >= 0 else None
-                    )
-                )
-                return
+            # This needs to be serialized with a queue.
+            if status is None:
+                status = await rs.reply_cached(text, 'MarkdownV2')
+            else:
+                await status.edit_text(text, 'MarkdownV2')
 
-            log.debug('Refreshing status: %s, %s', queue.qsize(), len(settings))
-            await _refresh()
+        async def worker():
+            while True:
+                r = await queue.get()
+                if r is None:
+                    return
 
-    def report(idx: int, text: str):
-        idx += 1
-        while len(settings) <= idx:
-            settings.append(None)
+                log.debug('Refreshing status: %s, %s', queue.qsize(), len(settings))
+                await _refresh()
 
-        log.debug('Settings %s: %s -> %s', idx, settings[idx], text)
-        settings[idx] = text
+        def report(idx: int, text: str):
+            idx += 1
+            while len(settings) <= idx:
+                settings.append(None)
 
-        if queue.empty():
-            queue.put_nowait(True)
+            log.debug('Settings %s: %s -> %s', idx, settings[idx], text)
+            settings[idx] = text
 
-    if isinstance(rs, InlineResponder):
-        rs._defer()
+            if queue.empty():
+                queue.put_nowait(True)
 
-    task = create_task(worker())
-    try:
         # Report initial status before downloading the file.
         queue.put_nowait(True)
 
+        task = create_task(worker())
+        if isinstance(rs, InlineResponder):
+            rs._defer()
+    try:
         if isinstance(attachment, Output):
             log.debug('Using external file: %s', attachment)
             file_path = attachment.path
@@ -152,15 +149,19 @@ async def convert_voice(
                 file_path = str(src)
 
         log.info('Encoding voice from %s', file_path)
-        result = await encode_voice(file_path, report, duration, bitrate_k, quality)
-
-        report(2, f'Encoded into {len(result[1])} bytes at {result[2]} kbps')
-        queue.put_nowait(result)
+        duration, data, bitrate_k = await encode_voice(
+            file_path, report, duration, bitrate_k, quality
+        )
+        report(2, f'Encoded into {len(data)} bytes at {bitrate_k} kbps')
+        await rs.reply(
+            media=VoicePayload(data, math.ceil(duration) if duration >= 0 else None)
+        )
     finally:
-        queue.put_nowait(None)
-        await task
-        if isinstance(rs, InlineResponder):
-            await rs._flush()
+        if task is not None:
+            queue.put_nowait(None)  # pyright: ignore[reportPossiblyUnboundVariable]
+            if isinstance(rs, InlineResponder):
+                await rs._flush()
+            await task
 
 
 def extract_media(
@@ -176,15 +177,15 @@ def extract_media(
 
 
 async def try_handle_voice(msg: Message, *, parse_url: bool = False) -> bool:
-    arg = get_arg(msg)
+    rs = get_responder(msg)
+    arg = rs.get_arg()
     info = extract_media(msg) or (
         msg.reply_to_message and extract_media(msg.reply_to_message)
     )
-    parsed = None
+    parsed = quiet = None
     if not info and (not parse_url or (parsed := extract_url(arg)) is None):
         return False
 
-    rs = get_responder(msg)
     with rs.keep_chat_action(ChatAction.RECORD_VOICE):
         if not info:
             # Delegate to ytdlp if the argument looks like a URL.
@@ -206,12 +207,14 @@ async def try_handle_voice(msg: Message, *, parse_url: bool = False) -> bool:
         else:
             quality = False
 
+        quiet = 's' in arg
+
         if (p := arg.find('k')) > 0 and arg[:p].isdigit():
             bitrate_k = int(arg[:p])
         else:
             bitrate_k = 0
 
-        await convert_voice(rs, *info, bitrate_k, quality)
+        await convert_voice(rs, *info, bitrate_k, quality, quiet)
         return True
 
 
