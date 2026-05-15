@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 from contextvars import ContextVar
 from contextlib import contextmanager

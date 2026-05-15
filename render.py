@@ -284,7 +284,7 @@ def make_markup(
             row_limit = int(row_limit_)
         else:
             row_limit = 5
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         row_limit = 5
 
     # Group 5 buttons per row
