@@ -1,6 +1,6 @@
 from typing import Awaitable, Callable, Sequence, Concatenate
 
-from telegram import Message, InlineKeyboardMarkup, Update
+from telegram import Message, Update
 from telegram.error import BadRequest
 
 from dispatch import get_command_handler, UpdateHandler
@@ -8,7 +8,7 @@ from dispatch import get_command_handler, UpdateHandler
 from .log import log
 from .text import truncate_text
 from .app import bot
-from .ctx import get_msg, get_text, get_responder, use_text_override
+from .ctx import get_msg, get_text, use_text_override
 from .env import USER_ID, CHAN_ID, GROUP_ID
 from .responder import reroute_capture
 
@@ -78,16 +78,6 @@ async def try_send_text_or_not_modified[**P, R](
             log.info('try_send_text_allow_not_modified: message not modified')
             return None
         raise
-
-
-async def reply_text(
-    m: Message,
-    text: str,
-    parse_mode: str | None = None,
-    reply_markup: InlineKeyboardMarkup | None = None,
-) -> None:
-    '''Compatibility alias for `Responder.reply_cached()`.'''
-    await get_responder(m).reply_cached(text, parse_mode, reply_markup)
 
 
 def _extract_cmd_handler(text: str) -> UpdateHandler | None:

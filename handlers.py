@@ -88,10 +88,10 @@ async def handle_msg(msg: Message, update: Update):
 
 
 async def _handle_msg(msg: Message, update: Update, context: Context):
-    if await try_handle_voice(msg) or await try_handle_sticker(msg):
-        return
-
     rs = get_responder(msg)
+
+    if await try_handle_voice(msg, rs) or await try_handle_sticker(msg, rs):
+        return
 
     # ID Bot
     if msg.forward_origin:
@@ -113,8 +113,7 @@ async def _handle_msg(msg: Message, update: Update, context: Context):
     # itself, since it could be a mocked one from relayed callback queries or
     # guest messages.
     if context.sender_is_guest():
-        await reply_usage(msg)
-        return
+        return await reply_usage(rs)
 
     # Administration is only allowed for the host in their own private chat.
     if not (

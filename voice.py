@@ -13,9 +13,7 @@ from util import (
     log,
     create_task,
     escape,
-    reply_text,
     get_context,
-    get_responder,
     Responder,
     InlineResponder,
     EditHandle,
@@ -176,8 +174,9 @@ def extract_media(
         return media, media.duration
 
 
-async def try_handle_voice(msg: Message, *, parse_url: bool = False) -> bool:
-    rs = get_responder(msg)
+async def try_handle_voice(
+    msg: Message, rs: Responder, parse_url: bool = False
+) -> bool:
     arg = rs.get_arg()
     info = extract_media(msg) or (
         msg.reply_to_message and extract_media(msg.reply_to_message)
@@ -219,10 +218,9 @@ async def try_handle_voice(msg: Message, *, parse_url: bool = False) -> bool:
 
 
 @command(public=True)
-async def handle_voice(msg: Message):
-    if not await try_handle_voice(msg, parse_url=True):
-        await reply_text(
-            msg,
+async def handle_voice(msg: Message, rs: Responder) -> None:
+    if not await try_handle_voice(msg, rs, parse_url=True):
+        await rs.reply_cached(
             r'Send or reply to a media message with `/voice [q]`, or use `/voice <url>`\.',
             'MarkdownV2',
         )

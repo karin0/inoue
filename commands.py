@@ -4,7 +4,6 @@ import asyncio
 from typing import Awaitable
 
 from telegram import (
-    Message,
     User,
     Update,
     Bot,
@@ -18,7 +17,6 @@ from util import (
     escape,
     pre_block,
     pre_block_raw,
-    reply_text,
     use_text_override,
     get_context,
     Responder,
@@ -42,8 +40,8 @@ try:
 except ImportError as e:
     log.info('Using default reply_usage: %s', e)
 
-    def reply_usage(msg: Message) -> Awaitable:
-        return reply_text(msg, f'Hello, {get_context().sender_name}!')
+    def reply_usage(rs: Responder) -> Awaitable:
+        return rs.reply_cached(f'Hello, {get_context().sender_name}!')
 
 
 REG_TEMPLATE_ARG = re.compile(r'\$(\*|\d+)')
@@ -93,15 +91,15 @@ async def dispatch_cmd(
 
 
 @command
-async def handle_def(msg: Message, arg: MessageArg, bot: Bot):
+async def handle_def(rs: Responder, arg: MessageArg, bot: Bot):
     if not arg:
         cmds = []
         for name in db.iter_commands():
             cmd = db.get_command(name)
             cmds.append(f'/{name} \u2192 {cmd}')
         if not cmds:
-            return await reply_text(msg, 'No custom commands defined.')
-        return await reply_text(msg, *pre_block('\n'.join(cmds)))
+            return await rs.reply_cached('No custom commands defined.')
+        return await rs.reply_cached(*pre_block('\n'.join(cmds)))
 
     parts = arg.split(None, 1)
     name = parts[0]
@@ -110,12 +108,12 @@ async def handle_def(msg: Message, arg: MessageArg, bot: Bot):
     if template:
         db.set_command(name, template)
         await set_commands(bot)
-        await reply_text(msg, *pre_block(f'/{name} \u2192 {template}'))
+        await rs.reply_cached(*pre_block(f'/{name} \u2192 {template}'))
     elif db.del_command(name):
         await set_commands(bot)
-        await reply_text(msg, f'Deleted /{name}')
+        await rs.reply_cached(f'Deleted /{name}')
     else:
-        await reply_text(msg, f'/{name} not found')
+        await rs.reply_cached(f'/{name} not found')
 
 
 def set_commands(bot: Bot):
@@ -162,13 +160,13 @@ def stats(me: User, header: str = ME) -> tuple[str, str]:
 
 
 @command
-async def handle_greet(msg: Message, bot: Bot):
-    await reply_text(msg, *stats(await bot.get_me()))
+async def handle_greet(rs: Responder, bot: Bot):
+    await rs.reply_cached(*stats(await bot.get_me()))
 
 
 @command
-def handle_start(update: Update, msg: Message, arg: MessageArg):
+def handle_start(update: Update, rs: Responder, arg: MessageArg):
     if (fut := dispatch_start(update, arg)) is not None:
         return fut
 
-    return reply_usage(msg)
+    return reply_usage(rs)

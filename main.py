@@ -26,6 +26,7 @@ from util import (
     do_notify,
     shorten,
     use_context,
+    get_responder,
 )
 from commands import set_commands, stats, reply_usage
 from handlers import (
@@ -145,7 +146,7 @@ async def handle_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if func is None:
         if is_guest and msg:
-            await reply_usage(msg)
+            await reply_usage(get_responder(msg))
         return
 
     with use_context(update, ctx, msg, sender):

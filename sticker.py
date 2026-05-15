@@ -12,7 +12,7 @@ from telegram.constants import ChatAction
 
 from dispatch import command
 from ffmpeg import run_ffmpeg
-from util import bot, log, reply_text, get_responder, Responder, DocumentPayload
+from util import bot, log, Responder, DocumentPayload
 
 STICKER_SIDE = 512
 MAX_FILE_SIZE = 10 << 20
@@ -193,8 +193,7 @@ async def _try_handle_sticker(rs: Responder, src: Message) -> bool:
     return False
 
 
-async def try_handle_sticker(msg: Message) -> bool:
-    rs = get_responder(msg)
+async def try_handle_sticker(msg: Message, rs: Responder) -> bool:
     try:
         return await _try_handle_sticker(rs, msg) or (
             (m := msg.reply_to_message) is not None and await _try_handle_sticker(rs, m)
@@ -205,8 +204,8 @@ async def try_handle_sticker(msg: Message) -> bool:
 
 
 @command(public=True)
-async def handle_sticker(msg: Message):
-    if not await try_handle_sticker(msg):
-        await reply_text(
-            msg, 'Send or reply to a photo/animation to convert it into a sticker.'
+async def handle_sticker(msg: Message, rs: Responder):
+    if not await try_handle_sticker(msg, rs):
+        await rs.reply_cached(
+            'Send or reply to a photo/animation to convert it into a sticker.'
         )

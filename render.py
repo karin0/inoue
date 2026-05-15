@@ -37,7 +37,6 @@ from util import (
     get_responder,
     list_env,
     get_msg_url,
-    reply_text,
     try_send_text_or_not_modified,
     shorten,
     truncate_text,
@@ -45,6 +44,7 @@ from util import (
     cleanup_text,
     do_notify,
     encode_chat_id,
+    Responder,
     EditHandle,
     PhotoPayload,
     DocumentPayload,
@@ -631,7 +631,7 @@ class RenderContext:
 
 
 @command(public=True)
-def handle_render(msg: Message, arg: MessageArg):
+def handle_render(msg: Message, rs: Responder, arg: MessageArg):
     target = msg.reply_to_message
     text = target and (target.text or target.caption or '').strip()
 
@@ -641,12 +641,12 @@ def handle_render(msg: Message, arg: MessageArg):
     elif arg:
         text = arg
     else:
-        return reply_text(msg, 'Specify text or reply to a message to render.')
+        return rs.reply_cached('Specify text or reply to a message to render.')
 
     if doc_ref := is_doc_ref(text):
         path, row = doc_ref
         if path is None:
-            return reply_text(msg, f'No doc: {row}')
+            return rs.reply_cached(f'No doc: {row}')
         assert isinstance(row, tuple)
         doc_id, text = row
     else:
@@ -656,7 +656,7 @@ def handle_render(msg: Message, arg: MessageArg):
         doc_id = None
 
     ctx = RenderContext(doc_id=doc_id, path=path)
-    ctx.set_update_callback(create_reply_callback(msg, ctx.data))
+    ctx.set_update_callback(create_reply_callback(rs, ctx.data))
     return ctx.render(text)
 
 
@@ -690,9 +690,7 @@ def has_media(data: Mapping[str, Value]) -> bool:
     return bool(get_env(data, 'photo') or get_env(data, 'document'))
 
 
-def create_reply_callback(msg: Message, data: Mapping[str, Value]) -> UpdateCallback:
-    rs = get_responder(msg)
-
+def create_reply_callback(rs: Responder, data: Mapping[str, Value]) -> UpdateCallback:
     def do_reply(spec: MessageSpec):
         return rs.reply_cached(
             *spec, media=extract_media(data), allow_not_modified=True
@@ -772,7 +770,7 @@ async def handle_render_group(msg: Message, origin_id: int):
         log.info('Doc in group: %s -> %s %s', msg.id, origin_id, doc_name)
 
         ctx.set_path(':' + doc_name)
-        ctx.set_update_callback(create_reply_callback(msg, ctx.data))
+        ctx.set_update_callback(create_reply_callback(get_responder(msg), ctx.data))
         await ctx.to_response(result)
     else:
         log.info('No preview cache in group: %s -> %s', msg.id, origin_id)
@@ -1025,38 +1023,38 @@ async def handle_render_doc(msg: Message):
 
 
 @command
-def handle_ls(msg: Message, arg: MessageArg):
+def handle_ls(rs: Responder, arg: MessageArg):
     keywords = arg.split()
 
     if not (docs := tuple(db.find_docs(keywords))):
-        return reply_text(msg, 'No docs found.')
+        return rs.reply_cached('No docs found.')
 
     lines = [rf'{len(docs)} docs:']
     for id, name, length in docs:
         line = rf'\- [*{escape(name)}*]({get_msg_url(id)}) \({id}, {length}\)'
         lines.append(line)
 
-    return reply_text(msg, '\n'.join(lines), parse_mode='MarkdownV2')
+    return rs.reply_cached('\n'.join(lines), parse_mode='MarkdownV2')
 
 
 @command
-async def handle_rm(msg: Message, arg: MessageArg):
+async def handle_rm(rs: Responder, arg: MessageArg):
     names = arg.split()
     if not names:
-        return await reply_text(msg, 'Usage: /rm <name1> [name2 ...]')
+        return await rs.reply_cached('Usage: /rm <name1> [name2 ...]')
     db.delete_docs(names)
-    return await reply_text(msg, f'Deleted {len(names)} docs.')
+    return await rs.reply_cached(f'Deleted {len(names)} docs.')
 
 
 @command
-async def handle_submit(msg: Message, arg: MessageArg):
+async def handle_submit(rs: Responder, arg: MessageArg):
     from util import CHAN_ID, MAX_TEXT_LENGTH, pre_block
 
     if not DOC_OVERRIDE_DIR:
-        return await reply_text(msg, 'DOC_OVERRIDE_DIR is unset.')
+        return await rs.reply_cached('DOC_OVERRIDE_DIR is unset.')
 
     if os.path.basename(arg) != arg:
-        return await reply_text(msg, 'Bad name.')
+        return await rs.reply_cached('Bad name.')
 
     file = os.path.join(DOC_OVERRIDE_DIR, arg + '.m')
     with open(file, encoding='utf-8') as fp:
@@ -1064,7 +1062,7 @@ async def handle_submit(msg: Message, arg: MessageArg):
 
     length = len(text)
     if length > MAX_TEXT_LENGTH:
-        return await reply_text(msg, f'Too long: {length}')
+        return await rs.reply_cached(f'Too long: {length}')
 
     m = await bot.send_message(CHAN_ID, *pre_block(text))
     name = await handle_render_doc(m) or arg
@@ -1087,4 +1085,4 @@ async def handle_submit(msg: Message, arg: MessageArg):
     if old_url is not None:
         info = f'{info}\nOld: {old_url}'
 
-    await reply_text(msg, info)
+    await rs.reply_cached(info)
