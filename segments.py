@@ -1,6 +1,3 @@
-# pyright: reportIncompatibleMethodOverride=false
-# https://github.com/microsoft/pyright/issues/2678
-
 import functools
 from typing import Callable, Sequence
 from dataclasses import dataclass, replace
