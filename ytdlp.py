@@ -107,8 +107,11 @@ def restore_url(s: str) -> str | None:
 
 
 def extract_url(text: str) -> tuple[str, str] | None:
-    if (url := restore_url(text)) is not None:
-        return url, ''
+    if not (parts := text.split(None, 1)):
+        return None
+
+    if (url := restore_url(parts[0])) is not None:
+        return url, parts[1] if len(parts) > 1 else ''
 
     def repl(m: re.Match) -> str:
         nonlocal url
