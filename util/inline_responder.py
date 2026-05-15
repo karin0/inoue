@@ -9,6 +9,7 @@ from telegram import (
     Message,
 )
 from telegram.constants import ChatAction, MessageLimit
+from telegram.error import BadRequest
 
 from .log import log
 from .app import bot
@@ -34,6 +35,7 @@ class InlineResponder(Responder):
         '_fragments',
         '_reply_markup',
         '_disable_web_page_preview',
+        '_cached_idx',
         '_media',
         '_deferred',
         '_dirty',
@@ -49,6 +51,7 @@ class InlineResponder(Responder):
         self._fragments: list[tuple[str, str | None]] = []
         self._reply_markup: InlineKeyboardMarkup | None = None
         self._disable_web_page_preview: bool | None = None
+        self._cached_idx: int | None = None
         self._media: tuple[MediaPayload, str] | None = None
         self._deferred = False
         self._dirty = False
@@ -112,10 +115,9 @@ class InlineResponder(Responder):
         disable_web_page_preview: bool | None = None,
         allow_not_modified: bool = False,
     ) -> InlineFragmentHandle:
-        is_captured(self._msg, text, parse_mode)
+        if is_captured(self._msg, text, parse_mode):
+            cached = False
 
-        # `cached` and `allow_not_modified` are no-ops; an inline message is
-        # always edited in place.
         if reply_markup is not None:
             if self._reply_markup is not None:
                 log.warning(
@@ -129,12 +131,40 @@ class InlineResponder(Responder):
             self._disable_web_page_preview = disable_web_page_preview
 
         if media is not None:
-            await self._stage_media(media)
+            if self._media is not None:
+                log.warning('InlineResponder: ignored extra media: %r', media)
+                media = None
+            else:
+                await self._stage_media(media)
 
-        idx = len(self._fragments)
-        self._fragments.append((text or '', parse_mode if text else None))
+        frag = (text or '', parse_mode if text else None)
+        if cached and (idx := self._cached_idx) is not None:
+            log.debug(
+                'InlineResponder: editing fragment %d: %s -> %s',
+                idx,
+                self._fragments[idx],
+                frag,
+            )
+            self._fragments[idx] = frag
+        else:
+            idx = len(self._fragments)
+            log.debug('InlineResponder: new fragment %d: %s', idx, frag)
+            self._fragments.append(frag)
+
+        if cached:
+            self._cached_idx = idx
+
         if text or media is not None:
-            await self._emit()
+            if allow_not_modified:
+                try:
+                    await self._emit()
+                except BadRequest as e:
+                    if 'Message is not modified' in str(e):
+                        log.info('InlineResponder.reply: message not modified')
+                    else:
+                        raise
+            else:
+                await self._emit()
 
         return InlineFragmentHandle(self, idx)
 
