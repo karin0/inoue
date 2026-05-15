@@ -1,6 +1,7 @@
 import re
 import shlex
 import asyncio
+from typing import Awaitable
 
 from telegram import (
     Message,
@@ -20,6 +21,7 @@ from util import (
     reply_text,
     use_text_override,
     get_context,
+    Responder,
     ME,
     CHAN_ID,
     TRUSTED_IDS,
@@ -40,7 +42,7 @@ try:
 except ImportError as e:
     log.info('Using default reply_usage: %s', e)
 
-    def reply_usage(msg: Message):
+    def reply_usage(msg: Message) -> Awaitable:
         return reply_text(msg, f'Hello, {get_context().sender_name}!')
 
 
@@ -65,12 +67,12 @@ def expand_template(template: str, args_str: str) -> str:
 # Provided `text` must start with '/'.
 async def dispatch_cmd(
     update: Update,
-    msg: Message,
+    rs: Responder,
     text: str,
     depth: int = 0,
 ):
     if depth > 10:
-        return await reply_text(msg, 'Too many levels of command expansion.')
+        return await rs.reply_cached('Too many levels of command expansion.')
 
     content = text[1:].strip()
     parts = content.split(None, 1)
@@ -80,14 +82,14 @@ async def dispatch_cmd(
     if template := db.get_command(cmd_name):
         expanded = expand_template(template, cmd_args)
         if expanded.startswith('/'):
-            return await dispatch_cmd(update, msg, expanded, depth + 1)
+            return await dispatch_cmd(update, rs, expanded, depth + 1)
         raise RuntimeError(f'Bad command expansion: {expanded}')
 
     if handler := get_command_handler(cmd_name):
         with use_text_override(text):
             return await handler(update)
 
-    return await handle_cmd(msg, content)
+    return await handle_cmd(rs, content)
 
 
 @command

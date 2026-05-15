@@ -15,7 +15,8 @@ from util import (
     get_deep_link_url,
     pre_block_raw,
     truncate_text,
-    reply_text,
+    Responder,
+    EditHandle,
     MAX_TEXT_LENGTH,
 )
 from dispatch import MessageArg, command, callback_query, start
@@ -147,7 +148,7 @@ class RGQuery:
     match_cnt: int = 0
     page_num: int = 0
     page_offsets: list[tuple[int, int, int]] = field(default_factory=list)
-    message: Message | None = None
+    message: EditHandle | None = None
 
     def render(
         self, fmt: Formatter, i: int, file_offset: int, match_offset: int
@@ -186,11 +187,11 @@ def push_query(q: RGQuery):
 
 
 @start('rg')
-def handle_rg_start(msg: Message, i: int, j: int, k: int):
-    return asyncio.gather(msg.delete(), do_show(i, j, k, None))
+def handle_rg_start(rs: Responder, msg: Message, i: int, j: int, k: int):
+    return asyncio.gather(msg.delete(), do_show(rs, i, j, k, None))
 
 
-async def do_show(i: int, j: int, k: int | None, alt_off: int | None):
+def do_show(rs: Responder, i: int, j: int, k: int | None, alt_off: int | None):
     query = QUERIES[i]
     message = query.message
     assert message is not None
@@ -205,7 +206,7 @@ async def do_show(i: int, j: int, k: int | None, alt_off: int | None):
     with open(os.path.join(query.cwd, file.path), 'rb') as fp:
         with mmap.mmap(fp.fileno(), 0, access=mmap.ACCESS_READ) as mm:
             if not (sect := Section.discover(mm, off)):
-                return await reply_text(message, 'Unable to show the section.')
+                return rs.reply_cached('Unable to show the section.')
 
             text = sect.decode(mm)
 
@@ -241,7 +242,7 @@ async def do_show(i: int, j: int, k: int | None, alt_off: int | None):
         ),
     ]
 
-    await message.edit_text(
+    return message.edit_text(
         text,
         reply_markup=InlineKeyboardMarkup.from_row(row),
         parse_mode=parse_mode,
@@ -249,7 +250,7 @@ async def do_show(i: int, j: int, k: int | None, alt_off: int | None):
 
 
 @callback_query('rg')
-def handle_rg_callback(cmd: str, idx: int, *args: int):
+def handle_rg_callback(rs: Responder, cmd: str, idx: int, *args: int):
     list_pages = False
     match cmd:
         case 'back':
@@ -264,7 +265,7 @@ def handle_rg_callback(cmd: str, idx: int, *args: int):
             list_pages = True
         case 'show':
             j, off = args
-            return do_show(idx, j, None, off)
+            return do_show(rs, idx, j, None, off)
         case _:
             raise ValueError('bad rg callback: ' + cmd)
 
@@ -440,11 +441,11 @@ def render_query_menu(
 
 
 @command
-async def handle_rg(msg: Message, arg: MessageArg):
+async def handle_rg(rs: Responder, arg: MessageArg):
     if not arg:
-        return await reply_text(msg, 'Provide a keyword.')
+        return await rs.reply_cached('Provide a keyword.')
 
-    text = msg.text
+    text = rs.get_text()
     assert text
     text = text.strip()
     if len(bare := text.removeprefix('/rg')) != len(text):
@@ -461,10 +462,8 @@ async def handle_rg(msg: Message, arg: MessageArg):
     query = await _run_rg(arg, CWD + off)
 
     if not query.files:
-        return await reply_text(msg, 'No matches.')
+        return await rs.reply_cached('No matches.')
 
     idx = push_query(query)
     text, markup = render_query_menu(query, idx)
-    m = await reply_text(msg, text, parse_mode='HTML', reply_markup=markup)
-    assert isinstance(m, Message)
-    query.message = m
+    query.message = await rs.reply_cached(text, parse_mode='HTML', reply_markup=markup)

@@ -91,11 +91,13 @@ async def _handle_msg(msg: Message, update: Update, context: Context):
     if await try_handle_voice(msg) or await try_handle_sticker(msg):
         return
 
+    rs = get_responder(msg)
+
     # ID Bot
     if msg.forward_origin:
-        return await reply_text(msg, *pre_block(str(msg.forward_origin)))
+        return await rs.reply_cached(*pre_block(str(msg.forward_origin)))
 
-    if not (text := get_text(msg).strip()):
+    if not (text := rs.get_text().strip()):
         if (
             msg.forum_topic_created
             or msg.forum_topic_edited
@@ -105,7 +107,7 @@ async def _handle_msg(msg: Message, update: Update, context: Context):
             log.debug('Ignoring forum_topic: %s', msg)
             return
 
-        return await get_responder(msg).reply(media=VoicePayload(Path('out.ogg')))
+        return await rs.reply(media=VoicePayload(Path('out.ogg')))
 
     # We always check the sender's identity from the `context` rather than `msg`
     # itself, since it could be a mocked one from relayed callback queries or
@@ -117,15 +119,15 @@ async def _handle_msg(msg: Message, update: Update, context: Context):
     # Administration is only allowed for the host in their own private chat.
     if not (
         context.sender_is_host()
+        and msg.chat_id == USER_ID
         and msg.chat.type == ChatType.PRIVATE
-        and msg.chat.id == USER_ID
     ):
         log.error('handle_msg: unauthorized update: %s', update)
         return
 
     if text == '/Please log out now/':
         # Be careful, since you won't be able to log in again within 10 minutes.
-        await reply_text(msg, 'See you next time!')
+        await rs.reply_cached('See you next time!')
         if await bot.log_out():
             log.info('log_out: success')
             sys.exit(1)
@@ -134,12 +136,12 @@ async def _handle_msg(msg: Message, update: Update, context: Context):
         return
 
     if text.startswith('/'):
-        return await dispatch_cmd(update, msg, text)
+        return await dispatch_cmd(update, rs, text)
 
     if '\n' not in text:
-        return await handle_rg(msg, text)
+        return await handle_rg(rs, text)
 
-    await reply_text(msg, *pre_block(render_receipt(text)))
+    await rs.reply_cached(*pre_block(render_receipt(text)))
 
 
 async def handle_inline_query(query: InlineQuery):

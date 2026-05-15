@@ -37,7 +37,6 @@ from util import (
     bot,
     create_task,
     get_context,
-    get_responder,
     MediaPayload,
     AudioPayload,
     VideoPayload,
@@ -428,7 +427,7 @@ async def run_ytdlp(url: str, *, audio_only: bool = False) -> Output:
 
 
 async def _handle_yt(
-    msg: Message,
+    rs: Responder,
     arg: str,
     cmd: str,
     action: ChatAction,
@@ -436,7 +435,6 @@ async def _handle_yt(
     audio_only: bool = False,
     video_note: bool = False,
 ):
-    rs = get_responder(msg)
     if not arg:
         await rs.reply_cached(f'Usage: {cmd} <url>')
         return
@@ -449,7 +447,7 @@ async def _handle_yt(
         try:
             output = await run_ytdlp(url, audio_only=audio_only)
             if video_note:
-                await output.finish_video_note(msg)
+                await output.finish_video_note(rs.get_message())
             else:
                 await output.finish(rs, audio_only=audio_only)
         except Exception as e:
@@ -459,18 +457,18 @@ async def _handle_yt(
 
 
 @command(public=True)
-def handle_yt(msg: Message, arg: MessageArg):
-    return _handle_yt(msg, arg, '/yt', ChatAction.RECORD_VIDEO)
+def handle_yt(rs: Responder, arg: MessageArg):
+    return _handle_yt(rs, arg, '/yt', ChatAction.RECORD_VIDEO)
 
 
 @command(public=True)
-def handle_yta(msg: Message, arg: MessageArg):
-    return _handle_yt(msg, arg, '/yta', ChatAction.RECORD_VOICE, audio_only=True)
+def handle_yta(rs: Responder, arg: MessageArg):
+    return _handle_yt(rs, arg, '/yta', ChatAction.RECORD_VOICE, audio_only=True)
 
 
 @command(public=True)
-def handle_ytn(msg: Message, arg: MessageArg):
-    return _handle_yt(msg, arg, '/ytn', ChatAction.RECORD_VIDEO_NOTE, video_note=True)
+def handle_ytn(rs: Responder, arg: MessageArg):
+    return _handle_yt(rs, arg, '/ytn', ChatAction.RECORD_VIDEO_NOTE, video_note=True)
 
 
 def make_markup(text: str) -> InlineKeyboardMarkup:
