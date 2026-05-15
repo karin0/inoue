@@ -61,7 +61,7 @@ def render_receipt(text: str):
     the_real_tot: int | None = None
     tax: float = 1.08
     items: list[Value] = []
-    alts: list[tuple[float, int]] = []
+    alts: list[tuple[int, int]] = []
 
     for line in text.splitlines():
         comment = ''
@@ -124,7 +124,7 @@ def render_receipt(text: str):
             if base != 1:
                 tot /= base
                 for x in alt_items:
-                    x.cost /= base
+                    x.cost = round(x.cost / base)
                     x.raw /= base
             tots.append(str(tot))
             tots.append(f'(x{tot / real_tot:.3f})')
@@ -139,7 +139,6 @@ def render_receipt(text: str):
         fields, header=False, border=False, preserve_internal_border=True, align=aligns
     )
     for i, row in enumerate(zip(*dss)):
-        row: list[Value]
         comment = row[0].comment
         if i == ext_idx:
             comment += '🚨'
