@@ -12,7 +12,7 @@ from telegram.constants import ChatAction
 
 from dispatch import command
 from ffmpeg import run_ffmpeg
-from util import bot, log, reply_text, keep_chat_action, get_text
+from util import bot, log, reply_text, get_responder, Responder, DocumentPayload
 
 STICKER_SIDE = 512
 MAX_FILE_SIZE = 10 << 20
@@ -33,14 +33,14 @@ WEBM_ARGS = (
 )
 
 
-def to_webp(src: str, msg: Message) -> bytes:
+def to_webp(src: str, rs: Responder) -> bytes:
     img = Image.open(src)
     log.info('to_webp: %s, %d x %d', img.format, *img.size)
     img.thumbnail((STICKER_SIDE, STICKER_SIDE), Image.Resampling.LANCZOS)
     if img.mode not in ('RGBA', 'RGB', 'P'):
         img = img.convert('RGBA')
 
-    if 'rembg' in get_text(msg):
+    if 'rembg' in rs.get_text():
         log.info('to_webp: invoking rembg!')
         from rembg import remove
 
@@ -111,7 +111,7 @@ async def download(media: Sticker | PhotoSize | Animation | Document, ext: str) 
 
 
 async def send(
-    msg: Message,
+    rs: Responder,
     data: bytes | str | Awaitable[bytes],
     base: str | None,
     ext: str,
@@ -119,44 +119,43 @@ async def send(
     raw: bool = False,
 ):
     name = (base and os.path.splitext(base)[0] or 'out') + ext
+    content: bytes | Path
     if isinstance(data, str):
-        data_ = Path(data)
-        log.info('sticker: send: %s (%s)', name, data_.name)
+        content = Path(data)
+        log.info('sticker: send: %s (%s)', name, content.name)
     elif isinstance(data, bytes):
-        data_ = data
+        content = data
         log.info('sticker: send: %s (%d B)', name, len(data))
     else:
-        data_ = await cast(Awaitable[bytes], data)
-        log.info('sticker: send: %s (%d B)', name, len(data_))
+        content = await cast(Awaitable[bytes], data)
+        log.info('sticker: send: %s (%d B)', name, len(content))
 
-    return await msg.reply_document(
-        data_,
-        filename=name,
-        caption=caption,
-        do_quote=True,
-        allow_sending_without_reply=True,
-        disable_content_type_detection=raw,
+    return await rs.reply(
+        caption,
+        media=DocumentPayload(
+            content, filename=name, disable_content_type_detection=raw
+        ),
     )
 
 
-async def _try_handle_sticker(msg: Message, src: Message) -> bool:
+async def _try_handle_sticker(rs: Responder, src: Message) -> bool:
     if sti := src.sticker:
         base, emoji = sti.set_name, sti.emoji
         if sti.is_video:
-            with keep_chat_action(msg, ChatAction.UPLOAD_VIDEO):
+            with rs.keep_chat_action(ChatAction.UPLOAD_VIDEO):
                 path = await download(sti, '.webm')
                 await asyncio.gather(
-                    send(msg, path, base, '.webm', emoji, raw=True),
-                    send(msg, webm_to_gif(path), base, '.gif', emoji, raw=True),
+                    send(rs, path, base, '.webm', emoji, raw=True),
+                    send(rs, webm_to_gif(path), base, '.gif', emoji, raw=True),
                 )
         elif sti.is_animated:
-            with keep_chat_action(msg, ChatAction.UPLOAD_VIDEO):
+            with rs.keep_chat_action(ChatAction.UPLOAD_VIDEO):
                 path = await download(sti, '.tgs')
-                await send(msg, tgs_to_gif(path), base, '.gif', emoji, raw=True)
+                await send(rs, tgs_to_gif(path), base, '.gif', emoji, raw=True)
         else:
-            with keep_chat_action(msg, ChatAction.UPLOAD_PHOTO):
+            with rs.keep_chat_action(ChatAction.UPLOAD_PHOTO):
                 path = await download(sti, '.webp')
-                await send(msg, path, base, '.webp', emoji, raw=True)
+                await send(rs, path, base, '.webp', emoji, raw=True)
         return True
 
     if photos := src.photo:
@@ -164,15 +163,15 @@ async def _try_handle_sticker(msg: Message, src: Message) -> bool:
             (p for p in photos if p.width >= STICKER_SIDE or p.height >= STICKER_SIDE),
             photos[-1],
         )
-        with keep_chat_action(msg, ChatAction.UPLOAD_PHOTO):
+        with rs.keep_chat_action(ChatAction.UPLOAD_PHOTO):
             path = await download(ph, '.jpg')
-            await send(msg, to_webp(path, msg), None, '.webp')
+            await send(rs, to_webp(path, rs), None, '.webp')
         return True
 
     if ani := src.animation:
-        with keep_chat_action(msg, ChatAction.UPLOAD_VIDEO):
+        with rs.keep_chat_action(ChatAction.UPLOAD_VIDEO):
             path = await download(ani, '.mp4')
-            await send(msg, to_webm(path), ani.file_name, '.webm')
+            await send(rs, to_webm(path), ani.file_name, '.webm')
         return True
 
     if doc := src.document:
@@ -180,13 +179,13 @@ async def _try_handle_sticker(msg: Message, src: Message) -> bool:
         name = doc.file_name or ''
         ext = os.path.splitext(name)[1].lower()
         if ext == '.gif' or mime.startswith('video'):
-            with keep_chat_action(msg, ChatAction.UPLOAD_VIDEO):
+            with rs.keep_chat_action(ChatAction.UPLOAD_VIDEO):
                 path = await download(doc, ext)
-                await send(msg, to_webm(path), name, '.webm')
+                await send(rs, to_webm(path), name, '.webm')
         elif mime.startswith('image'):
-            with keep_chat_action(msg, ChatAction.UPLOAD_PHOTO):
+            with rs.keep_chat_action(ChatAction.UPLOAD_PHOTO):
                 path = await download(doc, ext)
-                await send(msg, to_webp(path, msg), name, '.webp')
+                await send(rs, to_webp(path, rs), name, '.webp')
         else:
             return False
         return True
@@ -195,13 +194,13 @@ async def _try_handle_sticker(msg: Message, src: Message) -> bool:
 
 
 async def try_handle_sticker(msg: Message) -> bool:
+    rs = get_responder(msg)
     try:
-        return await _try_handle_sticker(msg, msg) or (
-            (m := msg.reply_to_message) is not None
-            and await _try_handle_sticker(msg, m)
+        return await _try_handle_sticker(rs, msg) or (
+            (m := msg.reply_to_message) is not None and await _try_handle_sticker(rs, m)
         )
     except TooLarge:
-        await reply_text(msg, 'File is too large.')
+        await rs.reply_cached('File is too large.')
         return True
 
 

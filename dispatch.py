@@ -8,12 +8,13 @@ from telegram.ext import ContextTypes
 from util.log import log
 from util.app import bot
 from util.env import USER_ID
-from util.ctx import get_arg, get_msg, get_context
+from util.ctx import get_arg, get_msg, get_context, get_responder
+from util.responder import Responder
 
 type MessageArg = str
 type CallbackData = str
 
-type CallbackParam = Update | ContextTypes.DEFAULT_TYPE | Message | MessageArg | CallbackQuery | CallbackData | Bot | str | int
+type CallbackParam = Update | ContextTypes.DEFAULT_TYPE | Message | MessageArg | CallbackQuery | CallbackData | Bot | Responder | str | int
 
 CALLBACK_PARAM_TYPES = (
     Update,
@@ -23,6 +24,7 @@ CALLBACK_PARAM_TYPES = (
     CallbackQuery,
     CallbackData,
     Bot,
+    Responder,
     str,
     int,
 )
@@ -115,6 +117,8 @@ class Route[**P, R]:
                 args.append(_unwrap(_unwrap(update.callback_query).data))
             elif ty is Bot:
                 args.append(bot)
+            elif ty is Responder:
+                args.append(get_responder(get_msg(update)))
             elif ty is str:
                 args.append(next(it))
             elif ty is int:

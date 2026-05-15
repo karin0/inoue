@@ -6,6 +6,7 @@ from telegram import Message, Update
 from telegram.ext import ContextTypes
 
 from .env import USER_ID
+from .responder import Responder, MessageResponder
 
 
 class Sender(NamedTuple):
@@ -82,6 +83,9 @@ def use_context(
 
 msg_override: ContextVar[Message | None] = ContextVar('msg_override', default=None)
 text_override: ContextVar[str | None] = ContextVar('text_override', default=None)
+responder_override: ContextVar[Responder | None] = ContextVar(
+    'responder_override', default=None
+)
 
 
 @contextmanager
@@ -106,10 +110,24 @@ def use_text_override(text: str):
         text_override.reset(token)
 
 
+@contextmanager
+def use_responder_override(responder: Responder):
+    token = responder_override.set(responder)
+    try:
+        yield responder
+    finally:
+        responder_override.reset(token)
+
+
 def get_msg(update: Update) -> Message:
     # Unlike update.effective_message, channel posts and callback queries
     # are ignored here.
-    if m := msg_override.get() or update.message or update.edited_message:
+    if (
+        m := msg_override.get()
+        or update.message
+        or update.edited_message
+        or update.guest_message
+    ):
         return m
 
     raise ValueError('No message')
@@ -119,6 +137,12 @@ def get_text(m: Message) -> str:
     if (s := text_override.get()) is not None:
         return s
     return m.text or m.caption or ''
+
+
+def get_responder(msg: Message) -> Responder:
+    if (r := responder_override.get()) is not None:
+        return r
+    return MessageResponder(msg)
 
 
 def get_arg(m: Message) -> str:

@@ -1,20 +1,16 @@
-import asyncio
-
 from typing import Awaitable, Callable, Sequence, Concatenate
-from contextlib import contextmanager
 
 from telegram import Message, InlineKeyboardMarkup, Update
-from telegram.constants import ChatAction
 from telegram.error import BadRequest
 
 from dispatch import get_command_handler, UpdateHandler
 
 from .log import log
 from .text import truncate_text
-from .app import bot, create_task
-from .ctx import get_text, use_text_override
+from .app import bot
+from .ctx import get_text, get_responder, use_text_override
 from .env import USER_ID, CHAN_ID, GROUP_ID
-from .responder import Responder, reroute_capture
+from .responder import reroute_capture
 
 
 def get_msg_url(msg_id, chat_id=None) -> str:
@@ -84,7 +80,7 @@ async def try_send_text_or_not_modified[**P, R](
         raise
 
 
-def reply_text(
+async def reply_text(
     m: Message,
     text: str,
     parse_mode: str | None = None,
@@ -92,35 +88,17 @@ def reply_text(
     *,
     disable_web_page_preview: bool | None = None,
     allow_not_modified: bool = False,
-) -> Awaitable[Message | bool]:
-    '''Compatibility alias before we move to `Responder`.'''
-    return Responder(m).reply(
+) -> Message | None:
+    '''Compatibility alias for `Responder.reply_cached()`.'''
+    r = await get_responder(m).reply_cached(
         text,
         parse_mode,
         reply_markup,
         disable_web_page_preview=disable_web_page_preview,
         allow_not_modified=allow_not_modified,
-        cached=True,
     )
-
-
-async def _keep_action(msg: Message, action: ChatAction):
-    try:
-        while True:
-            await msg.reply_chat_action(action)
-            await asyncio.sleep(4)
-    except asyncio.CancelledError:
-        pass
-
-
-@contextmanager
-def keep_chat_action(msg: Message, action: ChatAction):
-    '''Re-send chat action every 4s so it stays visible during long operations.'''
-    task = create_task(_keep_action(msg, action))
-    try:
-        yield task
-    finally:
-        task.cancel()
+    if r is not None:
+        return r.get_message()
 
 
 def _extract_cmd_handler(text: str) -> UpdateHandler | None:

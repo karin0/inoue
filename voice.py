@@ -15,9 +15,12 @@ from util import (
     get_arg,
     escape,
     reply_text,
-    keep_chat_action,
     get_context,
-    InlineMessageProxy,
+    get_responder,
+    Responder,
+    InlineResponder,
+    EditHandle,
+    VoicePayload,
 )
 
 VOICE_ASSETS_DIR = 'assets/voice'
@@ -29,7 +32,7 @@ type Media = Document | Audio | Video
 # https://github.com/yagop/node-telegram-bot-api/issues/544
 # https://openclaw.turtleand.com/topics/telegram-voice-speed-control/
 async def convert_voice(
-    msg: Message,
+    rs: Responder,
     attachment: Media | Output,
     raw_duration: timedelta | float,
     bitrate_k: int,
@@ -68,7 +71,7 @@ async def convert_voice(
     else:
         info = rf'Processing: _Untitled_ \({escape(attrs)}\)'
 
-    status: Message | None = None
+    status: EditHandle | None = None
     settings: list[str | None] = [info]
     queue = asyncio.Queue()
 
@@ -82,9 +85,7 @@ async def convert_voice(
 
         # This needs to be serialized with a queue.
         if status is None:
-            r = await reply_text(msg, text, 'MarkdownV2')
-            assert isinstance(r, Message)
-            status = r
+            status = await rs.reply_cached(text, 'MarkdownV2')
         else:
             await status.edit_text(text, 'MarkdownV2')
 
@@ -96,10 +97,10 @@ async def convert_voice(
 
             if isinstance(r, tuple):
                 duration, data, _ = r
-                await msg.reply_voice(
-                    data,
-                    duration=math.ceil(duration) if duration >= 0 else None,
-                    do_quote=True,
+                await rs.reply(
+                    media=VoicePayload(
+                        data, math.ceil(duration) if duration >= 0 else None
+                    )
                 )
                 return
 
@@ -117,8 +118,8 @@ async def convert_voice(
         if queue.empty():
             queue.put_nowait(True)
 
-    if isinstance(msg, InlineMessageProxy):
-        msg._defer()
+    if isinstance(rs, InlineResponder):
+        rs._defer()
 
     task = create_task(worker())
     try:
@@ -158,8 +159,8 @@ async def convert_voice(
     finally:
         queue.put_nowait(None)
         await task
-        if isinstance(msg, InlineMessageProxy):
-            await msg._flush()
+        if isinstance(rs, InlineResponder):
+            await rs._flush()
 
 
 def extract_media(
@@ -183,18 +184,19 @@ async def try_handle_voice(msg: Message, *, parse_url: bool = False) -> bool:
     if not info and (not parse_url or (parsed := extract_url(arg)) is None):
         return False
 
-    with keep_chat_action(msg, ChatAction.RECORD_VOICE):
+    rs = get_responder(msg)
+    with rs.keep_chat_action(ChatAction.RECORD_VOICE):
         if not info:
             # Delegate to ytdlp if the argument looks like a URL.
             assert parsed is not None
             url, arg = parsed
             output = await run_ytdlp(url, audio_only=True)
-            if isinstance(msg, InlineMessageProxy):
+            if isinstance(rs, InlineResponder):
                 # XXX: An inline message cannot contain two media, so we skip
                 # sending the original audio.
                 log.info('voice: skipping audio for inline message')
             else:
-                create_task(output.finish(msg, audio_only=True))
+                create_task(output.finish(rs, audio_only=True))
             info = output, output.duration
 
         if get_context().sender_is_host():
@@ -209,7 +211,7 @@ async def try_handle_voice(msg: Message, *, parse_url: bool = False) -> bool:
         else:
             bitrate_k = 0
 
-        await convert_voice(msg, *info, bitrate_k, quality)
+        await convert_voice(rs, *info, bitrate_k, quality)
         return True
 
 

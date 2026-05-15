@@ -4,13 +4,12 @@ import math
 import json
 import string
 import asyncio
-import functools
 from io import BytesIO
-from typing import Any, cast, TYPE_CHECKING
+from pathlib import Path
+from typing import Any, Awaitable, cast, TYPE_CHECKING
 from concurrent.futures import ThreadPoolExecutor
 
 from telegram import (
-    Bot,
     Video,
     Audio,
     Document,
@@ -37,9 +36,13 @@ from util import (
     is_debug,
     bot,
     create_task,
-    reply_text,
-    keep_chat_action,
     get_context,
+    get_responder,
+    MediaPayload,
+    AudioPayload,
+    VideoPayload,
+    Responder,
+    EditHandle,
     MEDIA_STAGING_CHAT_ID,
     MEDIA_STAGING_MESSAGE_THREAD_ID,
 )
@@ -271,25 +274,19 @@ class Output:
             return title
         return os.path.basename(self.path)
 
-    async def finish(
-        self,
-        msg_or_bot: Message | Bot,
-        *,
-        audio_only: bool = False,
-        caption: str | None = None,
-    ) -> Message:
-        path = self.path
+    def _payload(self, audio_only: bool) -> MediaPayload:
+        path = Path(self.path)
         title = self.title
         performer = self.performer
 
         if title:
-            ext = os.path.splitext(path)[1].lower()
+            ext = path.suffix.lower()
             if performer:
                 name = f'{title} - {performer}{ext}'
             else:
                 name = f'{title}{ext}'
         else:
-            name = os.path.basename(path)
+            name = path.name
 
         name = truncate(name, 64)
         duration = media_duration(self.duration)
@@ -304,53 +301,44 @@ class Output:
             thumbnail and len(thumbnail),
         )
 
-        if isinstance(msg_or_bot, Bot):
-            # XXX: `msg` might be a proxy, so we check for `Bot` here.
+        if audio_only:
+            return AudioPayload(
+                path,
+                duration=duration,
+                filename=name,
+                title=title,
+                performer=truncate(performer, 64) if performer else None,
+                thumbnail=thumbnail,
+            )
+        return VideoPayload(
+            path,
+            duration=duration,
+            filename=name,
+            thumbnail=thumbnail,
+            cover=raw_thumbnail,
+        )
 
-            def wrap(f):
-                return functools.partial(
-                    f,
-                    MEDIA_STAGING_CHAT_ID,
-                    message_thread_id=MEDIA_STAGING_MESSAGE_THREAD_ID,
-                    disable_notification=True,
-                )
+    def finish(
+        self,
+        rs: Responder,
+        *,
+        audio_only: bool = False,
+        caption: str | None = None,
+    ) -> Awaitable[EditHandle | None]:
+        return rs.reply(caption, media=self._payload(audio_only))
 
-            send_audio = msg_or_bot.send_audio
-            send_video = msg_or_bot.send_video
-
-        else:
-
-            def wrap(f):
-                return functools.partial(
-                    f, do_quote=True, allow_sending_without_reply=True
-                )
-
-            send_audio = msg_or_bot.reply_audio
-            send_video = msg_or_bot.reply_video
-
-        log.debug('finish: %r %r %r', msg_or_bot, send_audio, send_video)
-        with open(self.path, 'rb') as fp:
-            if audio_only:
-                performer = truncate(performer, 64) if performer else None
-                return await wrap(send_audio)(
-                    fp,
-                    filename=name,
-                    duration=duration,
-                    thumbnail=thumbnail,
-                    title=title,
-                    performer=performer,
-                    caption=caption,
-                )
-            else:
-                return await wrap(send_video)(
-                    fp,
-                    filename=name,
-                    duration=duration,
-                    thumbnail=thumbnail,
-                    cover=raw_thumbnail,
-                    supports_streaming=True,
-                    caption=caption,
-                )
+    def stage(
+        self,
+        *,
+        audio_only: bool = False,
+        caption: str | None = None,
+    ) -> Awaitable[Message]:
+        return self._payload(audio_only).send(
+            MEDIA_STAGING_CHAT_ID,
+            caption=caption,
+            message_thread_id=MEDIA_STAGING_MESSAGE_THREAD_ID,
+            disable_notification=True,
+        )
 
     async def finish_video_note(self, msg: Message) -> Message:
         dst = await encode_video_note(self.path, self.duration)
@@ -362,6 +350,8 @@ class Output:
         _, thumbnail = self._thumbnail()
 
         with open(dst, 'rb') as fp:
+            # XXX: This is not implemented as a MediaPayload yet, since it neither
+            # provides InputMedia nor InlineQueryResult.
             return await msg.reply_video_note(
                 fp,
                 duration=duration,
@@ -443,25 +433,26 @@ async def _handle_yt(
     audio_only: bool = False,
     video_note: bool = False,
 ):
+    rs = get_responder(msg)
     if not arg:
-        await reply_text(msg, f'Usage: {cmd} <url>')
+        await rs.reply_cached(f'Usage: {cmd} <url>')
         return
 
     if (url := find_url(arg)) is None:
-        await reply_text(msg, 'Please provide a valid URL.')
+        await rs.reply_cached('Please provide a valid URL.')
         return
 
-    with keep_chat_action(msg, action):
+    with rs.keep_chat_action(action):
         try:
             output = await run_ytdlp(url, audio_only=audio_only)
             if video_note:
                 await output.finish_video_note(msg)
             else:
-                await output.finish(msg, audio_only=audio_only)
+                await output.finish(rs, audio_only=audio_only)
         except Exception as e:
             log.exception('ytdlp failed for %s', url)
             error_msg = truncate(f'Download failed: {type(e).__name__}: {e}', 500)
-            await reply_text(msg, error_msg)
+            await rs.reply_cached(error_msg)
 
 
 @command(public=True)
@@ -575,7 +566,6 @@ def handle_yt_inline_query(query: InlineQuery, parsed: tuple[str, str]):
 
 
 async def _finish_voice(
-    bot: Bot,
     output: Output,
     result: tuple[float, bytes, int],
     url: str,
@@ -644,7 +634,7 @@ async def handle_yt_chosen_result(
                 result = await encode_voice(
                     output.path, lambda *_: None, output.duration
                 )
-                markup = await _finish_voice(bot, output, result, url)
+                markup = await _finish_voice(output, result, url)
                 await bot.edit_message_caption(
                     inline_message_id=inline_message_id,
                     caption=caption,
@@ -663,7 +653,7 @@ async def handle_yt_chosen_result(
 
     # Upload to staging chat to get file_id, then edit inline message.
     stage_caption = f'{url}\n{get_context().sender} {result_id} {arg}'.strip()
-    staging = await output.finish(bot, audio_only=audio_only, caption=stage_caption)
+    staging = await output.stage(audio_only=audio_only, caption=stage_caption)
 
     if media := staging.audio:
         _media_cache[url] = media

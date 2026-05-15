@@ -10,7 +10,6 @@ from contextlib import contextmanager
 
 from telegram import Message
 
-from .ctx import get_ctx_msg
 from .text import truncate_text, escape, escape_pre
 from .env import ME_LOWER, MAX_TEXT_LENGTH, USER_ID, GROUP_ID, LOG_THREAD_ID
 
@@ -45,7 +44,7 @@ class NotifyHandler(logging.Handler):
         return res, 'MarkdownV2'
 
     def emit(self, record: logging.LogRecord) -> None:
-        from . import create_task
+        from . import create_task, get_ctx_msg
 
         if self._suppressed:
             return
@@ -173,9 +172,9 @@ async def do_notify(
     message: Message | None = None,
     revocable: bool = False,
     quiet: bool = False,
-    **kwargs,
 ):
-    from . import bot, reply_text
+    from . import bot, get_ctx_msg
+    from .responder import MessageResponder
 
     loop = asyncio.get_event_loop()
     now = loop.time()
@@ -193,18 +192,12 @@ async def do_notify(
 
     if not quiet and (m := message or get_ctx_msg()) is not None:
         try:
-            if revocable:
-                return await reply_text(
-                    m, text, parse_mode, disable_web_page_preview=True, **kwargs
-                )
-            else:
-                return await m.reply_text(
-                    text,
-                    parse_mode,
-                    do_quote=True,
-                    disable_web_page_preview=True,
-                    **kwargs,
-                )
+            return await MessageResponder(m).reply(
+                text,
+                parse_mode,
+                cached=revocable,
+                disable_web_page_preview=True,
+            )
         except Exception as e:
             traceback.print_exc()
             text += f'\nreply_text: {type(e).__name__}: {e}'
@@ -218,7 +211,6 @@ async def do_notify(
                 parse_mode,
                 disable_notification=True,
                 disable_web_page_preview=True,
-                **kwargs,
             )
         else:
             await bot.send_message(
@@ -227,7 +219,6 @@ async def do_notify(
                 parse_mode,
                 message_thread_id=LOG_THREAD_ID,
                 disable_web_page_preview=True,
-                **kwargs,
             )
     except Exception:
         with notify.suppress():

@@ -4,6 +4,7 @@ import time
 import asyncio
 import weakref
 import builtins
+from pathlib import Path
 from itertools import chain, islice
 from typing import (
     Container,
@@ -33,6 +34,7 @@ from util import (
     log,
     bot,
     get_context,
+    get_responder,
     list_env,
     get_msg_url,
     reply_text,
@@ -43,7 +45,7 @@ from util import (
     cleanup_text,
     do_notify,
     encode_chat_id,
-    Responder,
+    EditHandle,
     PhotoPayload,
     DocumentPayload,
 )
@@ -291,7 +293,9 @@ def make_markup(
 
 
 type MessageSpec = tuple[str, str | None, InlineKeyboardMarkup | None]
-type UpdateCallback = Callable[[MessageSpec], Awaitable[Message | bool | None]]
+type UpdateCallback = Callable[
+    [MessageSpec], Awaitable[Message | bool | EditHandle | None]
+]
 type MarkupState = tuple[dict[str, bool], str]
 
 OVERFLOWED_TEXT = '…\n'
@@ -388,7 +392,7 @@ class RenderContext:
     def set_update_callback(self, callback: UpdateCallback | None) -> None:
         self._update_callback = callback and (callback, asyncio.Lock())
 
-    async def _invoke_update_callback(self, spec: MessageSpec) -> Message | bool | None:
+    async def _invoke_update_callback(self, spec: MessageSpec):
         if self._update_callback is not None:
             func, lock = self._update_callback
             async with lock:
@@ -433,6 +437,12 @@ class RenderContext:
         log.debug('_update_text: %s', r)
         if isinstance(r, Message):
             return r.message_id
+        if (
+            r is not None
+            and not isinstance(r, int)
+            and (msg := r.get_message()) is not None
+        ):
+            return msg.message_id
 
     def render(self, text: str) -> Awaitable[MessageSpec]:
         return self.to_response(self.render_text(text))
@@ -655,7 +665,7 @@ type AllowedMedia = PhotoPayload | DocumentPayload
 
 def _extract_media(val: Value, typ: Type[AllowedMedia]) -> AllowedMedia | None:
     if isinstance(val, LocalPath):
-        content = typ(val.path)
+        content = typ(Path(val.path))
     elif isinstance(val, bytes):
         content = typ(val)
     else:
@@ -681,11 +691,11 @@ def has_media(data: Mapping[str, Value]) -> bool:
 
 
 def create_reply_callback(msg: Message, data: Mapping[str, Value]) -> UpdateCallback:
-    rs = Responder(msg)
+    rs = get_responder(msg)
 
     def do_reply(spec: MessageSpec):
-        return rs.reply(
-            *spec, media=extract_media(data), allow_not_modified=True, cached=True
+        return rs.reply_cached(
+            *spec, media=extract_media(data), allow_not_modified=True
         )
 
     return do_reply

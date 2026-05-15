@@ -7,10 +7,10 @@ import subprocess
 from asyncio.subprocess import Process
 from typing import Awaitable, Callable, cast
 
-from telegram import Message, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction
 
-from util import log, create_task, pre_block, reply_text, get_text, ME, MAX_TEXT_LENGTH
+from util import log, create_task, pre_block, Responder, EditHandle, ME, MAX_TEXT_LENGTH
 from dispatch import command, MessageArg
 from misc import reply_file
 
@@ -18,22 +18,22 @@ UPDATE_CWD = os.environ['UPDATE_CWD']
 
 
 @command
-def handle_run(msg: Message, cmd: MessageArg):
+def handle_run(rs: Responder, cmd: MessageArg):
     if cmd:
-        return handle_cmd(msg, cmd)
-    return reply_text(msg, 'Provide a command to run.')
+        return handle_cmd(rs, cmd)
+    return rs.reply_cached('Provide a command to run.')
 
 
 @command
-def handle_update(msg: Message):
-    return _handle_cmd(msg, './run.sh', cwd=UPDATE_CWD)
+def handle_update(rs: Responder):
+    return _handle_cmd(rs, './run.sh', cwd=UPDATE_CWD)
 
 
-def handle_cmd(msg: Message, cmd: str):
-    return _handle_cmd(msg, 'bash', '-c', cmd)
+def handle_cmd(rs: Responder, cmd: str):
+    return _handle_cmd(rs, 'bash', '-c', cmd)
 
 
-async def _handle_cmd(msg: Message, bin: str, *args, **kwargs):
+async def _handle_cmd(rs: Responder, bin: str, *args, **kwargs):
     log.debug(f'Spawning: {bin} {args}')
     child = await asyncio.create_subprocess_exec(
         bin,
@@ -50,7 +50,7 @@ async def _handle_cmd(msg: Message, bin: str, *args, **kwargs):
         await asyncio.sleep(0.3)
         while child and child.returncode is None:
             nonlocal evt
-            await msg.reply_chat_action(ChatAction.TYPING)
+            await rs.reply_chat_action(ChatAction.TYPING)
             if evt:
                 futs = (
                     asyncio.create_task(evt.wait()),
@@ -65,7 +65,7 @@ async def _handle_cmd(msg: Message, bin: str, *args, **kwargs):
     create_task(action())
 
     try:
-        return await __handle_cmd(msg, child, evt)
+        return await __handle_cmd(rs, child, evt)
     finally:
         child = None
 
@@ -85,10 +85,10 @@ SEND_LIMIT = 5
 
 async def consumer[T](
     q: asyncio.Queue,
-    send: Callable[[tuple[str, str | None], T], Awaitable[Message | None]],
+    send: Callable[[tuple[str, str | None], T], Awaitable[EditHandle | None]],
     arg: T,
 ):
-    msg: Message | None = None
+    msg: EditHandle | None = None
     text = ''
     dec = codecs.getincrementaldecoder('utf-8')('replace')
     left = None
@@ -152,7 +152,7 @@ async def consumer[T](
             await send(content, arg)
 
 
-async def __handle_cmd(msg: Message, child: Process, evt: asyncio.Event | None):
+async def __handle_cmd(rs: Responder, child: Process, evt: asyncio.Event | None):
     if child.stdout is None or child.stderr is None:
         raise RuntimeError('stdout and stderr must be captured')
 
@@ -162,25 +162,20 @@ async def __handle_cmd(msg: Message, child: Process, evt: asyncio.Event | None):
     q_err = asyncio.Queue()
     create_task(producer(q_err, child.stderr))
 
-    final_msg: Message | None = None
+    final_msg: EditHandle | None = None
 
     async def send(content, do_quote):
         nonlocal evt, final_msg
         text, parse_mode = content
         if parse_mode == 'file':
             try:
-                r = await reply_file(msg, text)
+                r = await reply_file(rs, text)
             except Exception as e:
-                r = await msg.reply_text(
+                r = await rs.reply(
                     f'Failed to send file {text}: {type(e).__name__}: {e}',
-                    do_quote=True,
                 )
         else:
-            r = await msg.reply_text(
-                text,
-                parse_mode,
-                do_quote=do_quote,
-            )
+            r = await rs.reply(text, parse_mode)
             final_msg = r
         if evt:
             evt.set()
@@ -195,7 +190,7 @@ async def __handle_cmd(msg: Message, child: Process, evt: asyncio.Event | None):
 
     r = await child.wait()
 
-    text = get_text(msg)
+    text = rs.get_text()
     data = 'relay_' + text
     if len(data) <= InlineKeyboardButton.MAX_CALLBACK_DATA:
         markup = InlineKeyboardMarkup.from_button(
@@ -205,8 +200,6 @@ async def __handle_cmd(msg: Message, child: Process, evt: asyncio.Event | None):
         markup = None
 
     if r or evt:
-        await msg.reply_text(
-            f'{child.pid} exited with {r}', do_quote=True, reply_markup=markup
-        )
-    elif (m := cast(Message | None, final_msg)) and markup:
+        await rs.reply(f'{child.pid} exited with {r}', reply_markup=markup)
+    elif (m := cast(EditHandle | None, final_msg)) and markup:
         await m.edit_reply_markup(markup)

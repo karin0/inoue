@@ -1,5 +1,6 @@
 import sys
 from typing import cast
+from pathlib import Path
 
 from telegram import (
     Message,
@@ -19,16 +20,19 @@ from util import (
     reply_text,
     get_context,
     get_text,
+    get_responder,
     use_msg_override,
+    use_responder_override,
     use_text_override,
     route_cmd,
+    InlineResponder,
     Sender,
     Context,
+    VoicePayload,
     USER_ID,
     CHAN_ID,
     GROUP_ID,
     TODO_ID,
-    InlineMessageProxy,
 )
 from inoue import render_receipt
 from rg import handle_rg
@@ -102,8 +106,7 @@ async def _handle_msg(msg: Message, update: Update, context: Context):
             log.debug('Ignoring forum_topic: %s', msg)
             return
 
-        with open('out.ogg', 'rb') as f:
-            return await msg.reply_voice(f, do_quote=True)
+        return await get_responder(msg).reply(media=VoicePayload(Path('out.ogg')))
 
     # We always check the sender's identity from the `context` rather than `msg`
     # itself, since it could be a mocked one from relayed callback queries or
@@ -188,8 +191,10 @@ async def handle_guest(msg: Message, update: Update):
     if (text := strip_mention(msg)) is None:
         raise ValueError(f'missing MENTION entity in guest message: {msg}')
 
-    msg = cast(Message, InlineMessageProxy(msg, answer_guest_query))
-    with use_msg_override(msg, text):
+    with (
+        use_text_override(text),
+        use_responder_override(InlineResponder(msg, answer_guest_query)),
+    ):
         await handle_msg(msg, update)
 
 
@@ -201,16 +206,37 @@ async def handle_relay_callback(
     msg = query.message
 
     if not isinstance(msg, Message):
-        if (mid := query.inline_message_id) is not None:
-            # A guest message created the callback with `/run`.
-            # We will edit our answer to the guest query with `InlineMessageProxy`,
-            # which behaves like a continuation of `handle_guest`.
-            msg = cast(Message, InlineMessageProxy(query, mid))
-        else:
+        if (mid := query.inline_message_id) is None:
             raise ValueError(f'No message in callback query: {query}')
-
-    log.debug('relay: %r %s', msg, text)
-    with use_msg_override(msg, text):
-        await handle_msg(msg, update)
+        # A guest message created the callback with `/run`. We continue editing
+        # the same inline message, like a continuation of `handle_guest`.
+        msg = cast(Message, _QueryAsMessage(query))
+        rs = InlineResponder(msg, mid)
+        log.debug('relay (inline): %r %s', query, text)
+        with use_msg_override(msg, text), use_responder_override(rs):
+            await handle_msg(msg, update)
+    else:
+        log.debug('relay: %r %s', msg, text)
+        with use_msg_override(msg, text):
+            await handle_msg(msg, update)
 
     await query.answer()
+
+
+class _QueryAsMessage:
+    '''Minimal `Message`-typed stub for the inline-callback relay path. All
+    reply traffic flows through the `responder_override`; this object only
+    exists to satisfy attribute reads (`from_user`, `chat`, etc.) on the
+    contextual message — returning `None` for anything not present on the
+    underlying `CallbackQuery`.'''
+
+    __slots__ = ('_query',)
+
+    def __init__(self, query: CallbackQuery):
+        self._query = query
+
+    def __getattr__(self, item: str):
+        return getattr(self._query, item, None)
+
+    def __repr__(self) -> str:
+        return f'_QueryAsMessage({self._query!r})'
