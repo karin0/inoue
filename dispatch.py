@@ -8,7 +8,7 @@ from telegram.ext import ContextTypes
 from util.log import log
 from util.app import bot
 from util.env import USER_ID
-from util.ctx import get_arg, get_msg, get_context, get_responder
+from util.ctx import get_msg, get_arg, get_context, get_responder
 from util.responder import Responder
 
 type MessageArg = str
@@ -225,25 +225,15 @@ def _dispatch_argv(
         return route(update, islice(args, 1, None))
 
 
-async def handle_callback_query(query: CallbackQuery, update: Update):
-    if not (data := query.data):
-        raise ValueError('No data in cq')
+def dispatch_callback(data: str, update: Update) -> Awaitable:
+    for filter_func, route in _cb_filters:
+        if filter_func(data):
+            return route(update)
 
-    if data == 'noop':
-        return query.answer()
+    if fut := _dispatch_argv(update, data, _cb_handlers):
+        return fut
 
-    try:
-        for filter_func, route in _cb_filters:
-            if filter_func(data):
-                return await route(update)
-
-        if fut := _dispatch_argv(update, data, _cb_handlers):
-            return await fut
-
-        raise ValueError(f'Bad callback query: {data}')
-    except Exception as e:
-        await query.answer('Error', show_alert=True)
-        raise e
+    raise ValueError(f'Bad callback query: {data}')
 
 
 _start_handlers: dict[str, Route] = {}

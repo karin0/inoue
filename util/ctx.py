@@ -76,7 +76,7 @@ def use_context(
 
     token = current_context.set(Context(update, ctx, m, sender))
     try:
-        yield m
+        yield
     finally:
         current_context.reset(token)
 
@@ -89,14 +89,10 @@ responder_override: ContextVar[Responder | None] = ContextVar(
 
 
 @contextmanager
-def use_msg_override(m: Message, text: str):
+def use_msg_override(m: Message):
     token = msg_override.set(m)
     try:
-        text_token = text_override.set(text)
-        try:
-            yield
-        finally:
-            text_override.reset(text_token)
+        yield
     finally:
         msg_override.reset(token)
 
@@ -120,14 +116,10 @@ def use_responder_override(responder: Responder):
 
 
 def get_msg(update: Update) -> Message:
-    # Unlike update.effective_message, channel posts and callback queries
-    # are ignored here.
-    if (
-        m := msg_override.get()
-        or update.message
-        or update.edited_message
-        or update.guest_message
-    ):
+    if (m := msg_override.get()) is not None:
+        return m
+
+    if (m := update.effective_message) is not None:
         return m
 
     raise ValueError('No message')

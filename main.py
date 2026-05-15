@@ -27,11 +27,11 @@ from util import (
     shorten,
     use_context,
 )
-from dispatch import handle_callback_query
 from commands import set_commands, stats, reply_usage
 from handlers import (
     handle_msg,
     handle_post,
+    handle_callback_query,
     handle_inline_query,
     handle_chosen_inline,
     handle_guest,

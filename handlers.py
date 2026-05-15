@@ -17,9 +17,8 @@ from util import (
     log,
     bot,
     pre_block,
-    reply_text,
     get_context,
-    get_text,
+    get_msg,
     get_responder,
     use_msg_override,
     use_responder_override,
@@ -42,7 +41,7 @@ from todo import handle_todo_msg
 from ytdlp import extract_url, handle_yt_inline_query, handle_yt_chosen_result
 from render import handle_render_doc, handle_render_group, handle_render_inline_query
 from commands import dispatch_cmd, reply_usage
-from dispatch import callback_query, CallbackData
+from dispatch import callback_query, dispatch_callback, CallbackData
 
 
 def handle_post(channel_post: Message, sender: Sender | None):
@@ -198,45 +197,52 @@ async def handle_guest(msg: Message, update: Update):
         await handle_msg(msg, update)
 
 
-@callback_query('relay')
-async def handle_relay_callback(
-    query: CallbackQuery, data: CallbackData, update: Update
-):
-    text = data[data.index('_') + 1 :]
-    msg = query.message
+async def handle_callback_query(query: CallbackQuery, update: Update):
+    if not (data := query.data) or data == 'noop':
+        return query.answer()
 
-    if not isinstance(msg, Message):
-        if (mid := query.inline_message_id) is None:
-            raise ValueError(f'No message in callback query: {query}')
-        # A guest message created the callback with `/run`. We continue editing
-        # the same inline message, like a continuation of `handle_guest`.
-        msg = cast(Message, _QueryAsMessage(query))
-        rs = InlineResponder(msg, mid)
-        log.debug('relay (inline): %r %s', query, text)
-        with use_msg_override(msg, text), use_responder_override(rs):
-            await handle_msg(msg, update)
-    else:
-        log.debug('relay: %r %s', msg, text)
-        with use_msg_override(msg, text):
-            await handle_msg(msg, update)
+    try:
+        if (mid := query.inline_message_id) is not None:
+            # A guest message created the callback. We continue editing the same
+            # inline message, like a continuation of `handle_guest`.
 
-    await query.answer()
+            # We use `CallbackQuery` as a minimal stub to provide `Message.from_user`
+            # and give `None` for everything else, which is enough for dispatching
+            # until `route_cmd()`.
+            msg = cast(Message, CallbackQueryAsMessage(query))
+            rs = InlineResponder(msg, mid)
+            log.debug('inline callback: %r', query)
+            with use_msg_override(msg), use_responder_override(rs):
+                await dispatch_callback(data, update)
+        else:
+            await dispatch_callback(data, update)
+    except Exception as e:
+        await query.answer('Error', show_alert=True)
+        raise e
 
 
-class _QueryAsMessage:
-    '''Minimal `Message`-typed stub for the inline-callback relay path. All
-    reply traffic flows through the `responder_override`; this object only
-    exists to satisfy attribute reads (`from_user`, `chat`, etc.) on the
-    contextual message — returning `None` for anything not present on the
-    underlying `CallbackQuery`.'''
-
+class CallbackQueryAsMessage:
     __slots__ = ('_query',)
 
     def __init__(self, query: CallbackQuery):
         self._query = query
 
     def __getattr__(self, item: str):
-        return getattr(self._query, item, None)
+        r = getattr(self._query, item, None)
+        log.debug('CallbackQueryAsMessage: getattr %r -> %r', item, r)
+        return r
 
     def __repr__(self) -> str:
-        return f'_QueryAsMessage({self._query!r})'
+        return f'CallbackQueryAsMessage({self._query!r})'
+
+
+@callback_query('relay')
+async def handle_relay_callback(
+    query: CallbackQuery, data: CallbackData, update: Update
+):
+    text = data[data.index('_') + 1 :]
+    msg = get_msg(update)
+    log.debug('relay: %r %s', msg, text)
+    with use_text_override(text):
+        await handle_msg(msg, update)
+    await query.answer()
