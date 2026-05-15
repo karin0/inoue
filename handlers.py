@@ -90,7 +90,10 @@ async def handle_msg(msg: Message, update: Update):
 async def _handle_msg(msg: Message, update: Update, context: Context):
     rs = get_responder(msg)
 
-    if await try_handle_voice(msg, rs) or await try_handle_sticker(msg, rs):
+    if (fut := try_handle_voice(msg, rs)) is not None:
+        return await fut
+
+    if await try_handle_sticker(msg, rs):
         return
 
     # ID Bot

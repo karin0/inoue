@@ -326,12 +326,14 @@ class Bridge(Box):
             raise ValueError('sleep: too long')
         return self._promise(asyncio.sleep(seconds))
 
-    async def _reroute_cmd(self, cmd: str) -> Fragment[Raw | str] | Raw | str | None:
-        r = await reroute_cmd(get_context().update, cmd)
-        log.info('Bridge: exec %r returned %r', cmd, r)
-        if r is None:
-            self._cb._error(f'exec failed for {cmd!r}')
+    async def _reroute_cmd(
+        self, cmd: str, coro: Awaitable[Sequence[tuple[str, str | None]]] | None
+    ) -> Fragment[Raw | str] | Raw | str | None:
+        if coro is None:
+            self._cb._error(f'command not found: {cmd!r}')
             return None
+        r = await coro
+        log.info('Bridge: exec %r: %r', cmd, r)
         if len(r) == 1:
             text, parse_mode = r[0]
             # Avoid a repeated escaping.
@@ -350,7 +352,8 @@ class Bridge(Box):
         cmd = to_str(cmd)
         if not cmd.startswith('/'):
             raise ValueError(f'command must start with /, got {cmd!r}')
-        return self._promise(self._reroute_cmd(cmd))
+        coro = reroute_cmd(get_context().update, cmd)
+        return self._promise(self._reroute_cmd(cmd, coro))
 
     @public
     def dbg(self) -> str:

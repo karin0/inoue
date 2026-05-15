@@ -1,6 +1,7 @@
 import os
 import math
 import asyncio
+from typing import Awaitable
 from datetime import timedelta
 
 from telegram import Message, Document, Audio, Video
@@ -70,7 +71,7 @@ async def convert_voice(
         info = rf'Processing: _Untitled_ \({escape(attrs)}\)'
 
     if quiet:
-        task = None
+        queue = None
 
         def report(idx: int, text: str):
             log.debug('Status %s: %s', idx, text)
@@ -116,50 +117,43 @@ async def convert_voice(
 
         # Report initial status before downloading the file.
         queue.put_nowait(True)
+        create_task(worker())
 
-        task = create_task(worker())
-        if isinstance(rs, InlineResponder):
-            rs._defer()
-    try:
-        if isinstance(attachment, Output):
-            log.debug('Using external file: %s', attachment)
-            file_path = attachment.path
+    if isinstance(attachment, Output):
+        log.debug('Using external file: %s', attachment)
+        file_path = attachment.path
+    else:
+        file = await attachment.get_file()
+        log.debug('File: %s', file)
+
+        # https://github.com/aiogram/telegram-bot-api/issues/30
+        file_path = file.file_path
+        if file_path and os.path.isfile(file_path):
+            log.debug('Using local file: %s', file_path)
         else:
-            file = await attachment.get_file()
-            log.debug('File: %s', file)
+            from pathvalidate import sanitize_filename
 
-            # https://github.com/aiogram/telegram-bot-api/issues/30
-            file_path = file.file_path
-            if file_path and os.path.isfile(file_path):
-                log.debug('Using local file: %s', file_path)
+            if file_name := (file_name or file_path):
+                base, ext = os.path.splitext(file_name)
+                file_name = f'{base} [{file.file_unique_id}]{ext}'
             else:
-                from pathvalidate import sanitize_filename
+                file_name = file.file_unique_id
 
-                if file_name := (file_name or file_path):
-                    base, ext = os.path.splitext(file_name)
-                    file_name = f'{base} [{file.file_unique_id}]{ext}'
-                else:
-                    file_name = file.file_unique_id
+            os.makedirs(VOICE_ASSETS_DIR, exist_ok=True)
+            dst = os.path.join(VOICE_ASSETS_DIR, sanitize_filename(file_name))
+            src = await file.download_to_drive(custom_path=dst)
+            file_path = str(src)
 
-                os.makedirs(VOICE_ASSETS_DIR, exist_ok=True)
-                dst = os.path.join(VOICE_ASSETS_DIR, sanitize_filename(file_name))
-                src = await file.download_to_drive(custom_path=dst)
-                file_path = str(src)
-
-        log.info('Encoding voice from %s', file_path)
-        duration, data, bitrate_k = await encode_voice(
-            file_path, report, duration, bitrate_k, quality
-        )
-        report(2, f'Encoded into {len(data)} bytes at {bitrate_k} kbps')
-        await rs.reply(
-            media=VoicePayload(data, math.ceil(duration) if duration >= 0 else None)
-        )
-    finally:
-        if task is not None:
-            queue.put_nowait(None)  # pyright: ignore[reportPossiblyUnboundVariable]
-            if isinstance(rs, InlineResponder):
-                await rs._flush()
-            await task
+    log.info('Encoding voice from %s', file_path)
+    duration, data, bitrate_k = await encode_voice(
+        file_path, report, duration, bitrate_k, quality
+    )
+    if queue is not None:
+        queue.put_nowait(None)
+    report(2, f'Encoded into {len(data)} bytes at {bitrate_k} kbps')
+    await rs.reply(
+        media=VoicePayload(data, math.ceil(duration) if duration >= 0 else None)
+    )
 
 
 def extract_media(
@@ -174,28 +168,45 @@ def extract_media(
         return media, media.duration
 
 
-async def try_handle_voice(
+# This is sync before we must defer the `rs` before entering async, otherwise
+# this would not work in `reroute_cmd`, which usually runs as a `Task` after we
+# yield.
+def try_handle_voice(
     msg: Message, rs: Responder, parse_url: bool = False
-) -> bool:
+) -> Awaitable | None:
     arg = rs.get_arg()
     info = extract_media(msg) or (
         msg.reply_to_message and extract_media(msg.reply_to_message)
     )
-    parsed = quiet = None
-    if not info and (not parse_url or (parsed := extract_url(arg)) is None):
-        return False
+    parsed = None
+    if info or (parse_url and (parsed := extract_url(arg)) is not None):
+        if isinstance(rs, InlineResponder):
+            # XXX: A voice cannot be edited onto an existing message, so we have
+            # to defer the `InlineResponder`.
+            # Otherwise, the inline message would be sent before the voice is ready.
+            log.info('try_handle_voice: deferring: %r', rs)
 
+            # An inline message cannot contain two media, so we have to skip sending
+            # the original audio.
+            return rs.wait_until(_try_handle_voice(rs, info, parsed, arg, False))
+
+        return _try_handle_voice(rs, info, parsed, arg)
+
+
+async def _try_handle_voice(
+    rs: Responder,
+    info: tuple[Media | Output, float | timedelta] | None,
+    parsed: tuple[str, str] | None,
+    arg: str,
+    finish: bool = True,
+):
     with rs.keep_chat_action(ChatAction.RECORD_VOICE):
-        if not info:
+        if info is None:
             # Delegate to ytdlp if the argument looks like a URL.
             assert parsed is not None
             url, arg = parsed
             output = await run_ytdlp(url, audio_only=True)
-            if isinstance(rs, InlineResponder):
-                # XXX: An inline message cannot contain two media, so we skip
-                # sending the original audio.
-                log.info('voice: skipping audio for inline message')
-            else:
+            if finish:
                 create_task(output.finish(rs, audio_only=True))
             info = output, output.duration
 
@@ -214,13 +225,14 @@ async def try_handle_voice(
             bitrate_k = 0
 
         await convert_voice(rs, *info, bitrate_k, quality, quiet)
-        return True
 
 
 @command(public=True)
-async def handle_voice(msg: Message, rs: Responder) -> None:
-    if not await try_handle_voice(msg, rs, parse_url=True):
-        await rs.reply_cached(
-            r'Send or reply to a media message with `/voice [q]`, or use `/voice <url>`\.',
-            'MarkdownV2',
-        )
+def handle_voice(msg: Message, rs: Responder):
+    fut = try_handle_voice(msg, rs, parse_url=True)
+    if fut is not None:
+        return fut
+    return rs.reply_cached(
+        r'Send or reply to a media message with `/voice [q]`, or use `/voice <url>`\.',
+        'MarkdownV2',
+    )

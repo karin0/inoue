@@ -65,27 +65,39 @@ class InlineResponder(Responder):
     async def reply_chat_action(self, action: ChatAction) -> None:
         log.debug('InlineResponder: ignored chat action: %s', action)
 
-    def _defer(self) -> None:
+    def wait_until(self, coro: Awaitable) -> Awaitable:
         # No `InputMediaVoice` exists, so a pending voice media cannot be edited
-        # into the inline message. The caller must `_defer()` until the voice is
-        # ready, then `_flush()`.
+        # into the inline message.
+        # Caller must defer our emission until the voice is ready.
         if isinstance(self._inline_message_id, str):
             log.warning(
                 'InlineResponder: cannot defer after the inline message is emitted: %s',
                 self,
             )
-        else:
-            self._deferred = True
-            log.info('InlineResponder: deferred: %s', self)
+            return coro
 
-    async def _flush(self) -> None:
-        if self._dirty:
-            await self._emit(True)
+        log.info('InlineResponder: deferred: %s', self)
+        self._deferred = True
+        return self._flush_after(coro)
+
+    async def _flush_after(self, coro: Awaitable) -> None:
+        try:
+            await coro
+        finally:
             self._deferred = False
+            if self._dirty:
+                await self._emit()
 
     async def _stage_media(self, payload: MediaPayload) -> None:
-        if self._media is not None:
-            log.warning('InlineResponder: ignored extra media: %r', payload)
+        if (
+            isinstance(self._inline_message_id, str)
+            and payload.INPUT_MEDIA_TYPE is None
+        ):
+            log.warning(
+                'InlineResponder: inline message sent but InputMedia is unavailable, '
+                'consider using `InlineResponder._defer()`: %s',
+                payload,
+            )
             return
 
         content = payload.content
@@ -168,12 +180,12 @@ class InlineResponder(Responder):
 
         return InlineFragmentHandle(self, idx)
 
-    async def _emit(self, force: bool = False) -> None:
+    async def _emit(self) -> None:
         if not self._fragments and self._media is None:
             log.info('InlineResponder: nothing to emit')
             return
 
-        if self._deferred and not force:
+        if self._deferred:
             log.debug('InlineResponder: emitting deferred')
             self._dirty = True
             return
@@ -201,11 +213,6 @@ class InlineResponder(Responder):
                         im, reply_markup=self._reply_markup, inline_message_id=mid
                     )
             else:
-                if self._media is not None:
-                    log.warning(
-                        'InlineResponder: InputMedia is unavailable, consider using `InlineResponder._defer()`: %s',
-                        self._media[0],
-                    )
                 await bot.edit_message_text(
                     text,
                     parse_mode=parse_mode,
@@ -263,18 +270,18 @@ def _collapse_fragments(
     all_parse_modes = set(p for _, p in fragments)
     if len(all_parse_modes) == 1:
         parse_mode = all_parse_modes.pop()
-        text = '\n'.join(t for t, _ in fragments)
+        text = '\n\n'.join(t for t, _ in fragments)
         return text, parse_mode
 
     all_parse_modes.discard(None)
     if len(all_parse_modes) == 1:
         parse_mode = all_parse_modes.pop()
         escaper = html_escape if parse_mode == 'HTML' else escape
-        text = '\n'.join(escaper(t) if m is None else t for t, m in fragments)
+        text = '\n\n'.join(escaper(t) if m is None else t for t, m in fragments)
         return text, parse_mode
 
     # Markdown and HTML mixed: fallback to plain text.
-    text = '\n'.join(t for t, _ in fragments)
+    text = '\n\n'.join(t for t, _ in fragments)
     limit = (
         MessageLimit.MAX_TEXT_LENGTH if is_text_only else MessageLimit.CAPTION_LENGTH
     )
