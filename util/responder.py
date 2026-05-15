@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextvars import ContextVar
 from contextlib import contextmanager
-from typing import Awaitable, Protocol
+from typing import Awaitable, Protocol, Literal, overload
 
 from telegram import Message, InlineKeyboardMarkup
 from telegram.constants import ChatAction
@@ -20,7 +20,33 @@ from db import db
 class Responder(Protocol):
     __slots__ = ()
 
-    async def reply(
+    @overload
+    def reply(
+        self,
+        text: str | None = None,
+        parse_mode: str | None = None,
+        reply_markup: InlineKeyboardMarkup | None = None,
+        *,
+        cached: bool = False,
+        media: MediaPayload | None = None,
+        disable_web_page_preview: bool | None = None,
+        allow_not_modified: Literal[False] = False,
+    ) -> Awaitable[EditHandle]: ...
+
+    @overload
+    def reply(
+        self,
+        text: str | None = None,
+        parse_mode: str | None = None,
+        reply_markup: InlineKeyboardMarkup | None = None,
+        *,
+        cached: bool = False,
+        media: MediaPayload | None = None,
+        disable_web_page_preview: bool | None = None,
+        allow_not_modified: Literal[True],
+    ) -> Awaitable[EditHandle | None]: ...
+
+    def reply(
         self,
         text: str | None = None,
         parse_mode: str | None = None,
@@ -30,7 +56,7 @@ class Responder(Protocol):
         media: MediaPayload | None = None,
         disable_web_page_preview: bool | None = None,
         allow_not_modified: bool = False,
-    ) -> EditHandle | None: ...
+    ) -> Awaitable[EditHandle | None]: ...
 
     def reply_cached(
         self,
@@ -52,9 +78,18 @@ class Responder(Protocol):
             allow_not_modified=allow_not_modified,
         )
 
-    async def reply_copy(
+    def reply_copy(
         self, from_chat_id: int, message_id: int
-    ) -> EditHandle | None: ...
+    ) -> Awaitable[EditHandle | None]: ...
+
+    def reply_forward(
+        self, from_chat_id: int, message_id: int
+    ) -> Awaitable[EditHandle | None]:
+        '''
+        Actually a forwarded message cannot have reply_parameters, but we provide
+        this for convenience.
+        '''
+        ...
 
     def reply_chat_action(self, action: ChatAction) -> Awaitable: ...
 
@@ -64,6 +99,11 @@ class Responder(Protocol):
         from . import get_text
 
         return get_text(self.get_message())
+
+    def get_arg(self) -> str:
+        from . import get_arg
+
+        return get_arg(self.get_message())
 
     async def _keep_action(self, action: ChatAction):
         try:
@@ -171,9 +211,18 @@ def encode_chat_id(m: Message, default: str = 'u') -> str:
     return f'G{chat_id}'
 
 
-reroute_capture: ContextVar[tuple[int, int, list[tuple[str, str | None]]] | None] = (
+reroute_capture: ContextVar[tuple[Message, list[tuple[str, str | None]]] | None] = (
     ContextVar('reroute_capture', default=None)
 )
+
+
+def is_captured(msg: Message, text: str | None, parse_mode: str | None) -> bool:
+    if (reroute := reroute_capture.get()) is not None and reroute[0] is msg:
+        log.debug('reroute_capture: %r %s', msg, text)
+        if text:
+            reroute[1].append((text, parse_mode))
+        return True
+    return False
 
 
 class MessageResponder(Responder):
@@ -181,6 +230,32 @@ class MessageResponder(Responder):
 
     def __init__(self, msg: Message):
         self.msg = msg
+
+    @overload
+    async def reply(
+        self,
+        text: str | None = None,
+        parse_mode: str | None = None,
+        reply_markup: InlineKeyboardMarkup | None = None,
+        *,
+        cached: bool = False,
+        media: MediaPayload | None = None,
+        disable_web_page_preview: bool | None = None,
+        allow_not_modified: Literal[False] = False,
+    ) -> MessageEditHandle: ...
+
+    @overload
+    async def reply(
+        self,
+        text: str | None = None,
+        parse_mode: str | None = None,
+        reply_markup: InlineKeyboardMarkup | None = None,
+        *,
+        cached: bool = False,
+        media: MediaPayload | None = None,
+        disable_web_page_preview: bool | None = None,
+        allow_not_modified: Literal[True],
+    ) -> MessageEditHandle | None: ...
 
     async def reply(
         self,
@@ -192,7 +267,7 @@ class MessageResponder(Responder):
         media: MediaPayload | None = None,
         disable_web_page_preview: bool | None = None,
         allow_not_modified: bool = False,
-    ) -> EditHandle | None:
+    ) -> MessageEditHandle | None:
         m = self.msg
         key = f'{encode_chat_id(m)}-{m.message_id}'
 
@@ -235,32 +310,17 @@ class MessageResponder(Responder):
                 log.debug('_do_reply: %s -> %s', key, val)
             return MessageEditHandle.from_message(resp, as_caption)
 
-        if (
-            (reroute := reroute_capture.get()) is not None
-            and reroute[0] == m.chat_id
-            and reroute[1] == m.message_id
-        ):
-            log.info('reroute_capture: %s', key)
-            if text:
-                reroute[2].append((text, parse_mode))
-
-            # Do not try to edit the reply, or we will mess up the response of the
-            # capturing context (`/render`).
-            return await _do_reply(False)
-
-        if not cached:
+        if is_captured(m, text, parse_mode) or not cached:
+            # Do not try to edit the reply if the reply is captured, or we will
+            # mess up the original reply of the capturing context (`/render`).
             return await _do_reply(False)
 
         if not (val := db.get(key)):
             return await _do_reply()
 
-        if media is None:
-            input_media = None
-        else:
-            input_media = media.as_input(text, parse_mode)
-            if input_media is None:
-                db.discard(key)
-                return await _do_reply()
+        if media is not None and media.INPUT_MEDIA_TYPE is None:
+            db.discard(key)
+            return await _do_reply()
 
         if val[0] == '@':
             as_caption = True
@@ -273,7 +333,9 @@ class MessageResponder(Responder):
 
         try:
             try:
-                if input_media is not None:
+                if media is not None:
+                    input_media = media.as_input(text, parse_mode)
+                    assert input_media
                     with input_media as im:
                         resp = await bot.edit_message_media(
                             im,
@@ -304,9 +366,8 @@ class MessageResponder(Responder):
                 return MessageEditHandle(m.chat.id, resp_msg_id, as_caption, resp)
             except BadRequest as e:
                 if 'too long' in str(e):
-                    if input_media is not None:
+                    if media is not None:
                         log.info('Caption too long, fallback to text: %s', e)
-                        assert media
                         input_media = media.as_input(None, None)
                         assert input_media
                         with input_media as im:
@@ -354,7 +415,7 @@ class MessageResponder(Responder):
     def reply_chat_action(self, action: ChatAction):
         return self.msg.reply_chat_action(action)
 
-    async def reply_copy(self, from_chat_id: int, message_id: int) -> EditHandle | None:
+    async def reply_copy(self, from_chat_id: int, message_id: int) -> MessageEditHandle:
         copied = await self.msg.reply_copy(
             from_chat_id,
             message_id,
@@ -362,6 +423,19 @@ class MessageResponder(Responder):
             allow_sending_without_reply=True,
         )
         return MessageEditHandle(self.msg.chat_id, copied.message_id)
+
+    async def reply_forward(
+        self, from_chat_id: int, message_id: int
+    ) -> MessageEditHandle:
+        msg = await self.msg.get_bot().forward_message(
+            self.msg.chat_id,
+            from_chat_id,
+            message_id,
+            message_thread_id=self.msg.message_thread_id,
+        )
+        return MessageEditHandle(
+            self.msg.chat_id, msg.message_id, msg.text is None, msg
+        )
 
     def get_message(self) -> Message:
         return self.msg

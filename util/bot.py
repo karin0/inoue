@@ -8,7 +8,7 @@ from dispatch import get_command_handler, UpdateHandler
 from .log import log
 from .text import truncate_text
 from .app import bot
-from .ctx import get_text, get_responder, use_text_override
+from .ctx import get_msg, get_text, get_responder, use_text_override
 from .env import USER_ID, CHAN_ID, GROUP_ID
 from .responder import reroute_capture
 
@@ -85,20 +85,9 @@ async def reply_text(
     text: str,
     parse_mode: str | None = None,
     reply_markup: InlineKeyboardMarkup | None = None,
-    *,
-    disable_web_page_preview: bool | None = None,
-    allow_not_modified: bool = False,
-) -> Message | None:
+) -> None:
     '''Compatibility alias for `Responder.reply_cached()`.'''
-    r = await get_responder(m).reply_cached(
-        text,
-        parse_mode,
-        reply_markup,
-        disable_web_page_preview=disable_web_page_preview,
-        allow_not_modified=allow_not_modified,
-    )
-    if r is not None:
-        return r.get_message()
+    await get_responder(m).reply_cached(text, parse_mode, reply_markup)
 
 
 def _extract_cmd_handler(text: str) -> UpdateHandler | None:
@@ -125,17 +114,15 @@ def route_cmd(update: Update, msg: Message) -> Awaitable | None:
 async def reroute_cmd(
     update: Update, text: str
 ) -> Sequence[tuple[str, str | None]] | None:
-    if (msg := update.effective_message) is None:
-        raise RuntimeError('No message')
-
     if reroute_capture.get() is not None:
         log.warning('reroute: already in reroute_cmd: %s', update)
         return None
 
+    msg = get_msg(update)
     if (callback := _extract_cmd_handler(text)) is not None:
         with use_text_override(text):
             buf = []
-            token = reroute_capture.set((msg.chat_id, msg.message_id, buf))
+            token = reroute_capture.set((msg, buf))
             try:
                 await callback(update)
             finally:

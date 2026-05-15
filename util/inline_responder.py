@@ -1,3 +1,4 @@
+from __future__ import annotations
 from typing import Awaitable, Callable
 
 from telegram import (
@@ -11,8 +12,8 @@ from telegram.constants import ChatAction, MessageLimit
 
 from .log import log
 from .app import bot
-from .responder import Responder, EditHandle
 from .payload import MediaPayload, extract_media
+from .responder import Responder, EditHandle, is_captured
 from .text import escape, html_escape, shorten, truncate_text
 from .env import MEDIA_STAGING_CHAT_ID, MEDIA_STAGING_MESSAGE_THREAD_ID
 
@@ -61,20 +62,6 @@ class InlineResponder(Responder):
     async def reply_chat_action(self, action: ChatAction) -> None:
         log.debug('InlineResponder: ignored chat action: %s', action)
 
-    async def reply_copy(self, from_chat_id: int, message_id: int) -> EditHandle | None:
-        staged = await bot.forward_message(
-            MEDIA_STAGING_CHAT_ID,
-            from_chat_id,
-            message_id,
-            message_thread_id=MEDIA_STAGING_MESSAGE_THREAD_ID,
-            disable_notification=True,
-        )
-        text = staged.text or staged.caption or None
-        if (media := extract_media(staged)) is not None:
-            return await self.reply(text, media=media[0])
-        # XXX: This drops the original entities.
-        return await self.reply(text)
-
     def _defer(self) -> None:
         # No `InputMediaVoice` exists, so a pending voice media cannot be edited
         # into the inline message. The caller must `_defer()` until the voice is
@@ -92,14 +79,6 @@ class InlineResponder(Responder):
         if self._dirty:
             await self._emit(True)
             self._deferred = False
-
-    def _set_reply_markup(self, reply_markup: InlineKeyboardMarkup | None) -> bool:
-        if reply_markup is not None:
-            if self._reply_markup is None:
-                self._reply_markup = reply_markup
-                return True
-            log.warning('InlineResponder: ignored extra reply_markup: %s', reply_markup)
-        return False
 
     async def _stage_media(self, payload: MediaPayload) -> None:
         if self._media is not None:
@@ -132,11 +111,19 @@ class InlineResponder(Responder):
         media: MediaPayload | None = None,
         disable_web_page_preview: bool | None = None,
         allow_not_modified: bool = False,
-    ) -> EditHandle | None:
+    ) -> InlineFragmentHandle:
+        is_captured(self._msg, text, parse_mode)
+
         # `cached` and `allow_not_modified` are no-ops; an inline message is
         # always edited in place.
         if reply_markup is not None:
-            self._set_reply_markup(reply_markup)
+            if self._reply_markup is not None:
+                log.warning(
+                    'InlineResponder: overriding reply_markup: %s -> %s',
+                    self._reply_markup,
+                    reply_markup,
+                )
+            self._reply_markup = reply_markup
 
         if disable_web_page_preview is not None:
             self._disable_web_page_preview = disable_web_page_preview
@@ -184,6 +171,11 @@ class InlineResponder(Responder):
                         im, reply_markup=self._reply_markup, inline_message_id=mid
                     )
             else:
+                if self._media is not None:
+                    log.warning(
+                        'InlineResponder: InputMedia is unavailable, consider using `InlineResponder._defer()`: %s',
+                        self._media[0],
+                    )
                 await bot.edit_message_text(
                     text,
                     parse_mode=parse_mode,
@@ -211,6 +203,27 @@ class InlineResponder(Responder):
             log.debug('InlineResponder: emitting inline result: %s', result)
             self._inline_message_id = r = await mid(self._msg, result)
             log.info('InlineResponder: emitted inline message: %s', r)
+
+    async def reply_copy(
+        self, from_chat_id: int, message_id: int
+    ) -> InlineFragmentHandle:
+        staged = await bot.forward_message(
+            MEDIA_STAGING_CHAT_ID,
+            from_chat_id,
+            message_id,
+            message_thread_id=MEDIA_STAGING_MESSAGE_THREAD_ID,
+            disable_notification=True,
+        )
+        text = staged.text or staged.caption or None
+        if (media := extract_media(staged)) is not None:
+            return await self.reply(text, media=media[0])
+        # XXX: This drops the original entities.
+        return await self.reply(text)
+
+    def reply_forward(
+        self, from_chat_id: int, message_id: int
+    ) -> Awaitable[InlineFragmentHandle]:
+        return self.reply_copy(from_chat_id, message_id)
 
 
 def _collapse_fragments(
@@ -256,7 +269,7 @@ class InlineFragmentHandle(EditHandle):
         r = self._rs
         r._fragments[self._idx] = (text, parse_mode)
         if reply_markup is not None:
-            r._set_reply_markup(reply_markup)
+            r._reply_markup = reply_markup
         if disable_web_page_preview is not None:
             r._disable_web_page_preview = disable_web_page_preview
         return r._emit()
@@ -267,8 +280,8 @@ class InlineFragmentHandle(EditHandle):
     ) -> None:
         r = self._rs
         if reply_markup is not None:
-            if r._set_reply_markup(reply_markup):
-                await r._emit()
+            r._reply_markup = reply_markup
+            await r._emit()
         elif r._reply_markup is not None:
             r._reply_markup = None
             await r._emit()

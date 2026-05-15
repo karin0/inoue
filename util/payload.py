@@ -31,6 +31,7 @@ from .app import bot
 
 type Media = Audio | Document | PhotoSize | Sticker | Video | Voice
 type Content = bytes | str | Path | Media
+type InputMediaType = type[InputMedia] | None
 
 
 @contextmanager
@@ -43,10 +44,11 @@ def open_content(content: Content) -> Iterator[Any]:
 
 
 class MediaPayload(Protocol):
-    KIND: ClassVar[str]
+    __slots__ = ()
 
-    @property
-    def content(self) -> Content: ...
+    KIND: ClassVar[str]
+    INPUT_MEDIA_TYPE: ClassVar[InputMediaType]
+    content: Content
 
     async def reply(
         self,
@@ -103,10 +105,21 @@ def extract_media(
             return typ(media), media.file_id
 
 
+# `InlineQueryResultCachedAudio` accepts no `title`.
+# `InputMediaVideo` requires `supports_streaming=True`.
+# `InputMediaVoice` does not exist.
+# `PhotoSize` occurs as a sequence in `Message`.
+# `InlineQueryResultCachedSticker` accepts neither `caption` nor `title`.
+# `InputMediaSticker` is added in API 10.0 and unsupported by PTB yet.
+# `VideoNote` has neither `InputMedia` nor `InlineQueryResult` type.
+
+
 @dataclass(frozen=True, slots=True, eq=False, match_args=False)
-class PhotoPayload:
+class PhotoPayload(MediaPayload):
     content: Content
+
     KIND: ClassVar[str] = 'photo'
+    INPUT_MEDIA_TYPE: ClassVar[InputMediaType] = InputMediaPhoto
 
     async def reply(
         self,
@@ -169,12 +182,13 @@ class PhotoPayload:
 
 
 @dataclass(frozen=True, slots=True, eq=False, match_args=False)
-class DocumentPayload:
+class DocumentPayload(MediaPayload):
     content: Content
     filename: str | None = None
     disable_content_type_detection: bool | None = None
 
     KIND: ClassVar[str] = 'document'
+    INPUT_MEDIA_TYPE: ClassVar[InputMediaType] = InputMediaDocument
 
     async def reply(
         self,
@@ -247,7 +261,7 @@ class DocumentPayload:
 
 
 @dataclass(frozen=True, slots=True, eq=False, match_args=False)
-class VideoPayload:
+class VideoPayload(MediaPayload):
     content: Content
     duration: int | None = None
     filename: str | None = None
@@ -255,6 +269,7 @@ class VideoPayload:
     cover: bytes | None = None
 
     KIND: ClassVar[str] = 'video'
+    INPUT_MEDIA_TYPE: ClassVar[InputMediaType] = InputMediaVideo
 
     async def reply(
         self,
@@ -335,7 +350,7 @@ class VideoPayload:
 
 
 @dataclass(frozen=True, slots=True, eq=False, match_args=False)
-class AudioPayload:
+class AudioPayload(MediaPayload):
     content: Content
     duration: int | None = None
     filename: str | None = None
@@ -344,6 +359,7 @@ class AudioPayload:
     thumbnail: bytes | None = None
 
     KIND: ClassVar[str] = 'audio'
+    INPUT_MEDIA_TYPE: ClassVar[InputMediaType] = InputMediaAudio
 
     async def reply(
         self,
@@ -423,11 +439,12 @@ class AudioPayload:
 
 
 @dataclass(frozen=True, slots=True, eq=False, match_args=False)
-class VoicePayload:
+class VoicePayload(MediaPayload):
     content: Content
     duration: int | None = None
 
     KIND: ClassVar[str] = 'voice'
+    INPUT_MEDIA_TYPE: ClassVar[InputMediaType] = None
 
     async def reply(
         self,
@@ -488,10 +505,11 @@ class VoicePayload:
 
 
 @dataclass(frozen=True, slots=True, eq=False, match_args=False)
-class StickerPayload:
+class StickerPayload(MediaPayload):
     content: Content
 
     KIND: ClassVar[str] = 'sticker'
+    INPUT_MEDIA_TYPE: ClassVar[InputMediaType] = None
 
     async def reply(
         self,
