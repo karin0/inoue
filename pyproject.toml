@@ -16,4 +16,10 @@ dependencies = [
 optional-dependencies = { regex = ["regex>=2026.4.4"] }
 
 [dependency-groups]
-dev = ["objgraph>=3.6.2", "ruff>=0.15.12", "black>=26.3.1"]
+dev = [
+    "objgraph>=3.6.2",
+    "ruff>=0.15.12",
+    "black>=26.3.1",
+    "pyright>=1.1.409",
+    "pyinstrument>=5.1.2",
+]
