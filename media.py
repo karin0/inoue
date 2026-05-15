@@ -1,7 +1,7 @@
 from telegram import Message
 
 from db import db
-from util import log, escape, get_msg_url, get_deep_link_url, reply_text
+from util import log, escape, get_msg_url, get_deep_link_url, reply_text, Responder
 from dispatch import MessageArg, command, start
 
 
@@ -65,16 +65,16 @@ def render_media(chat_id: int, message_id: int, title: str) -> str:
 
 
 @command(public=True)
-def handle_play(msg: Message, arg: MessageArg):
+def handle_play(rs: Responder, arg: MessageArg):
     if arg:
         if not (media := db.get_media(int(arg))):
-            return reply_text(msg, 'Media not found.')
+            return rs.reply_cached('Media not found.')
     elif not (media := db.random_media()):
-        return reply_text(msg, 'No saved media.')
+        return rs.reply_cached('No saved media.')
 
     chat_id, message_id = media
-    log.info('Forwarding saved media: %s/%s -> %s', chat_id, message_id, msg.chat_id)
-    return msg.reply_copy(chat_id, message_id, do_quote=True)
+    log.info('Forwarding saved media: %s/%s -> %s', chat_id, message_id, rs)
+    return rs.reply_copy(chat_id, message_id)
 
 
 def _format_item(row: tuple[int, int, int, str, int]) -> str:

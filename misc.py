@@ -1,9 +1,8 @@
 import os
 from typing import Iterable
+from pathlib import Path
 
-from telegram import Message
-
-from util import pre_block, reply_text
+from util import pre_block, Responder, DocumentPayload
 from dispatch import MessageArg, command
 
 
@@ -18,25 +17,24 @@ def parse_sort(arg: str) -> Iterable[int]:
 
 
 @command(public=True)
-def handle_sort(msg: Message, arg: MessageArg):
+def handle_sort(rs: Responder, arg: MessageArg):
     if not arg:
-        return reply_text(msg, 'Usage: /sort 114 514 1919 810 ...')
+        return rs.reply_cached('Usage: /sort 114 514 1919 810 ...')
     res = '\n'.join(str(x) for x in sorted(parse_sort(arg)))
-    return reply_text(msg, *pre_block(res))
+    return rs.reply_cached(*pre_block(res))
 
 
 @command('fetch')
-def reply_file(msg: Message, path: MessageArg):
+def reply_file(rs: Responder, path: MessageArg):
     if not path:
-        return reply_text(msg, 'Usage: /fetch <file path>')
+        return rs.reply_cached('Usage: /fetch <file path>')
 
     size = os.path.getsize(path)
     if size > 20 << 20:
-        return reply_text(msg, f'File too large: {size} bytes')
+        return rs.reply_cached(f'File too large: {size} bytes')
 
     filename = os.path.basename(path)
     if not os.path.splitext(filename)[1]:
         filename += '.txt'
 
-    with open(path, 'rb') as fp:
-        return msg.reply_document(fp, filename=filename, caption=path, do_quote=True)
+    return rs.reply(path, media=DocumentPayload(Path(path), filename=filename))
