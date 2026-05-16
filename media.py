@@ -1,7 +1,8 @@
 from telegram import Message
 
 from db import db
-from util import log, escape, get_msg_url, get_deep_link_url, Responder
+from util import log, escape, Responder
+from utils import get_msg_url, get_deep_link_url
 from dispatch import MessageArg, command, start
 
 

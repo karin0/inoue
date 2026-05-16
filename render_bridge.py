@@ -33,8 +33,8 @@ from util import (
     html_escape,
     cleanup_text,
     cleanup_text_md,
-    reroute_cmd,
 )
+from utils import reroute_cmd
 from motto import hitokoto
 from segments import (
     BaseElement,

@@ -23,7 +23,6 @@ from util import (
     use_msg_override,
     use_responder_override,
     use_text_override,
-    route_cmd,
     InlineResponder,
     Sender,
     Context,
@@ -33,6 +32,7 @@ from util import (
     GROUP_ID,
     TODO_ID,
 )
+from utils import route_cmd
 from inoue import render_receipt
 from rg import handle_rg
 from voice import try_handle_voice

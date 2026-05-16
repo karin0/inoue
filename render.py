@@ -36,8 +36,6 @@ from util import (
     get_context,
     get_responder,
     list_env,
-    get_msg_url,
-    try_send_text_or_not_modified,
     shorten,
     truncate_text,
     escape,
@@ -62,6 +60,7 @@ from segments import (
 )
 from render_core import Engine, Value, to_str
 from render_bridge import Bridge, LocalPath, to_segment
+from utils import get_msg_url, try_send_text_or_not_modified
 from dispatch import MessageArg, CallbackData, callback_query, command
 from render_context import OverriddenDict, encode_value, decode_value
 

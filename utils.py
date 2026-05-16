@@ -5,12 +5,16 @@ from telegram.error import BadRequest
 
 from dispatch import get_command_handler, UpdateHandler
 
-from .log import log
-from .text import truncate_text
-from .app import bot
-from .ctx import get_msg, get_text, use_text_override
-from .env import CHAN_ID
-from .responder import reroute_capture
+from util import (
+    log,
+    bot,
+    reroute_capture,
+    truncate_text,
+    get_msg,
+    get_text,
+    use_text_override,
+    CHAN_ID,
+)
 
 
 def get_msg_url(msg_id, chat_id=None) -> str:
@@ -21,7 +25,6 @@ def get_msg_url(msg_id, chat_id=None) -> str:
 
 
 def get_deep_link_url(arg: str) -> str:
-    assert bot is not None
     return f'https://t.me/{bot.username}?start={arg}'
 
 

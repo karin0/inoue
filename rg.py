@@ -12,13 +12,13 @@ from telegram import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from util import (
     log,
     escape,
-    get_deep_link_url,
     pre_block_raw,
     truncate_text,
     Responder,
     EditHandle,
     MAX_TEXT_LENGTH,
 )
+from utils import get_deep_link_url
 from dispatch import MessageArg, command, callback_query, start
 from segments import Segment, Link, Bold, Underline, Formatter
 
