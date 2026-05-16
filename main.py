@@ -15,6 +15,7 @@ from util import (
     app,
     post_init,
     Sender,
+    Responder,
     ME,
     USER_ID,
     CHAN_ID,
@@ -26,7 +27,6 @@ from util import (
     do_notify,
     shorten,
     use_context,
-    get_responder,
 )
 from commands import set_commands, stats, reply_usage
 from handlers import (
@@ -101,10 +101,10 @@ async def handle_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     post = None
     if (msg := update.message) is not None:
         log.info('%s: msg %s', src, shorten(msg.text))
-        func = lambda: handle_msg(msg, update)
+        func = lambda: handle_msg(msg)
     elif (msg := update.edited_message) is not None:
         log.info('%s: edited %s', src, shorten(msg.text))
-        func = lambda: handle_msg(msg, update)
+        func = lambda: handle_msg(msg)
     elif (post := update.channel_post) is not None:
         log.info('%s: channel post %s', src, shorten(post.text))
         func = lambda: handle_post(post, sender)
@@ -115,7 +115,7 @@ async def handle_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if isinstance(callback.message, Message):
             msg = callback.message
         log.info('%s: callback %s', src, callback.data)
-        func = lambda: handle_callback_query(callback, update)
+        func = lambda: handle_callback_query(callback)
     elif (query := update.inline_query) is not None:
         log.info('%s: inline %s', src, query.query)
         func = lambda: handle_inline_query(query)
@@ -124,7 +124,7 @@ async def handle_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         func = lambda: handle_chosen_inline(chosen)
     elif (post := update.guest_message) is not None:
         log.info('%s: guest message %s', src, shorten(post.text))
-        func = lambda: handle_guest(post, update)
+        func = lambda: handle_guest(post)
     else:
         log.info('%s: unhandled: %s', src, update)
         func = None
@@ -146,10 +146,10 @@ async def handle_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if func is None:
         if is_guest and msg:
-            await reply_usage(get_responder(msg))
+            await reply_usage(Responder.create(msg))
         return
 
-    with use_context(update, ctx, msg, sender):
+    with use_context(update, msg, sender):
         try:
             if (fut := func()) is not None:
                 await fut

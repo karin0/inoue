@@ -2,28 +2,16 @@ import inspect
 from itertools import islice
 from typing import Any, Callable, Iterable, Coroutine, Awaitable, Type, overload
 
-from telegram import CallbackQuery, Message, Update, Bot
-from telegram.ext import ContextTypes
+from telegram import CallbackQuery, Message, Bot
 
-from util import (
-    log,
-    bot,
-    USER_ID,
-    get_msg,
-    get_arg,
-    get_context,
-    get_responder,
-    Responder,
-)
+from util import log, bot, USER_ID, get_context, Responder
 
 type MessageArg = str
 type CallbackData = str
 
-type CallbackParam = Update | ContextTypes.DEFAULT_TYPE | Message | MessageArg | CallbackQuery | CallbackData | Bot | Responder | str | int
+type CallbackParam = Message | MessageArg | CallbackQuery | CallbackData | Bot | Responder | str | int
 
 CALLBACK_PARAM_TYPES = (
-    Update,
-    ContextTypes.DEFAULT_TYPE,
     Message,
     MessageArg,
     CallbackQuery,
@@ -35,8 +23,6 @@ CALLBACK_PARAM_TYPES = (
 )
 
 type Handler[**P, R] = Callable[P, Awaitable[R]]
-
-type UpdateHandler[R] = Callable[[Update], Awaitable[R]]
 
 
 def _unwrap[T](x: T | None) -> T:
@@ -96,9 +82,10 @@ class Route[**P, R]:
         return repr(self)
 
     def __call__(
-        self, update: Update, argv: Iterable[str] = ()
+        self, rs: Responder | None, argv: Iterable[str] = ()
     ) -> Coroutine[Any, Any, R]:
         log.debug('Calling route: %s: %r', self, argv)
+        update = get_context().update
         if not (
             self._public
             or ((u := update.effective_user) is not None and u.id == USER_ID)
@@ -108,14 +95,10 @@ class Route[**P, R]:
         it = iter(argv)
         args = []
         for ty in self._params:
-            if ty is Update:
-                args.append(update)
-            elif ty is ContextTypes.DEFAULT_TYPE:
-                args.append(get_context().ptb)
-            elif ty is Message:
-                args.append(get_msg(update))
+            if ty is Message:
+                args.append(_unwrap(rs).get_message())
             elif ty is MessageArg:
-                args.append(get_arg(get_msg(update)))
+                args.append('' if rs is None else rs.get_arg())
             elif ty is CallbackQuery:
                 args.append(_unwrap(update.callback_query))
             elif ty is CallbackData:
@@ -123,7 +106,7 @@ class Route[**P, R]:
             elif ty is Bot:
                 args.append(bot)
             elif ty is Responder:
-                args.append(get_responder(get_msg(update)))
+                args.append(_unwrap(rs))
             elif ty is str:
                 args.append(next(it))
             elif ty is int:
@@ -185,7 +168,9 @@ def command[H: Handler](
     return decorator(func)
 
 
-def iter_commands() -> Iterable[tuple[str, tuple[UpdateHandler, bool]]]:
+def iter_commands() -> (
+    Iterable[tuple[str, tuple[Callable[[Responder], Awaitable], bool]]]
+):
     return ((name, (route, route._public)) for name, route in _cmd_handlers.items())
 
 
@@ -223,19 +208,19 @@ def callback_query(
 
 
 def _dispatch_argv(
-    update: Update, data: str, map: dict[str, Route]
+    rs: Responder | None, data: str, map: dict[str, Route]
 ) -> Coroutine | None:
     args = data.split('_')
     if (route := map.get(args[0])) is not None:
-        return route(update, islice(args, 1, None))
+        return route(rs, islice(args, 1, None))
 
 
-def dispatch_callback(data: str, update: Update) -> Awaitable:
+def dispatch_callback(rs: Responder | None, data: str) -> Awaitable:
     for filter_func, route in _cb_filters:
         if filter_func(data):
-            return route(update)
+            return route(rs)
 
-    if fut := _dispatch_argv(update, data, _cb_handlers):
+    if fut := _dispatch_argv(rs, data, _cb_handlers):
         return fut
 
     raise ValueError(f'Bad callback query: {data}')
@@ -260,5 +245,5 @@ def start(key: str, *, public: bool = False) -> Callable[[Handler], Handler]:
     return decorator
 
 
-def dispatch_start(update: Update, arg: MessageArg) -> Coroutine | None:
-    return _dispatch_argv(update, arg, _start_handlers) if arg else None
+def dispatch_start(rs: Responder, arg: MessageArg) -> Coroutine | None:
+    return _dispatch_argv(rs, arg, _start_handlers) if arg else None

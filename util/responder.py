@@ -10,6 +10,7 @@ from telegram.error import BadRequest
 from .log import log
 from .app import bot, create_task
 from .env import encode_id
+from .ctx import get_text
 from .payload import MediaPayload, payload_has_input
 
 from db import db
@@ -94,14 +95,15 @@ class Responder(Protocol):
     def get_message(self) -> Message: ...
 
     def get_text(self) -> str:
-        from . import get_text
-
         return get_text(self.get_message())
 
     def get_arg(self) -> str:
-        from . import get_arg
+        s = self.get_text()
+        if not s.startswith('/'):
+            return s.strip()
 
-        return get_arg(self.get_message())
+        p = min(x for x in (s.find(' '), s.find('\n'), len(s)) if x > 0)
+        return s[p + 1 :].strip()
 
     async def _keep_action(self, action: ChatAction):
         try:
@@ -119,6 +121,10 @@ class Responder(Protocol):
             yield task
         finally:
             task.cancel()
+
+    @staticmethod
+    def create(msg: Message) -> Responder:
+        return MessageResponder(msg)
 
 
 class EditHandle(Protocol):

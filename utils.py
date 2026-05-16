@@ -1,18 +1,17 @@
 from typing import Awaitable, Callable, Sequence, Concatenate
 
-from telegram import Message, Update
+from telegram import Message
 from telegram.error import BadRequest
 
-from dispatch import get_command_handler, UpdateHandler
+from dispatch import get_command_handler
 
 from util import (
     log,
     bot,
     reroute_capture,
     truncate_text,
-    get_msg,
-    get_text,
     use_text_override,
+    Responder,
     CHAN_ID,
 )
 
@@ -72,7 +71,7 @@ async def try_send_text_or_not_modified[**P, R](
         raise
 
 
-def _extract_cmd_handler(text: str) -> UpdateHandler | None:
+def _extract_cmd_handler(text: str) -> Callable[[Responder], Awaitable] | None:
     if text and text[0] == '/':
         p = min(
             x
@@ -88,26 +87,25 @@ def _extract_cmd_handler(text: str) -> UpdateHandler | None:
         log.debug('route_cmd: command not found: %s', cmd)
 
 
-def route_cmd(update: Update, msg: Message) -> Awaitable | None:
-    if (callback := _extract_cmd_handler(get_text(msg))) is not None:
-        return callback(update)
+def route_cmd(rs: Responder) -> Awaitable | None:
+    if (callback := _extract_cmd_handler(rs.get_text())) is not None:
+        return callback(rs)
 
 
 def reroute_cmd(
-    update: Update, text: str
+    rs: Responder, text: str
 ) -> Awaitable[Sequence[tuple[str, str | None]]] | None:
     '''
     This is deliberately made two stages to finish the command setup before
-    going async. See `/voice`.
+    yielding to async. See `/voice`.
     '''
     if reroute_capture.get() is not None:
-        log.warning('reroute: already in reroute_cmd: %s', update)
+        log.warning('reroute: already in reroute_cmd: %s', rs)
         return None
 
-    msg = get_msg(update)
     if (callback := _extract_cmd_handler(text)) is not None:
         with use_text_override(text):
-            return _reroute_cmd(msg, text, callback(update))
+            return _reroute_cmd(rs.get_message(), text, callback(rs))
 
 
 async def _reroute_cmd(

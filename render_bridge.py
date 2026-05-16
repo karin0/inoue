@@ -27,8 +27,8 @@ from render_core import Box, Value, Fragment, to_str
 
 from util import (
     log,
-    get_context,
     create_task,
+    Responder,
     escape,
     html_escape,
     cleanup_text,
@@ -216,6 +216,9 @@ class Callbacks(Protocol):
     def _error(self, msg: str) -> Any: ...
     def _escalate(self) -> int | None: ...
 
+    @property
+    def _responder(self) -> Responder | None: ...
+
 
 class Bridge(Box):
     __slots__ = ('_ctx', '_trusted', '_cb_ref', '_promise_cap', '_temp_files')
@@ -350,7 +353,9 @@ class Bridge(Box):
         cmd = to_str(cmd)
         if not cmd.startswith('/'):
             raise ValueError(f'command must start with /, got {cmd!r}')
-        coro = reroute_cmd(get_context().update, cmd)
+        if (rs := self._cb._responder) is None:
+            raise RuntimeError('No responder')
+        coro = reroute_cmd(rs, cmd)
         return self._promise(self._reroute_cmd(cmd, coro))
 
     @public

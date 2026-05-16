@@ -5,7 +5,6 @@ from typing import Awaitable
 
 from telegram import (
     User,
-    Update,
     Bot,
     BotCommandScopeDefault,
     BotCommandScopeChat,
@@ -63,12 +62,7 @@ def expand_template(template: str, args_str: str) -> str:
 
 
 # Provided `text` must start with '/'.
-async def dispatch_cmd(
-    update: Update,
-    rs: Responder,
-    text: str,
-    depth: int = 0,
-):
+async def dispatch_cmd(rs: Responder, text: str, depth: int = 0):
     if depth > 10:
         return await rs.reply_cached('Too many levels of command expansion.')
 
@@ -80,12 +74,12 @@ async def dispatch_cmd(
     if template := db.get_command(cmd_name):
         expanded = expand_template(template, cmd_args)
         if expanded.startswith('/'):
-            return await dispatch_cmd(update, rs, expanded, depth + 1)
+            return await dispatch_cmd(rs, expanded, depth + 1)
         raise RuntimeError(f'Bad command expansion: {expanded}')
 
     if handler := get_command_handler(cmd_name):
         with use_text_override(text):
-            return await handler(update)
+            return await handler(rs)
 
     return await handle_cmd(rs, content)
 
@@ -165,8 +159,8 @@ async def handle_greet(rs: Responder, bot: Bot):
 
 
 @command
-def handle_start(update: Update, rs: Responder, arg: MessageArg):
-    if (fut := dispatch_start(update, arg)) is not None:
+def handle_start(rs: Responder, arg: MessageArg):
+    if (fut := dispatch_start(rs, arg)) is not None:
         return fut
 
     return reply_usage(rs)

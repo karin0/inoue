@@ -5,7 +5,6 @@ from pathlib import Path
 from telegram import (
     Message,
     MessageOriginChannel,
-    Update,
     ChosenInlineResult,
     InlineQuery,
     CallbackQuery,
@@ -18,11 +17,8 @@ from util import (
     bot,
     pre_block,
     get_context,
-    get_msg,
-    get_responder,
-    use_msg_override,
-    use_responder_override,
     use_text_override,
+    Responder,
     InlineResponder,
     Sender,
     Context,
@@ -43,17 +39,42 @@ from render import handle_render_doc, handle_render_group, handle_render_inline_
 from commands import dispatch_cmd, reply_usage
 from dispatch import callback_query, dispatch_callback, CallbackData
 
+'''
+Responders are only present when handling the following events, and shall not be
+used on other paths:
+
+- message
+- edit_message
+- callback_query (with an accessible message or inline message)
+- chosen_inline_result
+- guest_message
+
+For callback queries with an inline message and `guest_message`, `InlineResponder`
+is used to enable (almost) seamless replying by editing the same inline message.
+
+For callback queries with an `InaccessibleMessage`, we pass `None` to the dispatcher,
+so exceptions may be raised by the `Route` if the handler requires it.
+
+Technically we could create a `Responder` for channel posts and inline queries,
+but we don't think they should be responded to for now.
+'''
+
 
 def handle_post(channel_post: Message, sender: Sender | None):
     if sender is not None and sender.id in (USER_ID, CHAN_ID):
         return handle_render_doc(channel_post)
 
 
-async def handle_msg(msg: Message, update: Update):
+async def handle_msg(msg: Message, rs: Responder | None = None, direct: bool = True):
+    if rs is None:
+        rs = Responder.create(msg)
+
     context = get_context()
-    log.debug('handle_msg: sender: %s', context.sender)
+    log.debug('handle_msg: rs: %s, sender: %s', rs, context.sender)
 
     if msg.chat_id == TODO_ID:
+        # Responders are not used for messages in `TODO_ID`, which has a different
+        # interaction model.
         if context.sender_is_host():
             return await handle_todo_msg(msg)
         raise ValueError(f'Unauthorized todo: {msg}')
@@ -65,16 +86,16 @@ async def handle_msg(msg: Message, update: Update):
         and msg.chat_id == GROUP_ID
         and origin.chat.id == CHAN_ID
     ):
-        return await handle_render_group(msg, origin.message_id)
+        return await handle_render_group(rs, origin.message_id)
 
     # Reroute if the text starts with a command.
     # This allows commands to be sent as any styled text (pre/quote), rather than
     # a canonical BOT_COMMAND entity.
-    if (fut := route_cmd(update, msg)) is not None:
+    if (fut := route_cmd(rs)) is not None:
         return await fut
 
     chat = msg.chat
-    if chat.type != ChatType.PRIVATE and (update.message or update.edited_message):
+    if chat.type != ChatType.PRIVATE and direct:
         # For a message update in an ordinary group, we only handle it if a command
         # is matched or we are mentioned, or we will get flooded when we are added
         # as admins.
@@ -82,14 +103,12 @@ async def handle_msg(msg: Message, update: Update):
             log.debug('Not mentioned: %s', msg)
             return
         with use_text_override(text):
-            return await _handle_msg(msg, update, context)
+            return await _handle_msg(msg, rs, context)
 
-    return await _handle_msg(msg, update, context)
+    return await _handle_msg(msg, rs, context)
 
 
-async def _handle_msg(msg: Message, update: Update, context: Context):
-    rs = get_responder(msg)
-
+async def _handle_msg(msg: Message, rs: Responder, context: Context):
     if (fut := try_handle_voice(msg, rs)) is not None:
         return await fut
 
@@ -124,7 +143,7 @@ async def _handle_msg(msg: Message, update: Update, context: Context):
         and msg.chat_id == USER_ID
         and msg.chat.type == ChatType.PRIVATE
     ):
-        log.error('handle_msg: unauthorized update: %s', update)
+        log.error('handle_msg: unauthorized update: %s', context)
         return
 
     if text == '/Please log out now/':
@@ -138,7 +157,7 @@ async def _handle_msg(msg: Message, update: Update, context: Context):
         return
 
     if text.startswith('/'):
-        return await dispatch_cmd(update, rs, text)
+        return await dispatch_cmd(rs, text)
 
     if '\n' not in text:
         return await handle_rg(rs, text)
@@ -189,64 +208,65 @@ def strip_mention(msg: Message) -> str | None:
                 return text
 
 
-async def handle_guest(msg: Message, update: Update):
+async def handle_guest(msg: Message):
     log.debug('handle_guest: %s', msg)
     if (text := strip_mention(msg)) is None:
         raise ValueError(f'missing MENTION entity in guest message: {msg}')
 
-    with (
-        use_text_override(text),
-        use_responder_override(InlineResponder(msg, answer_guest_query)),
-    ):
-        await handle_msg(msg, update)
+    with use_text_override(text):
+        rs = InlineResponder(msg, answer_guest_query)
+        await handle_msg(msg, rs, direct=False)
 
 
-async def handle_callback_query(query: CallbackQuery, update: Update):
+async def handle_callback_query(query: CallbackQuery):
     if not (data := query.data) or data == 'noop':
         return query.answer()
 
     try:
-        if (mid := query.inline_message_id) is not None:
-            # A guest message created the callback. We continue editing the same
-            # inline message, like a continuation of `handle_guest`.
-
-            # We use `CallbackQuery` as a minimal stub to provide `Message.from_user`
-            # and give `None` for everything else, which is enough for dispatching
-            # until `route_cmd()`.
-            msg = cast(Message, CallbackQueryAsMessage(query))
-            rs = InlineResponder(msg, mid)
+        if not isinstance(msg := query.message, Message):
             log.debug('inline callback: %r', query)
-            with use_msg_override(msg), use_responder_override(rs):
-                await dispatch_callback(data, update)
+            if (mid := query.inline_message_id) is not None:
+                # A guest message created the callback. We continue editing the same
+                # inline message, like a continuation of `handle_guest`.
+                rs = InlineResponder(MessageStub.cast(msg or query), mid)
+            else:
+                rs = None
         else:
-            await dispatch_callback(data, update)
+            rs = Responder.create(msg)
+        await dispatch_callback(rs, data)
     except Exception as e:
         await query.answer('Error', show_alert=True)
         raise e
 
 
-class CallbackQueryAsMessage:
-    __slots__ = ('_query',)
+# We use `InaccessibleMessage`, `CallbackQuery` or `ChosenInlineResult` as a
+# minimal stub to provide `Message.from_user` and give `None` for everything else,
+# which is enough for dispatching until `route_cmd()`.
+class MessageStub:
+    __slots__ = ('_data',)
 
-    def __init__(self, query: CallbackQuery):
-        self._query = query
+    def __init__(self, data):
+        self._data = data
+
+    @staticmethod
+    def cast(data) -> Message:
+        return cast(Message, MessageStub(data))
 
     def __getattr__(self, item: str):
-        r = getattr(self._query, item, None)
-        log.debug('CallbackQueryAsMessage: getattr %r -> %r', item, r)
+        r = getattr(self._data, item, None)
+        log.debug('MessageStub: getattr %r -> %r', item, r)
         return r
 
     def __repr__(self) -> str:
-        return f'CallbackQueryAsMessage({self._query!r})'
+        return f'MessageStub({self._data!r})'
 
 
 @callback_query('relay')
 async def handle_relay_callback(
-    query: CallbackQuery, data: CallbackData, update: Update
+    query: CallbackQuery, data: CallbackData, msg: Message, rs: Responder
 ):
     text = data[data.index('_') + 1 :]
-    msg = get_msg(update)
     log.debug('relay: %r %s', msg, text)
     with use_text_override(text):
-        await handle_msg(msg, update)
+        await handle_msg(msg, rs, direct=False)
     await query.answer()

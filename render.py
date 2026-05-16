@@ -34,7 +34,6 @@ from util import (
     log,
     bot,
     get_context,
-    get_responder,
     list_env,
     shorten,
     truncate_text,
@@ -310,6 +309,7 @@ class RenderContext:
         '_trusted',
         '_can_escalate',
         '_as_caption',
+        '_responder',
         'data',
         'engine',
         '__weakref__',
@@ -323,9 +323,11 @@ class RenderContext:
         doc_id: int | None = None,
         path: str | None = None,
         update_callback: UpdateCallback | None = None,
+        responder: Responder | None = None,
     ):
         self._markup_state = markup_state
         self._as_caption = as_caption
+        self._responder = responder
         self.set_path(path)
         self.set_update_callback(update_callback)
 
@@ -654,7 +656,7 @@ def handle_render(msg: Message, rs: Responder, arg: MessageArg):
         db['r-' + path] = text
         doc_id = None
 
-    ctx = RenderContext(doc_id=doc_id, path=path)
+    ctx = RenderContext(doc_id=doc_id, path=path, responder=rs)
     ctx.set_update_callback(create_reply_callback(rs, ctx.data))
     return ctx.render(text)
 
@@ -763,16 +765,17 @@ def is_doc_ref(
 preview_cache: dict[int, tuple[RenderContext, str, Segment]] = {}
 
 
-async def handle_render_group(msg: Message, origin_id: int):
+async def handle_render_group(rs: Responder, origin_id: int):
+    msg_id = rs.get_message().message_id
     if cache := preview_cache.pop(origin_id, None):
         ctx, doc_name, result = cache
-        log.info('Doc in group: %s -> %s %s', msg.id, origin_id, doc_name)
+        log.info('Doc in group: %s -> %s %s', msg_id, origin_id, doc_name)
 
         ctx.set_path(':' + doc_name)
-        ctx.set_update_callback(create_reply_callback(get_responder(msg), ctx.data))
+        ctx.set_update_callback(create_reply_callback(rs, ctx.data))
         await ctx.to_response(result)
     else:
-        log.info('No preview cache in group: %s -> %s', msg.id, origin_id)
+        log.info('No preview cache in group: %s -> %s', msg_id, origin_id)
 
 
 async def handle_render_inline_query(query: InlineQuery, text: str):
@@ -822,7 +825,7 @@ async def handle_render_inline_query(query: InlineQuery, text: str):
 
 
 @callback_query(filter=lambda data: data[0] in CALLBACK_SPECIAL, public=True)
-def handle_render_callback(callback: CallbackQuery, data: CallbackData):
+def handle_render_callback(callback: CallbackQuery, data: CallbackData, rs: Responder):
     flags = {}
     clicked_button = None
 
@@ -877,15 +880,14 @@ def handle_render_callback(callback: CallbackQuery, data: CallbackData):
         case _:
             raise ValueError('bad render callback: ' + data)
 
-    msg = callback.message
-    as_caption = bool(msg is not None and getattr(msg, 'caption', None))
-
+    as_caption = bool(rs.get_message().caption)
     ctx = RenderContext(
         overrides=dict(flags),
         markup_state=(flags, data),
         doc_id=doc_id,
         path=path,
         as_caption=as_caption,
+        responder=rs,
     )
     inner = ctx.data
     ctx.set_update_callback(create_callback_query_callback(callback, as_caption, inner))

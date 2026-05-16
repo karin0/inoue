@@ -3,10 +3,8 @@ from contextvars import ContextVar
 from contextlib import contextmanager
 
 from telegram import Message, Update
-from telegram.ext import ContextTypes
 
 from .env import USER_ID
-from .responder import Responder, MessageResponder
 
 
 class Sender(NamedTuple):
@@ -20,7 +18,6 @@ class Sender(NamedTuple):
 
 class Context(NamedTuple):
     update: Update
-    ptb: ContextTypes.DEFAULT_TYPE
     msg: Message | None
     sender: Sender | None
 
@@ -65,7 +62,6 @@ def get_ctx_msg() -> Message | None:
 @contextmanager
 def use_context(
     update: Update,
-    ctx: ContextTypes.DEFAULT_TYPE,
     m: Message | None,
     sender: Sender | None,
 ):
@@ -74,27 +70,14 @@ def use_context(
     if m and m.chat_id != USER_ID:
         m = None
 
-    token = current_context.set(Context(update, ctx, m, sender))
+    token = current_context.set(Context(update, m, sender))
     try:
         yield
     finally:
         current_context.reset(token)
 
 
-msg_override: ContextVar[Message | None] = ContextVar('msg_override', default=None)
 text_override: ContextVar[str | None] = ContextVar('text_override', default=None)
-responder_override: ContextVar[Responder | None] = ContextVar(
-    'responder_override', default=None
-)
-
-
-@contextmanager
-def use_msg_override(m: Message):
-    token = msg_override.set(m)
-    try:
-        yield
-    finally:
-        msg_override.reset(token)
 
 
 @contextmanager
@@ -106,41 +89,7 @@ def use_text_override(text: str):
         text_override.reset(token)
 
 
-@contextmanager
-def use_responder_override(responder: Responder):
-    token = responder_override.set(responder)
-    try:
-        yield responder
-    finally:
-        responder_override.reset(token)
-
-
-def get_msg(update: Update) -> Message:
-    if (m := msg_override.get()) is not None:
-        return m
-
-    if (m := update.effective_message) is not None:
-        return m
-
-    raise ValueError('No message')
-
-
 def get_text(m: Message) -> str:
     if (s := text_override.get()) is not None:
         return s
     return m.text or m.caption or ''
-
-
-def get_responder(msg: Message) -> Responder:
-    if (r := responder_override.get()) is not None:
-        return r
-    return MessageResponder(msg)
-
-
-def get_arg(m: Message) -> str:
-    s = get_text(m)
-    if not s.startswith('/'):
-        return s.strip()
-
-    p = min(x for x in (s.find(' '), s.find('\n'), len(s)) if x > 0)
-    return s[p + 1 :].strip()
