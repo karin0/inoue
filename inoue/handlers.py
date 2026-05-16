@@ -26,7 +26,6 @@ from .log import log
 from .ctx import get_context, Sender
 from .env import USER_ID, CHAN_ID, GROUP_ID, TODO_ID
 from .text import pre_block
-from .utils import route_cmd
 from .inoue import render_receipt
 from .rg import handle_rg
 from .voice import handle_voice
@@ -88,8 +87,8 @@ async def handle_msg(msg: Message, rs: Responder | None = None, direct: bool = T
     # Reroute if the text starts with a command.
     # This allows commands to be sent as any styled text (pre/quote), rather than
     # a canonical BOT_COMMAND entity.
-    if (fut := route_cmd(rs)) is not None:
-        return await fut
+    if (handler := rs.get_route()) is not None:
+        return await handler(rs)
 
     chat = msg.chat
     if chat.type != ChatType.PRIVATE and direct and not strip_mention(rs):
@@ -150,7 +149,7 @@ async def handle_msg(msg: Message, rs: Responder | None = None, direct: bool = T
         return
 
     if text.startswith('/'):
-        return await dispatch_cmd(rs, text)
+        return await dispatch_cmd(rs)
 
     if '\n' not in text:
         return await handle_rg(rs, text)
@@ -237,7 +236,7 @@ async def handle_callback_query(query: CallbackQuery):
 
 # We use `InaccessibleMessage`, `CallbackQuery` or `ChosenInlineResult` as a
 # minimal stub to provide `Message.from_user` and give `None` for everything else,
-# which is enough for dispatching until `route_cmd()`.
+# which is enough for dispatching until `get_route()`.
 class MessageStub:
     __slots__ = ('_data',)
 

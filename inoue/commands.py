@@ -55,27 +55,22 @@ def expand_template(template: str, args_str: str) -> str:
     return REG_TEMPLATE_ARG.sub(replacer, template)
 
 
-# Provided `text` must start with '/'.
-async def dispatch_cmd(rs: Responder, text: str, depth: int = 0):
+# Provided `rs.get_text()` must start with '/'.
+def dispatch_cmd(rs: Responder, depth: int = 0) -> Awaitable:
     if depth > 10:
-        return await rs.reply_cached('Too many levels of command expansion.')
+        return rs.reply_cached('Too many levels of command expansion.')
 
-    content = text[1:].strip()
-    parts = content.split(None, 1)
-    cmd_name = parts[0].split('@')[0]
-    cmd_args = parts[1] if len(parts) > 1 else ''
-
-    if template := db.get_command(cmd_name):
-        expanded = expand_template(template, cmd_args)
+    if template := db.get_command(rs.get_cmd()):
+        expanded = expand_template(template, rs.get_arg())
         if expanded.startswith('/'):
-            return await dispatch_cmd(rs, expanded, depth + 1)
+            rs.set_text(expanded)
+            return dispatch_cmd(rs, depth + 1)
         raise RuntimeError(f'Bad command expansion: {expanded}')
 
-    if handler := commands.get(cmd_name):
-        rs.set_text(text)
-        return await handler(rs)
+    if handler := rs.get_route():
+        return handler(rs)
 
-    return await handle_cmd(rs, content)
+    return handle_cmd(rs, rs.get_text()[1:])
 
 
 @command

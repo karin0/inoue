@@ -39,7 +39,20 @@ def _unwrap[T](x: T | None) -> T:
     return x
 
 
-type Handler[**P, T] = Callable[P, Awaitable[T]]
+class Handler[**P, T](Protocol):
+    __slots__ = ()
+
+    @property
+    def __name__(self) -> str: ...
+
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Awaitable[T]: ...
+
+
+class Decorated[**P, T](Handler[P, T], Protocol):
+    __slots__ = ()
+
+    @property
+    def route(self) -> Route[P, T]: ...
 
 
 class Route[**P, T]:
@@ -128,7 +141,8 @@ class Route[**P, T]:
                 else:
                     args.append(None)
             elif isinstance(ty, tuple):
-                args.append(kwargs.get(ty[0], ty[1]))
+                ty_: DefaultType = ty
+                args.append(kwargs.get(*ty_))
             else:
                 raise TypeError(f'Bad parameter: {ty}')
 
@@ -153,11 +167,12 @@ class Route[**P, T]:
         return repr(self)
 
 
-class Decorated[**P, T](Protocol):
-    @property
-    def route(self) -> Route[P, T]: ...
-
-    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Awaitable[T]: ...
+def _wrap[**P, T](
+    func: Handler[P, T], public: bool
+) -> tuple[Route[P, T], Decorated[P, T]]:
+    route = Route(func, public=public)
+    setattr(func, 'route', route)
+    return route, cast(Decorated[P, T], func)
 
 
 type Decorator[**P, T] = Callable[[Handler[P, T]], Decorated[P, T]]
@@ -199,9 +214,9 @@ def command[**P, T](
         if name in commands:
             raise ValueError(f'command: {name} already exists')
 
-        commands[name] = route = Route(func, public)
-        setattr(func, 'route', route)
-        return cast(Decorated[P, T], func)
+        route, func = _wrap(func, public)
+        commands[name] = route
+        return func
 
     if func is None or isinstance(func, str):
         name_ = func
@@ -221,8 +236,6 @@ def callback_query[**P, T](
     public: bool = False,
 ) -> Decorator[P, T]:
     def decorator(func: Handler[P, T]) -> Decorated[P, T]:
-        route = Route(func, public)
-
         if filter is not None:
             if key is not None:
                 raise ValueError(
@@ -230,16 +243,17 @@ def callback_query[**P, T](
                 )
             if not callable(filter):
                 raise TypeError('callback_query: filter must be callable')
+            route, func = _wrap(func, public)
             _cb_filters.append((filter, route))
         elif key is not None:
             if key in _cb_handlers:
                 raise ValueError(f'callback_query: {key} already exists')
+            route, func = _wrap(func, public)
             _cb_handlers[key] = route
         else:
             raise ValueError('callback_query: either key or filter must be provided')
 
-        setattr(func, 'route', route)
-        return cast(Decorated[P, T], func)
+        return func
 
     return decorator
 
@@ -268,17 +282,15 @@ _start_handlers: dict[str, Route] = {}
 
 def start[**P, T](key: str, *, public: bool = False) -> Decorator[P, T]:
     def decorator(func: Handler[P, T]) -> Decorated[P, T]:
-        route = Route(func, public)
-
         if not key:
             raise ValueError('start: key cannot be empty')
 
         if key in _start_handlers:
             raise ValueError(f'start: {key} already exists')
 
+        route, func = _wrap(func, public)
         _start_handlers[key] = route
-        setattr(func, 'route', route)
-        return cast(Decorated[P, T], func)
+        return func
 
     return decorator
 

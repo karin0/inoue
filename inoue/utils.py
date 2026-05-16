@@ -2,7 +2,7 @@ from typing import Awaitable, Callable, Sequence, Concatenate
 
 from telegram.error import BadRequest
 
-from bot import bot, commands, truncate_text, Responder
+from bot import bot, truncate_text, Responder
 
 from .log import log
 from .env import CHAN_ID
@@ -63,27 +63,6 @@ async def try_send_text_or_not_modified[**P, R](
         raise
 
 
-def _extract_cmd_handler(text: str) -> Callable[[Responder], Awaitable] | None:
-    if text and text[0] == '/':
-        p = min(
-            x
-            for x in (text.find(' '), text.find('\n'), text.find('@'), len(text))
-            if x > 0
-        )
-        cmd = text[1:p]
-        callback = commands.get(cmd)
-        log.debug('route_cmd: %r -> %r %r %r', text, p, cmd, callback)
-        if callback is not None:
-            log.info('route_cmd: %s: dispatching to %s', cmd, callback)
-            return callback
-        log.debug('route_cmd: command not found: %s', cmd)
-
-
-def route_cmd(rs: Responder) -> Awaitable | None:
-    if (callback := _extract_cmd_handler(rs.get_text())) is not None:
-        return callback(rs)
-
-
 async def reroute_cmd(
     rs: Responder, text: str
 ) -> Sequence[tuple[str, str | None]] | None:
@@ -91,8 +70,13 @@ async def reroute_cmd(
         log.warning('reroute: already in reroute_cmd: %s', rs)
         return None
 
-    if (callback := _extract_cmd_handler(text)) is not None:
+    if (callback := rs.get_route()) is not None:
         buf = []
-        with rs.use_text(text), rs.capture(buf):
-            await callback(rs)
+        old_text = rs.get_text()
+        rs.set_text(text)
+        try:
+            with rs.capture(buf):
+                await callback(rs)
+        finally:
+            rs.set_text(old_text)
         return buf
