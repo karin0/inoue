@@ -126,7 +126,7 @@ async def handle_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         log.info('%s: guest message %s', src, shorten(post.text))
         func = lambda: handle_guest(post)
     else:
-        log.info('%s: unhandled: %s', src, update)
+        log.warning('%s: unhandled: %s', src, update)
         func = None
 
     if (item := msg or post) != effective_msg:
@@ -140,19 +140,20 @@ async def handle_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             sender,
             chat,
         )
-        func = None
-    elif is_guest and msg is None:
-        log.warning('Guest update without message: %s', update)
+        return
 
     if func is None:
-        if is_guest and msg:
-            await reply_usage(Responder.create(msg))
         return
 
     with use_context(update, msg, sender):
         try:
-            if (fut := func()) is not None:
-                await fut
+            try:
+                if (fut := func()) is not None:
+                    await fut
+            except (PermissionError, ValueError) as e:
+                log.exception('Error: %s: %s\nFrom: %s', type(e).__name__, e, src)
+                if msg is not None:
+                    await reply_usage(Responder.create(msg))
         except Exception as e:
             with notify.revocable():
                 # Can be edited to successful responses later after user edits
