@@ -1,7 +1,15 @@
 from pathlib import Path
 from dataclasses import dataclass
 from contextlib import contextmanager
-from typing import Any, ClassVar, ContextManager, Iterator, Protocol
+from typing import (
+    Any,
+    Awaitable,
+    ClassVar,
+    ContextManager,
+    Iterator,
+    Protocol,
+    cast,
+)
 
 from telegram import (
     Message,
@@ -28,10 +36,14 @@ from telegram import (
 
 from .log import log
 from .app import bot
+from .env import MEDIA_STAGING_CHAT_ID, MEDIA_STAGING_MESSAGE_THREAD_ID
 
 type Media = Audio | Document | PhotoSize | Sticker | Video | Voice
 type Content = bytes | str | Path | Media
 type InputMediaType = type[InputMedia] | None
+type CachedPayload = MediaPayload[Media | str]
+
+CACHED_MEDIA_TYPES = (Audio, Document, PhotoSize, Sticker, Video, Voice, str)
 
 
 @contextmanager
@@ -43,19 +55,21 @@ def open_content(content: Content) -> Iterator[Any]:
         yield content
 
 
-class MediaPayload(Protocol):
+class MediaPayload[T](Protocol):
     __slots__ = ()
 
     KIND: ClassVar[str]
     INPUT_MEDIA_TYPE: ClassVar[InputMediaType]
-    content: Content
+
+    @property
+    def content(self) -> T: ...
 
     async def reply(
         self,
         msg: Message,
-        caption: str | None,
-        parse_mode: str | None,
-        reply_markup: InlineKeyboardMarkup | None,
+        caption: str | None = None,
+        parse_mode: str | None = None,
+        reply_markup: InlineKeyboardMarkup | None = None,
     ) -> Message: ...
 
     async def send(
@@ -69,40 +83,64 @@ class MediaPayload(Protocol):
     ) -> Message: ...
 
     def as_input(
-        self, caption: str | None, parse_mode: str | None
+        self, caption: str | None = None, parse_mode: str | None = None
     ) -> ContextManager[InputMedia] | None: ...
 
-    def as_inline_result(
-        self,
+    @staticmethod
+    def _as_inline_result(
         file_id: str,
-        caption: str | None,
-        parse_mode: str | None,
-        reply_markup: InlineKeyboardMarkup | None,
+        caption: str | None = None,
+        parse_mode: str | None = None,
+        reply_markup: InlineKeyboardMarkup | None = None,
+        *,
+        id: str = 'noop',
+        title: str = 'noop',
     ) -> InlineQueryResult: ...
 
+    def as_inline_result(
+        self: CachedPayload,
+        caption: str | None = None,
+        parse_mode: str | None = None,
+        reply_markup: InlineKeyboardMarkup | None = None,
+        *,
+        id: str = 'noop',
+        title: str = 'noop',
+    ) -> InlineQueryResult:
+        if isinstance(content := self.content, str):
+            file_id = content
+        else:
+            file_id = content.file_id
+        return self._as_inline_result(
+            file_id, caption, parse_mode, reply_markup, id=id, title=title
+        )
 
-type MediaPayloadType = VoicePayload | AudioPayload | VideoPayload | DocumentPayload | StickerPayload | PhotoPayload
+    def _stage(self, caption: str | None = None) -> Awaitable[Message]:
+        from .ctx import get_context
 
-ALL_PAYLOAD: dict[str, type[MediaPayloadType]]
+        return self.send(
+            MEDIA_STAGING_CHAT_ID,
+            message_thread_id=MEDIA_STAGING_MESSAGE_THREAD_ID,
+            caption=caption,
+            disable_notification=get_context().sender_is_host(),
+        )
 
+    async def stage(self, caption: str | None = None) -> MediaPayload[Media] | None:
+        msg = await self._stage(caption)
+        if (r := MediaPayload.extract(msg, self.KIND)) is not None:
+            return r
+        log.error('Failed to stage media: %s', msg)
 
-def extract_media(
-    msg: Message, kind: str | None = None
-) -> tuple[MediaPayload, str] | None:
-    media: Media | tuple[PhotoSize, ...] | None
-    if kind is not None:
-        if media := getattr(msg, kind):
-            if isinstance(media, (tuple, list)):
-                media = media[-1]
-            return ALL_PAYLOAD[kind](media), media.file_id
+    @staticmethod
+    def extract(msg: Message, kind: str | None = None) -> MediaPayload[Media] | None:
+        if (r := extract_media(msg, kind)) is not None:
+            typ, media = r
+            return typ(media)
 
-    for k, typ in ALL_PAYLOAD.items():
-        if media := getattr(msg, k, None):
-            if kind is not None:
-                log.info('extract_payload: fallback: %s -> %s', kind, k)
-            if isinstance(media, (tuple, list)):
-                media = media[-1]
-            return typ(media), media.file_id
+    async def as_cached(self) -> CachedPayload | None:
+        if isinstance(self.content, CACHED_MEDIA_TYPES):
+            # XXX: A str could be a file_id or URL, but we don't use media URLs.
+            return cast(CachedPayload, self)
+        return await self.stage()
 
 
 # `InlineQueryResultCachedAudio` accepts no `title`.
@@ -115,8 +153,8 @@ def extract_media(
 
 
 @dataclass(frozen=True, slots=True, eq=False, match_args=False)
-class PhotoPayload(MediaPayload):
-    content: Content
+class PhotoPayload[T: Content](MediaPayload[T]):
+    content: T  # pyright: ignore[reportIncompatibleMethodOverride]
 
     KIND: ClassVar[str] = 'photo'
     INPUT_MEDIA_TYPE: ClassVar[InputMediaType] = InputMediaPhoto
@@ -124,9 +162,9 @@ class PhotoPayload(MediaPayload):
     async def reply(
         self,
         msg: Message,
-        caption: str | None,
-        parse_mode: str | None,
-        reply_markup: InlineKeyboardMarkup | None,
+        caption: str | None = None,
+        parse_mode: str | None = None,
+        reply_markup: InlineKeyboardMarkup | None = None,
     ) -> Message:
         with open_content(self.content) as c:
             return await msg.reply_photo(
@@ -159,22 +197,25 @@ class PhotoPayload(MediaPayload):
 
     @contextmanager
     def as_input(
-        self, caption: str | None, parse_mode: str | None
+        self, caption: str | None = None, parse_mode: str | None = None
     ) -> Iterator[InputMediaPhoto]:
         with open_content(self.content) as c:
             yield InputMediaPhoto(c, caption=caption, parse_mode=parse_mode)
 
-    def as_inline_result(
-        self,
+    @staticmethod
+    def _as_inline_result(
         file_id: str,
-        caption: str | None,
-        parse_mode: str | None,
-        reply_markup: InlineKeyboardMarkup | None,
+        caption: str | None = None,
+        parse_mode: str | None = None,
+        reply_markup: InlineKeyboardMarkup | None = None,
+        *,
+        id: str = 'noop',
+        title: str = 'noop',
     ) -> InlineQueryResultCachedPhoto:
         return InlineQueryResultCachedPhoto(
-            id='noop',
+            id=id,
             photo_file_id=file_id,
-            title='noop',
+            title=title,
             caption=caption,
             parse_mode=parse_mode,
             reply_markup=reply_markup,
@@ -182,8 +223,8 @@ class PhotoPayload(MediaPayload):
 
 
 @dataclass(frozen=True, slots=True, eq=False, match_args=False)
-class DocumentPayload(MediaPayload):
-    content: Content
+class DocumentPayload[T: Content](MediaPayload[T]):
+    content: T  # pyright: ignore[reportIncompatibleMethodOverride]
     filename: str | None = None
     disable_content_type_detection: bool | None = None
 
@@ -193,9 +234,9 @@ class DocumentPayload(MediaPayload):
     async def reply(
         self,
         msg: Message,
-        caption: str | None,
-        parse_mode: str | None,
-        reply_markup: InlineKeyboardMarkup | None,
+        caption: str | None = None,
+        parse_mode: str | None = None,
+        reply_markup: InlineKeyboardMarkup | None = None,
     ) -> Message:
         with open_content(self.content) as c:
             return await msg.reply_document(
@@ -232,7 +273,7 @@ class DocumentPayload(MediaPayload):
 
     @contextmanager
     def as_input(
-        self, caption: str | None, parse_mode: str | None
+        self, caption: str | None = None, parse_mode: str | None = None
     ) -> Iterator[InputMediaDocument]:
         with open_content(self.content) as c:
             yield InputMediaDocument(
@@ -243,16 +284,19 @@ class DocumentPayload(MediaPayload):
                 disable_content_type_detection=self.disable_content_type_detection,
             )
 
-    def as_inline_result(
-        self,
+    @staticmethod
+    def _as_inline_result(
         file_id: str,
-        caption: str | None,
-        parse_mode: str | None,
-        reply_markup: InlineKeyboardMarkup | None,
+        caption: str | None = None,
+        parse_mode: str | None = None,
+        reply_markup: InlineKeyboardMarkup | None = None,
+        *,
+        id: str = 'noop',
+        title: str = 'noop',
     ) -> InlineQueryResultCachedDocument:
         return InlineQueryResultCachedDocument(
-            id='noop',
-            title='noop',
+            id=id,
+            title=title,
             document_file_id=file_id,
             caption=caption,
             parse_mode=parse_mode,
@@ -261,8 +305,8 @@ class DocumentPayload(MediaPayload):
 
 
 @dataclass(frozen=True, slots=True, eq=False, match_args=False)
-class VideoPayload(MediaPayload):
-    content: Content
+class VideoPayload[T: Content](MediaPayload[T]):
+    content: T  # pyright: ignore[reportIncompatibleMethodOverride]
     duration: int | None = None
     filename: str | None = None
     thumbnail: bytes | None = None
@@ -274,9 +318,9 @@ class VideoPayload(MediaPayload):
     async def reply(
         self,
         msg: Message,
-        caption: str | None,
-        parse_mode: str | None,
-        reply_markup: InlineKeyboardMarkup | None,
+        caption: str | None = None,
+        parse_mode: str | None = None,
+        reply_markup: InlineKeyboardMarkup | None = None,
     ) -> Message:
         with open_content(self.content) as c:
             return await msg.reply_video(
@@ -319,7 +363,7 @@ class VideoPayload(MediaPayload):
 
     @contextmanager
     def as_input(
-        self, caption: str | None, parse_mode: str | None
+        self, caption: str | None = None, parse_mode: str | None = None
     ) -> Iterator[InputMediaVideo]:
         with open_content(self.content) as c:
             yield InputMediaVideo(
@@ -332,16 +376,19 @@ class VideoPayload(MediaPayload):
                 supports_streaming=True,
             )
 
-    def as_inline_result(
-        self,
+    @staticmethod
+    def _as_inline_result(
         file_id: str,
-        caption: str | None,
-        parse_mode: str | None,
-        reply_markup: InlineKeyboardMarkup | None,
+        caption: str | None = None,
+        parse_mode: str | None = None,
+        reply_markup: InlineKeyboardMarkup | None = None,
+        *,
+        id: str = 'noop',
+        title: str = 'noop',
     ) -> InlineQueryResultCachedVideo:
         return InlineQueryResultCachedVideo(
-            id='noop',
-            title='noop',
+            id=id,
+            title=title,
             video_file_id=file_id,
             caption=caption,
             parse_mode=parse_mode,
@@ -350,8 +397,8 @@ class VideoPayload(MediaPayload):
 
 
 @dataclass(frozen=True, slots=True, eq=False, match_args=False)
-class AudioPayload(MediaPayload):
-    content: Content
+class AudioPayload[T: Content](MediaPayload[T]):
+    content: T  # pyright: ignore[reportIncompatibleMethodOverride]
     duration: int | None = None
     filename: str | None = None
     title: str | None = None
@@ -364,9 +411,9 @@ class AudioPayload(MediaPayload):
     async def reply(
         self,
         msg: Message,
-        caption: str | None,
-        parse_mode: str | None,
-        reply_markup: InlineKeyboardMarkup | None,
+        caption: str | None = None,
+        parse_mode: str | None = None,
+        reply_markup: InlineKeyboardMarkup | None = None,
     ) -> Message:
         with open_content(self.content) as c:
             return await msg.reply_audio(
@@ -409,7 +456,7 @@ class AudioPayload(MediaPayload):
 
     @contextmanager
     def as_input(
-        self, caption: str | None, parse_mode: str | None
+        self, caption: str | None = None, parse_mode: str | None = None
     ) -> Iterator[InputMediaAudio]:
         with open_content(self.content) as c:
             yield InputMediaAudio(
@@ -422,15 +469,18 @@ class AudioPayload(MediaPayload):
                 parse_mode=parse_mode,
             )
 
-    def as_inline_result(
-        self,
+    @staticmethod
+    def _as_inline_result(
         file_id: str,
-        caption: str | None,
-        parse_mode: str | None,
-        reply_markup: InlineKeyboardMarkup | None,
+        caption: str | None = None,
+        parse_mode: str | None = None,
+        reply_markup: InlineKeyboardMarkup | None = None,
+        *,
+        id: str = 'noop',
+        title: str = 'noop',
     ) -> InlineQueryResultCachedAudio:
         return InlineQueryResultCachedAudio(
-            id='noop',
+            id=id,
             audio_file_id=file_id,
             caption=caption,
             parse_mode=parse_mode,
@@ -439,8 +489,8 @@ class AudioPayload(MediaPayload):
 
 
 @dataclass(frozen=True, slots=True, eq=False, match_args=False)
-class VoicePayload(MediaPayload):
-    content: Content
+class VoicePayload[T: Content](MediaPayload[T]):
+    content: T  # pyright: ignore[reportIncompatibleMethodOverride]
     duration: int | None = None
 
     KIND: ClassVar[str] = 'voice'
@@ -449,9 +499,9 @@ class VoicePayload(MediaPayload):
     async def reply(
         self,
         msg: Message,
-        caption: str | None,
-        parse_mode: str | None,
-        reply_markup: InlineKeyboardMarkup | None,
+        caption: str | None = None,
+        parse_mode: str | None = None,
+        reply_markup: InlineKeyboardMarkup | None = None,
     ) -> Message:
         with open_content(self.content) as c:
             return await msg.reply_voice(
@@ -484,19 +534,24 @@ class VoicePayload(MediaPayload):
                 disable_notification=disable_notification,
             )
 
-    def as_input(self, caption: str | None, parse_mode: str | None) -> None:
+    def as_input(
+        self, caption: str | None = None, parse_mode: str | None = None
+    ) -> None:
         return None
 
-    def as_inline_result(
-        self,
+    @staticmethod
+    def _as_inline_result(
         file_id: str,
-        caption: str | None,
-        parse_mode: str | None,
-        reply_markup: InlineKeyboardMarkup | None,
+        caption: str | None = None,
+        parse_mode: str | None = None,
+        reply_markup: InlineKeyboardMarkup | None = None,
+        *,
+        id: str = 'noop',
+        title: str = 'noop',
     ) -> InlineQueryResultCachedVoice:
         return InlineQueryResultCachedVoice(
-            id='noop',
-            title='noop',
+            id=id,
+            title=title,
             voice_file_id=file_id,
             caption=caption,
             parse_mode=parse_mode,
@@ -505,8 +560,8 @@ class VoicePayload(MediaPayload):
 
 
 @dataclass(frozen=True, slots=True, eq=False, match_args=False)
-class StickerPayload(MediaPayload):
-    content: Content
+class StickerPayload[T: Content](MediaPayload[T]):
+    content: T  # pyright: ignore[reportIncompatibleMethodOverride]
 
     KIND: ClassVar[str] = 'sticker'
     INPUT_MEDIA_TYPE: ClassVar[InputMediaType] = None
@@ -514,9 +569,9 @@ class StickerPayload(MediaPayload):
     async def reply(
         self,
         msg: Message,
-        caption: str | None,
-        parse_mode: str | None,
-        reply_markup: InlineKeyboardMarkup | None,
+        caption: str | None = None,
+        parse_mode: str | None = None,
+        reply_markup: InlineKeyboardMarkup | None = None,
     ) -> Message:
         with open_content(self.content) as c:
             return await msg.reply_sticker(
@@ -543,26 +598,31 @@ class StickerPayload(MediaPayload):
                 disable_notification=disable_notification,
             )
 
-    def as_input(self, caption: str | None, parse_mode: str | None) -> None:
+    def as_input(
+        self, caption: str | None = None, parse_mode: str | None = None
+    ) -> None:
         return None
 
-    def as_inline_result(
-        self,
+    @staticmethod
+    def _as_inline_result(
         file_id: str,
-        caption: str | None,
-        parse_mode: str | None,
-        reply_markup: InlineKeyboardMarkup | None,
+        caption: str | None = None,
+        parse_mode: str | None = None,
+        reply_markup: InlineKeyboardMarkup | None = None,
+        *,
+        id: str = 'noop',
+        title: str = 'noop',
     ) -> InlineQueryResultCachedSticker:
         if caption:
             log.warning('StickerPayload: ignoring caption %r', caption)
         return InlineQueryResultCachedSticker(
-            id='noop',
-            sticker_file_id=file_id,
-            reply_markup=reply_markup,
+            id=id, sticker_file_id=file_id, reply_markup=reply_markup
         )
 
 
-ALL_PAYLOAD = {
+type MediaPayloadType = VoicePayload | AudioPayload | VideoPayload | DocumentPayload | StickerPayload | PhotoPayload
+
+ALL_PAYLOAD: dict[str, type[MediaPayloadType]] = {
     typ.KIND: typ
     for typ in (
         PhotoPayload,
@@ -573,3 +633,22 @@ ALL_PAYLOAD = {
         StickerPayload,
     )
 }
+
+
+def extract_media(
+    msg: Message, kind: str | None = None
+) -> tuple[type[MediaPayloadType], Media] | None:
+    media: Media | tuple[PhotoSize, ...] | None
+    if kind is not None:
+        if media := getattr(msg, kind):
+            if isinstance(media, (tuple, list)):
+                media = media[-1]
+            return ALL_PAYLOAD[kind], media
+
+    for k, typ in ALL_PAYLOAD.items():
+        if media := getattr(msg, k, None):
+            if kind is not None:
+                log.info('extract_payload: fallback: %s -> %s', kind, k)
+            if isinstance(media, (tuple, list)):
+                media = media[-1]
+            return typ, media

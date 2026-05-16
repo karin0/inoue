@@ -14,17 +14,10 @@ from telegram import (
     Audio,
     Document,
     Message,
-    InlineQueryResultCachedAudio,
-    InlineQueryResultCachedVideo,
-    InlineQueryResultCachedDocument,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InlineQuery,
     InlineQueryResultArticle,
-    InlineQueryResultCachedVoice,
-    InputMediaAudio,
-    InputMediaVideo,
-    InputMediaDocument,
     InputTextMessageContent,
     SwitchInlineQueryChosenChat,
 )
@@ -38,12 +31,13 @@ from util import (
     create_task,
     get_context,
     MediaPayload,
+    CachedPayload,
     AudioPayload,
     VideoPayload,
+    VoicePayload,
+    DocumentPayload,
     Responder,
     EditHandle,
-    MEDIA_STAGING_CHAT_ID,
-    MEDIA_STAGING_MESSAGE_THREAD_ID,
 )
 from render_context import LRUDict
 from ffmpeg import (
@@ -140,14 +134,16 @@ THUMB_MAX_SIDE = 320
 THUMB_QUALITY_STEPS = (90, 80, 70, 60, 50, 40, 30)
 THUMB_SCALE_STEPS = (1.0, 0.85, 0.7, 0.55, 0.4)
 
-
 # max_workers=1 to serialize yt-dlp invocations.
 _executor = ThreadPoolExecutor(max_workers=1)
 _instances: list['YoutubeDL | None'] = [None, None]
 
 # For passing inline query results.
-_media_cache: LRUDict[str, Video | Audio | Document] = LRUDict()
-_voice_cache: LRUDict[str, tuple[str, str]] = LRUDict()
+_media_cache: LRUDict[str, CachedPayload] = LRUDict()
+_voice_cache: LRUDict[str, tuple[CachedPayload, str]] = LRUDict()
+
+type Media = Video | Audio | Document
+MEDIA_TYPES = (Video, Audio, Document)
 
 
 def _prepare_thumbnail(data: bytes) -> bytes | None:
@@ -329,19 +325,6 @@ class Output:
     ) -> Awaitable[EditHandle | None]:
         return rs.reply(caption, media=self._payload(audio_only))
 
-    def stage(
-        self,
-        *,
-        audio_only: bool = False,
-        caption: str | None = None,
-    ) -> Awaitable[Message]:
-        return self._payload(audio_only).send(
-            MEDIA_STAGING_CHAT_ID,
-            caption=caption,
-            message_thread_id=MEDIA_STAGING_MESSAGE_THREAD_ID,
-            disable_notification=True,
-        )
-
     async def finish_video_note(self, msg: Message) -> Message:
         dst = await encode_video_note(self.path, self.duration)
 
@@ -471,9 +454,22 @@ def handle_ytn(rs: Responder, arg: MessageArg):
     return _handle_yt(rs, arg, '/ytn', ChatAction.RECORD_VIDEO_NOTE, video_note=True)
 
 
-def make_markup(text: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup.from_button(
-        InlineKeyboardButton(text, callback_data='noop')
+LABEL = {
+    'video': '📹 Video',
+    'audio': '🎵 Audio',
+    'voice': '🎤 Voice',
+    'document': '📄 File',
+}
+
+
+def _article(kind: str, url: str, text: str) -> InlineQueryResultArticle:
+    return InlineQueryResultArticle(
+        id='yt_' + kind,
+        title=LABEL[kind],
+        input_message_content=InputTextMessageContent(url),
+        reply_markup=InlineKeyboardMarkup.from_button(
+            InlineKeyboardButton(text, callback_data='noop')
+        ),
     )
 
 
@@ -482,86 +478,40 @@ def handle_yt_inline_query(query: InlineQuery, parsed: tuple[str, str]):
     log.info('handle_yt_inline_query: %s / %s', url, arg)
     caption = None if 'q' in arg else url
 
-    if 'voice' in arg and (voice := _voice_cache.get(url)):
-        # `voice://` is set from `_finish_voice`.
-        file_id, title = voice
-        result = InlineQueryResultCachedVoice(
-            id='noop', title=title, voice_file_id=file_id, caption=caption
-        )
-        return query.answer((result,))
-
-    media = _media_cache.get(url)
     results = []
-    cached_time = None
+    cached_time = 0
 
-    if isinstance(media, Video):
+    if (voice := _voice_cache.get(url)) is not None:
+        payload, title = voice
         results.append(
-            InlineQueryResultCachedVideo(
-                id='noop_1',
-                video_file_id=media.file_id,
-                title='📹 Video: ' + (media.file_name or url),
-                caption=caption,
+            payload.as_inline_result(
+                caption, id='noop_voice', title='🎤 Voice: ' + title
             )
         )
-    elif isinstance(media, Document):
-        results.append(
-            InlineQueryResultCachedDocument(
-                id='noop_2',
-                document_file_id=media.file_id,
-                title='📄 File: ' + (media.file_name or url),
-                caption=caption,
-            )
-        )
-    else:
-        cached_time = 0
-        results.append(
-            InlineQueryResultArticle(
-                id='yt_video',
-                title='📹 Video',
-                input_message_content=InputTextMessageContent(url),
-                reply_markup=make_markup('📹 Downloading video...'),
-            )
-        )
+        if 'voice' in arg:
+            return query.answer(results)
+        cached_time = None
 
-    if isinstance(media, Audio):
-        results.append(
-            InlineQueryResultCachedAudio(
-                id='noop_3',
-                audio_file_id=media.file_id,
-                caption=caption,
-            )
-        )
-    else:
-        cached_time = 0
-        results.append(
-            InlineQueryResultArticle(
-                id='yt_audio',
-                title='🎵 Audio',
-                input_message_content=InputTextMessageContent(url),
-                reply_markup=make_markup('🎵 Downloading audio...'),
-            )
-        )
+    if (payload := _media_cache.get(url)) is not None:
+        hit_ty = type(payload)
+        if hit_ty not in (VideoPayload, AudioPayload, DocumentPayload):
+            raise RuntimeError(f'Bad media in cache: {payload}')
 
-    if voice := _voice_cache.get(url):
-        file_id, title = voice
-        results.append(
-            InlineQueryResultCachedVoice(
-                id='noop_4',
-                title='🎤 Voice:' + title,
-                voice_file_id=file_id,
-                caption=caption,
-            )
-        )
+        file_name = cast(Media, payload.content).file_name
+        title = f'{LABEL[hit_ty.KIND]}: {file_name or url}'
+        results.append(payload.as_inline_result(caption, title=title))
+        cached_time = None
     else:
-        cached_time = 0
-        results.append(
-            InlineQueryResultArticle(
-                id='yt_voice',
-                title='🎤 Voice',
-                input_message_content=InputTextMessageContent(url),
-                reply_markup=make_markup('🎤 Encoding voice...'),
-            )
-        )
+        hit_ty = None
+
+    if hit_ty is not VideoPayload:
+        results.append(_article('video', url, '📹 Downloading video...'))
+
+    if hit_ty is not AudioPayload:
+        results.append(_article('audio', url, '🎵 Downloading audio...'))
+
+    if voice is None:
+        results.append(_article('voice', url, '🎤 Encoding voice...'))
 
     return query.answer(results, cache_time=cached_time)
 
@@ -574,20 +524,11 @@ async def _finish_voice(
     duration, data, bitrate = result
     duration = media_duration(duration)
 
-    msg = await bot.send_voice(
-        MEDIA_STAGING_CHAT_ID,
-        data,
-        message_thread_id=MEDIA_STAGING_MESSAGE_THREAD_ID,
-        duration=duration,
-        disable_notification=True,
-    )
-
-    if voice := msg.voice:
-        _voice_cache[url] = (voice.file_id, output.get_name())
-        log.info('Cached voice for %s: %s', url, voice)
-    else:
-        log.error('Staging returned no voice: %s', msg)
+    if (cached := await VoicePayload(data, duration).stage()) is None:
         return None
+
+    _voice_cache[url] = (cached, output.get_name())
+    log.info('Cached voice for %s: %s', url, cached)
 
     # Bypass cache for the previous inline query result. Also detected above in
     # `handle_yt_inline_query()`.
@@ -654,31 +595,23 @@ async def handle_yt_chosen_result(
 
     # Upload to staging chat to get file_id, then edit inline message.
     stage_caption = f'{url}\n{get_context().sender} {result_id} {arg}'.strip()
-    staging = await output.stage(audio_only=audio_only, caption=stage_caption)
+    raw_payload = output._payload(audio_only=audio_only)
 
-    if media := staging.audio:
-        _media_cache[url] = media
-        input_media = InputMediaAudio(media=media, caption=caption)
-    elif media := staging.video:
-        _media_cache[url] = media
-        input_media = InputMediaVideo(
-            media=media, caption=caption, supports_streaming=True
-        )
-    elif media := staging.document:
-        _media_cache[url] = media
-        input_media = InputMediaDocument(media=media, caption=caption)
-    else:
-        log.error('Staging returned no media: %s', staging)
-        input_media = None
+    if (payload := await raw_payload.stage(stage_caption)) is not None:
+        if (input_media := payload.as_input(caption)) is not None:
+            with input_media as im:
+                if isinstance(payload.content, MEDIA_TYPES):
+                    _media_cache[url] = payload
+                else:
+                    log.error(f'Bad staged media: {payload}')
+                log.info('Media ready: %s', payload)
+                return await bot.edit_message_media(
+                    im, inline_message_id=inline_message_id, reply_markup=markup
+                )
+        log.error('No input_media: %s', payload)
 
-    if input_media:
-        log.info('Media ready: %s', media)
-        await bot.edit_message_media(
-            input_media, inline_message_id=inline_message_id, reply_markup=markup
-        )
-    else:
-        await bot.edit_message_caption(
-            inline_message_id=inline_message_id,
-            caption='Unknown error for ' + url,
-            reply_markup=markup,
-        )
+    await bot.edit_message_caption(
+        inline_message_id=inline_message_id,
+        caption='Failed: ' + url,
+        reply_markup=markup,
+    )

@@ -366,7 +366,7 @@ class MessageResponder(Responder):
                 if 'too long' in str(e):
                     if media is not None:
                         log.info('Caption too long, fallback to text: %s', e)
-                        input_media = media.as_input(None, None)
+                        input_media = media.as_input()
                         assert input_media
                         with input_media as im:
                             resp = await bot.edit_message_media(

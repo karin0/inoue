@@ -12,7 +12,7 @@ from telegram.error import BadRequest
 
 from .log import log
 from .app import bot
-from .payload import MediaPayload, extract_media
+from .payload import MediaPayload, CachedPayload
 from .responder import Responder, EditHandle, is_captured
 from .text import escape, html_escape, shorten, truncate_text
 from .env import MEDIA_STAGING_CHAT_ID, MEDIA_STAGING_MESSAGE_THREAD_ID
@@ -51,7 +51,7 @@ class InlineResponder(Responder):
         self._reply_markup: InlineKeyboardMarkup | None = None
         self._disable_web_page_preview: bool | None = None
         self._cached_idx: int | None = None
-        self._media: tuple[MediaPayload, str] | None = None
+        self._media: CachedPayload | None = None
         self._deferred = False
         self._dirty = False
 
@@ -99,18 +99,8 @@ class InlineResponder(Responder):
             )
             return
 
-        content = payload.content
-        if isinstance(content, str):
-            # XXX: This could be a file_id or URL, but we don't use media URLs.
-            media = (payload, content)
-        else:
-            staged = await payload.send(
-                MEDIA_STAGING_CHAT_ID,
-                message_thread_id=MEDIA_STAGING_MESSAGE_THREAD_ID,
-            )
-            media = extract_media(staged, payload.KIND)
-            if media is None:
-                log.warning('InlineResponder: media unsent: %r', payload)
+        if (media := await payload.as_cached()) is None:
+            log.warning('InlineResponder: media unsent: %r', payload)
 
         log.debug('InlineResponder: staged media: %s', media)
         self._media = media
@@ -204,7 +194,7 @@ class InlineResponder(Responder):
             log.info('InlineResponder: editing inline message: %s', mid)
             if (
                 self._media is not None
-                and (input_media := self._media[0].as_input(text or None, parse_mode))
+                and (input_media := self._media.as_input(text or None, parse_mode))
                 is not None
             ):
                 with input_media as im:
@@ -221,9 +211,8 @@ class InlineResponder(Responder):
                 )
         else:
             if self._media is not None:
-                payload, file_id = self._media
-                result = payload.as_inline_result(
-                    file_id, text or None, parse_mode, self._reply_markup
+                result = self._media.as_inline_result(
+                    text or None, parse_mode, self._reply_markup
                 )
             else:
                 result = InlineQueryResultArticle(
@@ -251,8 +240,8 @@ class InlineResponder(Responder):
             disable_notification=True,
         )
         text = staged.text or staged.caption or None
-        if (media := extract_media(staged)) is not None:
-            return await self.reply(text, media=media[0])
+        if (cached := MediaPayload.extract(staged)) is not None:
+            return await self.reply(text, media=cached)
         # XXX: This drops the original entities.
         return await self.reply(text)
 

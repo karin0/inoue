@@ -9,6 +9,7 @@ from .responder import Responder, EditHandle
 from .inline_responder import InlineResponder
 from .payload import (
     MediaPayload,
+    CachedPayload,
     AudioPayload,
     DocumentPayload,
     PhotoPayload,
