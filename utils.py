@@ -1,19 +1,9 @@
 from typing import Awaitable, Callable, Sequence, Concatenate
 
-from telegram import Message
 from telegram.error import BadRequest
 
 from dispatch import get_command_handler
-
-from util import (
-    log,
-    bot,
-    reroute_capture,
-    truncate_text,
-    use_text_override,
-    Responder,
-    CHAN_ID,
-)
+from util import log, bot, reroute_capture, truncate_text, Responder, CHAN_ID
 
 
 def get_msg_url(msg_id, chat_id=None) -> str:
@@ -104,16 +94,16 @@ def reroute_cmd(
         return None
 
     if (callback := _extract_cmd_handler(text)) is not None:
-        with use_text_override(text):
-            return _reroute_cmd(rs.get_message(), text, callback(rs))
+        with rs.use_text(text):
+            return _reroute_cmd(rs, text, callback(rs))
 
 
 async def _reroute_cmd(
-    msg: Message, text: str, coro: Awaitable
+    rs: Responder, text: str, coro: Awaitable
 ) -> Sequence[tuple[str, str | None]]:
-    with use_text_override(text):
+    with rs.use_text(text):
         buf = []
-        token = reroute_capture.set((msg, buf))
+        token = reroute_capture.set((rs.get_message(), buf))
         try:
             await coro
         finally:

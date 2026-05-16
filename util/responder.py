@@ -10,14 +10,19 @@ from telegram.error import BadRequest
 from .log import log
 from .app import bot, create_task
 from .env import encode_id
-from .ctx import get_text
 from .payload import MediaPayload, payload_has_input
 
 from db import db
 
+# A responder is a wrapped `Message` that enforces an edit-after-reply pattern.
+# It takes care of default reply parameters, media payload, inline message adaptation,
+# text capturing, caching for in-place editing, and so on.
+
 
 class Responder(Protocol):
     __slots__ = ()
+
+    _text: str | None
 
     @overload
     def reply(
@@ -95,7 +100,22 @@ class Responder(Protocol):
     def get_message(self) -> Message: ...
 
     def get_text(self) -> str:
-        return get_text(self.get_message())
+        if self._text is not None:
+            return self._text
+        msg = self.get_message()
+        return msg.text or msg.caption or ''
+
+    def set_text(self, text: str) -> None:
+        self._text = text
+
+    @contextmanager
+    def use_text(self, text: str):
+        old = self._text
+        self._text = text
+        try:
+            yield
+        finally:
+            self._text = old
 
     def get_arg(self) -> str:
         s = self.get_text()
@@ -219,10 +239,11 @@ def is_captured(msg: Message, text: str | None, parse_mode: str | None) -> bool:
 
 
 class MessageResponder(Responder):
-    __slots__ = ('msg',)
+    __slots__ = ('msg', '_text')
 
     def __init__(self, msg: Message):
         self.msg = msg
+        self._text = None
 
     @overload
     async def reply(

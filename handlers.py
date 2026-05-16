@@ -17,11 +17,9 @@ from util import (
     bot,
     pre_block,
     get_context,
-    use_text_override,
     Responder,
     InlineResponder,
     Sender,
-    Context,
     VoicePayload,
     USER_ID,
     CHAN_ID,
@@ -95,20 +93,13 @@ async def handle_msg(msg: Message, rs: Responder | None = None, direct: bool = T
         return await fut
 
     chat = msg.chat
-    if chat.type != ChatType.PRIVATE and direct:
+    if chat.type != ChatType.PRIVATE and direct and not strip_mention(rs):
         # For a message update in an ordinary group, we only handle it if a command
         # is matched or we are mentioned, or we will get flooded when we are added
         # as admins.
-        if (text := strip_mention(msg)) is None:
-            log.debug('Not mentioned: %s', msg)
-            return
-        with use_text_override(text):
-            return await _handle_msg(msg, rs, context)
+        log.debug('Not mentioned: %s', msg)
+        return
 
-    return await _handle_msg(msg, rs, context)
-
-
-async def _handle_msg(msg: Message, rs: Responder, context: Context):
     if (fut := try_handle_voice(msg, rs)) is not None:
         return await fut
 
@@ -116,8 +107,8 @@ async def _handle_msg(msg: Message, rs: Responder, context: Context):
         return
 
     # ID Bot
-    if msg.forward_origin:
-        return await rs.reply_cached(*pre_block(str(msg.forward_origin)))
+    if origin is not None:
+        return await rs.reply_cached(*pre_block(str(origin)))
 
     if not (text := rs.get_text().strip()):
         if (
@@ -140,8 +131,8 @@ async def _handle_msg(msg: Message, rs: Responder, context: Context):
     # Administration is only allowed for the host in their own private chat.
     if not (
         context.sender_is_host()
-        and msg.chat_id == USER_ID
-        and msg.chat.type == ChatType.PRIVATE
+        and chat.id == USER_ID
+        and chat.type == ChatType.PRIVATE
     ):
         log.error('handle_msg: unauthorized update: %s', context)
         return
@@ -186,14 +177,15 @@ async def handle_chosen_inline(result: ChosenInlineResult):
         log.error('Bad chosen inline result: %s', result)
 
 
-def strip_mention(msg: Message) -> str | None:
+def strip_mention(rs: Responder) -> bool:
     # ruff: noqa: E741
+    msg = rs.get_message()
     if msg.text:
         text, entities = msg.text, msg.entities
     elif msg.caption:
         text, entities = msg.caption, msg.caption_entities
     else:
-        return None
+        return False
 
     text = text.encode('utf-16-le')
     for ent in entities:
@@ -206,17 +198,18 @@ def strip_mention(msg: Message) -> str | None:
                 right = text[r:].decode('utf-16-le').lstrip()
                 text = (left + ' ' + right).strip()
                 log.info('strip_mention: extracted text: %s', text)
-                return text
+                rs.set_text(text)
+                return True
+    return False
 
 
-async def handle_guest(msg: Message):
+def handle_guest(msg: Message):
     log.debug('handle_guest: %s', msg)
-    if (text := strip_mention(msg)) is None:
-        raise ValueError(f'missing MENTION entity in guest message: {msg}')
+    rs = InlineResponder(msg, answer_guest_query)
+    if strip_mention(rs):
+        return handle_msg(msg, rs, direct=False)
 
-    with use_text_override(text):
-        rs = InlineResponder(msg, answer_guest_query)
-        await handle_msg(msg, rs, direct=False)
+    raise ValueError(f'missing MENTION entity in guest message: {msg}')
 
 
 async def handle_callback_query(query: CallbackQuery):
@@ -268,6 +261,6 @@ async def handle_relay_callback(
 ):
     text = data[data.index('_') + 1 :]
     log.debug('relay: %r %s', msg, text)
-    with use_text_override(text):
-        await handle_msg(msg, rs, direct=False)
+    rs.set_text(text)
+    await handle_msg(msg, rs, direct=False)
     await query.answer()

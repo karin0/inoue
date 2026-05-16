@@ -38,24 +38,18 @@ class Context(NamedTuple):
         return False
 
 
-current_context: ContextVar[Context | None] = ContextVar(
-    'current_context', default=None
-)
+current_context: ContextVar[Context] = ContextVar('current_context')
 
-
-def get_context() -> Context:
-    if (ctx := current_context.get()) is not None:
-        return ctx
-    raise RuntimeError('No context')
+get_context = current_context.get
 
 
 def get_ctx_sender() -> Sender | None:
-    if (ctx := current_context.get()) is not None:
+    if (ctx := get_context(None)) is not None:
         return ctx.sender
 
 
 def get_ctx_msg() -> Message | None:
-    if (ctx := current_context.get()) is not None:
+    if (ctx := get_context(None)) is not None:
         return ctx.msg
 
 
@@ -75,21 +69,3 @@ def use_context(
         yield
     finally:
         current_context.reset(token)
-
-
-text_override: ContextVar[str | None] = ContextVar('text_override', default=None)
-
-
-@contextmanager
-def use_text_override(text: str):
-    token = text_override.set(text)
-    try:
-        yield
-    finally:
-        text_override.reset(token)
-
-
-def get_text(m: Message) -> str:
-    if (s := text_override.get()) is not None:
-        return s
-    return m.text or m.caption or ''

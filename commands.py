@@ -16,7 +16,6 @@ from util import (
     escape,
     pre_block,
     pre_block_raw,
-    use_text_override,
     get_context,
     Responder,
     ME,
@@ -78,8 +77,8 @@ async def dispatch_cmd(rs: Responder, text: str, depth: int = 0):
         raise RuntimeError(f'Bad command expansion: {expanded}')
 
     if handler := get_command_handler(cmd_name):
-        with use_text_override(text):
-            return await handler(rs)
+        rs.set_text(text)
+        return await handler(rs)
 
     return await handle_cmd(rs, content)
 

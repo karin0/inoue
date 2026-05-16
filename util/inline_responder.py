@@ -38,6 +38,7 @@ class InlineResponder(Responder):
         '_media',
         '_deferred',
         '_dirty',
+        '_text',
     )
 
     def __init__(
@@ -54,6 +55,7 @@ class InlineResponder(Responder):
         self._media: CachedPayload | None = None
         self._deferred = False
         self._dirty = False
+        self._text = None
 
     def __repr__(self) -> str:
         return f'InlineResponder({self._msg!r}, {self._inline_message_id!r})'
