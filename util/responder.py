@@ -10,7 +10,7 @@ from telegram.error import BadRequest
 from .log import log
 from .app import bot, create_task
 from .env import CHAN_ID, GROUP_ID, USER_ID
-from .payload import MediaPayload
+from .payload import MediaPayload, payload_has_input
 
 from db import db
 
@@ -316,7 +316,7 @@ class MessageResponder(Responder):
         if not (val := db.get(key)):
             return await _do_reply()
 
-        if media is not None and media.INPUT_MEDIA_TYPE is None:
+        if media is not None and not payload_has_input(media):
             db.discard(key)
             return await _do_reply()
 
@@ -332,9 +332,7 @@ class MessageResponder(Responder):
         try:
             try:
                 if media is not None:
-                    input_media = media.as_input(text, parse_mode)
-                    assert input_media
-                    with input_media as im:
+                    with media.as_input(text, parse_mode) as im:
                         resp = await bot.edit_message_media(
                             im,
                             m.chat.id,
@@ -366,9 +364,7 @@ class MessageResponder(Responder):
                 if 'too long' in str(e):
                     if media is not None:
                         log.info('Caption too long, fallback to text: %s', e)
-                        input_media = media.as_input()
-                        assert input_media
-                        with input_media as im:
+                        with media.as_input(text, parse_mode) as im:
                             resp = await bot.edit_message_media(
                                 im, m.chat.id, resp_msg_id
                             )

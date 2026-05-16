@@ -598,16 +598,15 @@ async def handle_yt_chosen_result(
     raw_payload = output._payload(audio_only=audio_only)
 
     if (payload := await raw_payload.stage(stage_caption)) is not None:
-        if (input_media := payload.as_input(caption)) is not None:
-            with input_media as im:
-                if isinstance(payload.content, MEDIA_TYPES):
-                    _media_cache[url] = payload
-                else:
-                    log.error(f'Bad staged media: {payload}')
-                log.info('Media ready: %s', payload)
-                return await bot.edit_message_media(
-                    im, inline_message_id=inline_message_id, reply_markup=markup
-                )
+        if (input_media := payload.as_input_now(caption)) is not None:
+            if isinstance(payload.content, MEDIA_TYPES):
+                _media_cache[url] = payload
+            else:
+                log.error(f'Bad staged media: {payload}')
+            log.info('Media ready: %s', payload)
+            return await bot.edit_message_media(
+                input_media, inline_message_id=inline_message_id, reply_markup=markup
+            )
         log.error('No input_media: %s', payload)
 
     await bot.edit_message_caption(

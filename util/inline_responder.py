@@ -12,7 +12,7 @@ from telegram.error import BadRequest
 
 from .log import log
 from .app import bot
-from .payload import MediaPayload, CachedPayload
+from .payload import MediaPayload, CachedPayload, payload_has_input
 from .responder import Responder, EditHandle, is_captured
 from .text import escape, html_escape, shorten, truncate_text
 from .env import MEDIA_STAGING_CHAT_ID, MEDIA_STAGING_MESSAGE_THREAD_ID
@@ -88,10 +88,7 @@ class InlineResponder(Responder):
                 await self._emit()
 
     async def _stage_media(self, payload: MediaPayload) -> None:
-        if (
-            isinstance(self._inline_message_id, str)
-            and payload.INPUT_MEDIA_TYPE is None
-        ):
+        if isinstance(self._inline_message_id, str) and not payload_has_input(payload):
             log.warning(
                 'InlineResponder: inline message sent but InputMedia is unavailable, '
                 'consider using `InlineResponder._defer()`: %s',
@@ -194,13 +191,12 @@ class InlineResponder(Responder):
             log.info('InlineResponder: editing inline message: %s', mid)
             if (
                 self._media is not None
-                and (input_media := self._media.as_input(text or None, parse_mode))
+                and (input_media := self._media.as_input_now(text or None, parse_mode))
                 is not None
             ):
-                with input_media as im:
-                    await bot.edit_message_media(
-                        im, reply_markup=self._reply_markup, inline_message_id=mid
-                    )
+                await bot.edit_message_media(
+                    input_media, reply_markup=self._reply_markup, inline_message_id=mid
+                )
             else:
                 await bot.edit_message_text(
                     text,
