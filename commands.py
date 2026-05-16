@@ -11,30 +11,26 @@ from telegram import (
     BotCommandScopeChatAdministrators,
 )
 
+from log import log
 from util import (
-    log,
     escape,
     pre_block,
     pre_block_raw,
     get_context,
     Responder,
-    ME,
-    CHAN_ID,
-    TRUSTED_IDS,
-)
-from db import db
-from motto import greeting, hitokoto
-from run import handle_cmd
-from dispatch import (
     MessageArg,
     command,
     iter_commands,
     get_command_handler,
     dispatch_start,
 )
+from env import ME, CHAN_ID, TRUSTED_IDS
+from db import db
+from motto import greeting, hitokoto
+from run import handle_cmd
 
 try:
-    from env import reply_usage
+    from conf import reply_usage
 except ImportError as e:
     log.info('Using default reply_usage: %s', e)
 

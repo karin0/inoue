@@ -13,7 +13,6 @@ from telegram.constants import ChatType, MessageEntityType
 
 from future import answer_guest_query
 from util import (
-    log,
     bot,
     pre_block,
     get_context,
@@ -21,11 +20,12 @@ from util import (
     InlineResponder,
     Sender,
     VoicePayload,
-    USER_ID,
-    CHAN_ID,
-    GROUP_ID,
-    TODO_ID,
+    callback_query,
+    dispatch_callback,
+    CallbackData,
 )
+from log import log
+from env import USER_ID, CHAN_ID, GROUP_ID, TODO_ID
 from utils import route_cmd
 from inoue import render_receipt
 from rg import handle_rg
@@ -35,7 +35,6 @@ from todo import handle_todo_msg
 from ytdlp import extract_url, handle_yt_inline_query, handle_yt_chosen_result
 from render import handle_render_doc, handle_render_group, handle_render_inline_query
 from commands import dispatch_cmd, reply_usage
-from dispatch import callback_query, dispatch_callback, CallbackData
 
 '''
 Responders are only present when handling the following events, and shall not be

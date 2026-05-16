@@ -3,7 +3,7 @@ from collections import UserDict, OrderedDict
 from collections.abc import ItemsView, MutableMapping
 
 from db import db
-from util import log
+from log import log
 from render_core import Context, Value, Box, is_value_type
 
 LRU_CAPACITY = 128

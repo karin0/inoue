@@ -23,10 +23,10 @@ from telegram import (
 )
 from telegram.constants import ChatAction
 
-from dispatch import MessageArg, command
+from log import log, is_debug
 from util import (
-    log,
-    is_debug,
+    MessageArg,
+    command,
     create_task,
     get_context,
     MediaPayload,

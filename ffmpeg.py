@@ -3,7 +3,8 @@ import sys
 import asyncio
 from typing import Literal, Callable, overload
 
-from util import escape, log, is_debug
+from log import log, is_debug
+from util import escape
 
 
 @overload

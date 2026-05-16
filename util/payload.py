@@ -37,9 +37,8 @@ from telegram import (
     InputMediaVideo,
 )
 
-from .log import log
 from .app import bot
-from .env import MEDIA_STAGING_CHAT_ID, MEDIA_STAGING_MESSAGE_THREAD_ID
+from .env import log, MEDIA_STAGING_CHAT_ID, MEDIA_STAGING_MESSAGE_THREAD_ID
 
 type Media = Audio | Document | PhotoSize | Sticker | Video | Voice
 CACHED_MEDIA_TYPES = (Audio, Document, PhotoSize, Sticker, Video, Voice, str)

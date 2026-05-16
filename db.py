@@ -3,7 +3,7 @@ import logging
 from typing import Iterable, Sequence, cast
 from sqlite3 import connect, Connection
 
-from util.env import ME_LOWER
+from env import ME_LOWER, DB_FILE
 
 log = logging.getLogger(ME_LOWER + '.db')
 
@@ -14,11 +14,11 @@ class DataStore:
     def __init__(self):
         self.conn = cast(Connection, None)
 
-    def connect(self, file: str):
+    def connect(self):
         if self.conn is not None:
             raise RuntimeError('Already connected')
 
-        self.conn = connect(file, autocommit=False)
+        self.conn = connect(DB_FILE, autocommit=False)
         atexit.register(self.conn.close)
 
         with self.conn:
@@ -63,7 +63,7 @@ class DataStore:
                     text  TEXT    NOT NULL
                 );
                 ''')
-        log.debug('Connected to db: %s', file)
+        log.debug('Connected to db: %s', DB_FILE)
 
     def close(self):
         c = self.conn

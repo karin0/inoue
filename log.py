@@ -10,8 +10,16 @@ from contextlib import contextmanager
 
 from telegram import Message
 
-from .text import truncate_text, escape, escape_pre
-from .env import ME_LOWER, MAX_TEXT_LENGTH, USER_ID, GROUP_ID, LOG_THREAD_ID
+from util import (
+    bot,
+    get_ctx_msg,
+    truncate_text,
+    escape,
+    escape_pre,
+    create_task,
+    Responder,
+)
+from env import ME_LOWER, MAX_TEXT_LENGTH, USER_ID, GROUP_ID, LOG_THREAD_ID
 
 
 class NotifyHandler(logging.Handler):
@@ -44,8 +52,6 @@ class NotifyHandler(logging.Handler):
         return res, 'MarkdownV2'
 
     def emit(self, record: logging.LogRecord) -> None:
-        from . import create_task, get_ctx_msg
-
         if self._suppressed:
             return
 
@@ -117,6 +123,8 @@ def _get_logger(name):
     logger.setLevel(level)
     logger.addHandler(notify)
 
+    logging.getLogger('bot').setLevel(level)
+
     rc_log = logging.getLogger('render_core')
     rc_log.setLevel(level)
 
@@ -155,8 +163,6 @@ notify_buf = []
 
 
 def flush_notify_buf():
-    from . import create_task
-
     if n := len(notify_buf):
         text = '\n'.join(notify_buf)
         text = truncate_text(text)
@@ -173,9 +179,6 @@ async def do_notify(
     revocable: bool = False,
     quiet: bool = False,
 ):
-    from . import bot, get_ctx_msg
-    from .responder import MessageResponder
-
     loop = asyncio.get_event_loop()
     now = loop.time()
     while notify_moments and now - notify_moments[0] >= NOTIFY_LIMIT_INTERVAL_SEC:
@@ -192,7 +195,7 @@ async def do_notify(
 
     if not quiet and (m := message or get_ctx_msg()) is not None:
         try:
-            return await MessageResponder(m).reply(
+            return await Responder.create(m).reply(
                 text,
                 parse_mode,
                 cached=revocable,

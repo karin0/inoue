@@ -4,7 +4,10 @@ from typing import Any, Callable, Iterable, Coroutine, Awaitable, Type, overload
 
 from telegram import CallbackQuery, Message, Bot
 
-from util import log, bot, USER_ID, get_context, Responder
+from .env import log, USER_ID
+from .app import bot
+from .ctx import get_context
+from .responder import Responder
 
 type MessageArg = str
 type CallbackData = str

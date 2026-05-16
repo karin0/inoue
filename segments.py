@@ -3,7 +3,9 @@ from typing import Callable, Sequence
 from dataclasses import dataclass, replace
 
 from render_core import Box
-from util import log, escape, html_escape, escape_pre, MAX_TEXT_LENGTH
+from log import log
+from env import MAX_TEXT_LENGTH
+from util import escape, html_escape, escape_pre
 
 type Segment = Sequence[Segment] | str | BaseElement
 

@@ -7,12 +7,9 @@ from telegram import Message, InlineKeyboardMarkup
 from telegram.constants import ChatAction
 from telegram.error import BadRequest
 
-from .log import log
 from .app import bot, create_task
-from .env import encode_id
+from .env import log, db, encode_id
 from .payload import MediaPayload, payload_has_input
-
-from db import db
 
 # A responder is a wrapped `Message` that enforces an edit-after-reply pattern.
 # It takes care of default reply parameters, media payload, inline message adaptation,

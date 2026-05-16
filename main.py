@@ -4,18 +4,13 @@ import time
 import atexit
 import asyncio
 
-from telegram import Message, Update, Bot, User, MessageOriginChannel
+from telegram import Message, Update, User, MessageOriginChannel
 from telegram.ext import ContextTypes, BaseHandler
+from telegram.error import NetworkError
 from telegram.constants import ChatID
 
-from util import (
-    log,
-    notify,
-    is_debug,
-    app,
-    post_init,
-    Sender,
-    Responder,
+from log import log, notify, do_notify, is_debug, trace
+from env import (
     ME,
     USER_ID,
     CHAN_ID,
@@ -23,11 +18,8 @@ from util import (
     GUEST_USER_IDS,
     IGNORE_CHAT_IDS,
     LOCK_FILE,
-    trace,
-    do_notify,
-    shorten,
-    use_context,
 )
+from util import app, bot, post_init, on_error, Sender, Responder, shorten, use_context
 from commands import set_commands, stats, reply_usage
 from handlers import (
     handle_msg,
@@ -169,7 +161,7 @@ class Handler(BaseHandler):
         return True
 
 
-def _post_init(bot: Bot):
+def _post_init():
     log.info('%s initiated: %s', ME, bot.bot)
     if is_debug:
         return set_commands(bot)
@@ -178,8 +170,19 @@ def _post_init(bot: Bot):
     )
 
 
+async def handle_error(e) -> None:
+    if isinstance(e, NetworkError):
+        with notify.suppress():
+            log.exception('Network error in %s: %s', type(e).__name__, e)
+    elif isinstance(e, Exception):
+        log.exception('Exception: %s: %s', type(e).__name__, e, exc_info=e)
+    else:
+        log.exception('Unknown error in update %s: %s', e)
+
+
 def init_app():
     post_init(_post_init)
+    on_error(handle_error)
     app.add_handler(Handler(handle_update))
 
 

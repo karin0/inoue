@@ -7,11 +7,10 @@ from datetime import timedelta
 from telegram import Message, Document, Audio, Video
 from telegram.constants import ChatAction
 
-from dispatch import command
+from log import log
 from ffmpeg import encode_voice
 from ytdlp import run_ytdlp, extract_url, Output
 from util import (
-    log,
     create_task,
     escape,
     get_context,
@@ -19,6 +18,7 @@ from util import (
     InlineResponder,
     EditHandle,
     VoicePayload,
+    command,
 )
 
 VOICE_ASSETS_DIR = 'assets/voice'

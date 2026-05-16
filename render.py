@@ -28,23 +28,24 @@ from telegram import (
 from telegram.constants import MessageLimit, ReactionEmoji, KeyboardButtonStyle
 
 from db import db
+from log import log, do_notify
+from env import USER_ID, CHAN_ID, MAX_TEXT_LENGTH, list_env, encode_id
 from util import (
-    USER_ID,
-    CHAN_ID,
-    log,
     bot,
     get_context,
-    list_env,
     shorten,
     truncate_text,
     escape,
     cleanup_text,
-    do_notify,
-    encode_id,
+    pre_block,
     Responder,
     EditHandle,
     PhotoPayload,
     DocumentPayload,
+    MessageArg,
+    CallbackData,
+    callback_query,
+    command,
 )
 from segments import (
     Segment,
@@ -60,7 +61,6 @@ from segments import (
 from render_core import Engine, Value, to_str
 from render_bridge import Bridge, LocalPath, to_segment
 from utils import get_msg_url, try_send_text_or_not_modified
-from dispatch import MessageArg, CallbackData, callback_query, command
 from render_context import OverriddenDict, encode_value, decode_value
 
 # '/' is kept for compatibility, which was used for '-'.
@@ -1049,8 +1049,6 @@ async def handle_rm(rs: Responder, arg: MessageArg):
 
 @command
 async def handle_submit(rs: Responder, arg: MessageArg):
-    from util import CHAN_ID, MAX_TEXT_LENGTH, pre_block
-
     if not DOC_OVERRIDE_DIR:
         return await rs.reply_cached('DOC_OVERRIDE_DIR is unset.')
 

@@ -10,12 +10,11 @@ from telegram import (
 from telegram.constants import ChatAction, MessageLimit
 from telegram.error import BadRequest
 
-from .log import log
 from .app import bot
 from .payload import MediaPayload, CachedPayload, payload_has_input
 from .responder import Responder, EditHandle, is_captured
 from .text import escape, html_escape, shorten, truncate_text
-from .env import MEDIA_STAGING_CHAT_ID, MEDIA_STAGING_MESSAGE_THREAD_ID
+from .env import log, MEDIA_STAGING_CHAT_ID, MEDIA_STAGING_MESSAGE_THREAD_ID
 
 type InlineMessageIdFactory = Callable[[Message, InlineQueryResult], Awaitable[str]]
 

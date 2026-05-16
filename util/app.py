@@ -2,25 +2,23 @@ import os
 from typing import Callable, Awaitable
 
 from telegram import Bot
-from telegram.error import NetworkError
 from telegram.ext import Application, ApplicationBuilder, ContextTypes
 
-from db import db
+from .env import log, db
 
-from .env import DB_FILE
-from .log import log, notify
-
-_post_init_hooks: list[Callable[[Bot], Awaitable]] = []
+_post_init_hooks: list[Callable[[], Awaitable]] = []
+_error_hooks: list[Callable[[Exception | None], Awaitable]] = []
 
 post_init = _post_init_hooks.append
+on_error = _error_hooks.append
 
 
 async def _post_init(app: Application) -> None:
     global _post_init_hooks
 
-    db.connect(DB_FILE)
+    db.connect()
     for hook in _post_init_hooks:
-        await hook(bot)
+        await hook()
     _post_init_hooks.clear()
     del _post_init_hooks
 
@@ -31,17 +29,8 @@ async def _post_stop(_: Application) -> None:
 
 async def handle_error(update, context: ContextTypes.DEFAULT_TYPE) -> None:
     e = context.error
-    if isinstance(e, NetworkError):
-        with notify.suppress():
-            log.exception(
-                'Network error in update %s: %s: %s', update, type(e).__name__, e
-            )
-    elif isinstance(e, Exception):
-        log.exception(
-            'Exception in update %s: %s: %s', update, type(e).__name__, e, exc_info=e
-        )
-    else:
-        log.exception('Unknown error in update %s: %s', update, e)
+    for hook in _error_hooks:
+        await hook(e)
 
 
 def _build_app() -> Application:

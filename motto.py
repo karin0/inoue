@@ -4,7 +4,8 @@ import json
 import random
 from typing import Iterable
 
-from util import truncate_text, log, is_debug
+from log import log, is_debug
+from util import truncate_text
 
 
 def sentences() -> Iterable[str]:

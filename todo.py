@@ -10,8 +10,9 @@ from telegram import (
 from telegram.error import BadRequest
 
 from db import db
-from util import log, TODO_ID
-from dispatch import callback_query
+from log import log
+from env import TODO_ID
+from util import callback_query
 
 
 def get_panel_id() -> int | None:
