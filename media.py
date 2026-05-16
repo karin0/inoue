@@ -2,7 +2,7 @@ from telegram import Message
 
 from db import db
 from log import log
-from util import escape, Responder, MessageArg, command, start
+from bot import escape, Responder, MessageArg, command, start
 from utils import get_msg_url, get_deep_link_url
 
 

@@ -12,7 +12,7 @@ from telegram.constants import ChatAction
 
 from log import log
 from env import ME, MAX_TEXT_LENGTH
-from util import (
+from bot import (
     create_task,
     pre_block,
     Responder,

@@ -11,7 +11,7 @@ from telegram import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
 from log import log
 from env import MAX_TEXT_LENGTH
-from util import (
+from bot import (
     escape,
     pre_block_raw,
     truncate_text,

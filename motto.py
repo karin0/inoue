@@ -5,7 +5,7 @@ import random
 from typing import Iterable
 
 from log import log, is_debug
-from util import truncate_text
+from bot import truncate_text
 
 
 def sentences() -> Iterable[str]:

@@ -19,7 +19,7 @@ from env import (
     IGNORE_CHAT_IDS,
     LOCK_FILE,
 )
-from util import app, bot, post_init, on_error, Sender, Responder, shorten, use_context
+from bot import app, bot, post_init, on_error, Sender, Responder, shorten, use_context
 from commands import set_commands, stats, reply_usage
 from handlers import (
     handle_msg,

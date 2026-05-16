@@ -12,7 +12,7 @@ from telegram.constants import ChatAction
 
 from log import log
 from ffmpeg import run_ffmpeg
-from util import bot, Responder, DocumentPayload, command
+from bot import bot, Responder, DocumentPayload, command
 
 STICKER_SIDE = 512
 MAX_FILE_SIZE = 10 << 20

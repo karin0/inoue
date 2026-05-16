@@ -24,7 +24,7 @@ from telegram import (
 from telegram.constants import ChatAction
 
 from log import log, is_debug
-from util import (
+from bot import (
     MessageArg,
     command,
     create_task,

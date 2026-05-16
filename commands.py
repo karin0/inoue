@@ -12,7 +12,7 @@ from telegram import (
 )
 
 from log import log
-from util import (
+from bot import (
     escape,
     pre_block,
     pre_block_raw,

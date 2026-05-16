@@ -12,7 +12,7 @@ from telegram import (
 from telegram.constants import ChatType, MessageEntityType
 
 from future import answer_guest_query
-from util import (
+from bot import (
     bot,
     pre_block,
     get_context,

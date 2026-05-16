@@ -26,7 +26,7 @@ from collections.abc import MutableMapping
 from render_core import Box, Value, Fragment, to_str
 
 from log import log
-from util import (
+from bot import (
     create_task,
     Responder,
     escape,

@@ -4,7 +4,7 @@ from telegram.error import BadRequest
 
 from log import log
 from env import CHAN_ID
-from util import bot, reroute_capture, truncate_text, Responder, get_command_handler
+from bot import bot, reroute_capture, truncate_text, Responder, get_command_handler
 
 
 def get_msg_url(msg_id, chat_id=None) -> str:

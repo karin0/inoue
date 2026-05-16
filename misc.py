@@ -2,7 +2,7 @@ import os
 from typing import Iterable
 from pathlib import Path
 
-from util import pre_block, Responder, DocumentPayload, MessageArg, command
+from bot import pre_block, Responder, DocumentPayload, MessageArg, command
 
 
 def parse_sort(arg: str) -> Iterable[int]:

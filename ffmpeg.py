@@ -4,7 +4,7 @@ import asyncio
 from typing import Literal, Callable, overload
 
 from log import log, is_debug
-from util import escape
+from bot import escape
 
 
 @overload

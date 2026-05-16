@@ -10,7 +10,7 @@ from contextlib import contextmanager
 
 from telegram import Message
 
-from util import (
+from bot import (
     bot,
     get_ctx_msg,
     truncate_text,
