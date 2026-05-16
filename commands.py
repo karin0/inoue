@@ -14,8 +14,6 @@ from telegram import (
 from log import log
 from bot import (
     escape,
-    pre_block,
-    pre_block_raw,
     get_context,
     Responder,
     MessageArg,
@@ -28,6 +26,7 @@ from env import ME, CHAN_ID, TRUSTED_IDS
 from db import db
 from motto import greeting, hitokoto
 from run import handle_cmd
+from text import pre_block, pre_block_raw
 
 try:
     from conf import reply_usage

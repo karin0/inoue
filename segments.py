@@ -5,7 +5,8 @@ from dataclasses import dataclass, replace
 from render_core import Box
 from log import log
 from env import MAX_TEXT_LENGTH
-from bot import escape, html_escape, escape_pre
+from bot import escape, html_escape
+from text import escape_pre
 
 type Segment = Sequence[Segment] | str | BaseElement
 

@@ -30,14 +30,13 @@ from telegram.constants import MessageLimit, ReactionEmoji, KeyboardButtonStyle
 from db import db
 from log import log, do_notify
 from env import USER_ID, CHAN_ID, MAX_TEXT_LENGTH, list_env, encode_id
+from text import cleanup_text, pre_block
 from bot import (
     bot,
     get_context,
     shorten,
     truncate_text,
     escape,
-    cleanup_text,
-    pre_block,
     Responder,
     EditHandle,
     PhotoPayload,

@@ -15,11 +15,11 @@ from bot import (
     get_ctx_msg,
     truncate_text,
     escape,
-    escape_pre,
     create_task,
     Responder,
 )
 from env import ME_LOWER, MAX_TEXT_LENGTH, USER_ID, GROUP_ID, LOG_THREAD_ID
+from text import escape_pre
 
 
 class NotifyHandler(logging.Handler):

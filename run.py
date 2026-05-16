@@ -14,13 +14,13 @@ from log import log
 from env import ME, MAX_TEXT_LENGTH
 from bot import (
     create_task,
-    pre_block,
     Responder,
     EditHandle,
     command,
     MessageArg,
 )
 from misc import reply_file
+from text import pre_block
 
 UPDATE_CWD = os.environ['UPDATE_CWD']
 

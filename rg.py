@@ -13,7 +13,6 @@ from log import log
 from env import MAX_TEXT_LENGTH
 from bot import (
     escape,
-    pre_block_raw,
     truncate_text,
     Responder,
     EditHandle,
@@ -22,6 +21,7 @@ from bot import (
     callback_query,
     start,
 )
+from text import pre_block_raw
 from utils import get_deep_link_url
 from segments import Segment, Link, Bold, Underline, Formatter
 

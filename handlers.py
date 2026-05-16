@@ -14,7 +14,6 @@ from telegram.constants import ChatType, MessageEntityType
 from future import answer_guest_query
 from bot import (
     bot,
-    pre_block,
     get_context,
     Responder,
     InlineResponder,
@@ -26,6 +25,7 @@ from bot import (
 )
 from log import log
 from env import USER_ID, CHAN_ID, GROUP_ID, TODO_ID
+from text import pre_block
 from utils import route_cmd
 from inoue import render_receipt
 from rg import handle_rg
