@@ -100,6 +100,10 @@ async def handle_msg(msg: Message, rs: Responder | None = None, direct: bool = T
         log.debug('Not mentioned: %s', msg)
         return
 
+    if msg.via_bot is not None:
+        log.debug('Via bot: %s', msg)
+        return
+
     if (fut := try_handle_voice(msg, rs)) is not None:
         return await fut
 
