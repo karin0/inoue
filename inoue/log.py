@@ -11,15 +11,16 @@ from telegram import Message
 
 from bot import (
     bot,
-    get_ctx_msg,
+    log as bot_log,
     truncate_text,
     escape,
     create_task,
     Responder,
 )
 
-from .env import ME_LOWER, MAX_TEXT_LENGTH, USER_ID, GROUP_ID, LOG_THREAD_ID
+from .ctx import get_ctx_msg
 from .text import escape_pre
+from .env import ME_LOWER, MAX_TEXT_LENGTH, USER_ID, GROUP_ID, LOG_THREAD_ID
 
 
 class NotifyHandler(logging.Handler):
@@ -109,26 +110,28 @@ def _get_logger(name):
         fmt = '[%(levelname)s] %(message)s'
         fmt = logging.Formatter(fmt)
     else:
-        fmt = '%(asctime)s [%(levelname)s] %(message)s'
+        fmt = '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
         fmt = MicrosecondFormatter(fmt)
 
+    logging.captureWarnings(True)
+
     root = logging.getLogger()
-    root.setLevel(logging.ERROR)
+    root.setLevel(level)
+    root.handlers.clear()
 
     h = logging.StreamHandler()
     h.setFormatter(fmt)
     root.addHandler(h)
 
     logger = logging.getLogger(name)
-    logger.setLevel(level)
     logger.addHandler(notify)
+    bot_log.addHandler(notify)
 
-    logging.getLogger('bot').setLevel(level)
-
-    rc_log = logging.getLogger('render_core')
-    rc_log.setLevel(level)
+    for name in ('telegram', 'httpcore', 'httpx', 'asyncio'):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
     if TRACE:
+        rc_log = logging.getLogger('render_core')
         rc_log.propagate = False
         rc_log.handlers.clear()
 

@@ -13,15 +13,14 @@ from telegram import (
 
 from bot import (
     escape,
-    get_context,
     Responder,
     MessageArg,
     command,
-    iter_commands,
-    get_command_handler,
     dispatch_start,
+    commands,
 )
 
+from .ctx import get_context
 from .log import log
 from .env import ME, CHAN_ID, TRUSTED_IDS
 from .db import db
@@ -72,7 +71,7 @@ async def dispatch_cmd(rs: Responder, text: str, depth: int = 0):
             return await dispatch_cmd(rs, expanded, depth + 1)
         raise RuntimeError(f'Bad command expansion: {expanded}')
 
-    if handler := get_command_handler(cmd_name):
+    if handler := commands.get(cmd_name):
         rs.set_text(text)
         return await handler(rs)
 
@@ -109,9 +108,9 @@ def set_commands(bot: Bot):
     cmds = []
     public_cmds = []
 
-    for name, (_, permissive) in iter_commands():
+    for name, route in commands.items():
         cmds.append((name, name))
-        if permissive or name == 'start':
+        if route.public or name == 'start':
             public_cmds.append((name, name))
 
     for name in db.iter_commands():

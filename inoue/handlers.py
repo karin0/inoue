@@ -13,10 +13,8 @@ from telegram.constants import ChatType, MessageEntityType
 
 from bot import (
     bot,
-    get_context,
     Responder,
     InlineResponder,
-    Sender,
     VoicePayload,
     callback_query,
     dispatch_callback,
@@ -25,6 +23,7 @@ from bot import (
 
 from .future import answer_guest_query
 from .log import log
+from .ctx import get_context, Sender
 from .env import USER_ID, CHAN_ID, GROUP_ID, TODO_ID
 from .text import pre_block
 from .utils import route_cmd

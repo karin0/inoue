@@ -30,7 +30,6 @@ from telegram.constants import MessageLimit, ReactionEmoji, KeyboardButtonStyle
 from render_core import Engine, Value, to_str
 from bot import (
     bot,
-    get_context,
     shorten,
     truncate_text,
     escape,
@@ -46,6 +45,7 @@ from bot import (
 
 from .db import db
 from .log import log, do_notify
+from .ctx import get_context
 from .env import USER_ID, CHAN_ID, MAX_TEXT_LENGTH, list_env, encode_id
 from .text import cleanup_text, pre_block
 from .segments import (

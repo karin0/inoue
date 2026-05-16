@@ -27,7 +27,6 @@ from bot import (
     MessageArg,
     command,
     create_task,
-    get_context,
     MediaPayload,
     CachedPayload,
     AudioPayload,
@@ -38,6 +37,7 @@ from bot import (
     EditHandle,
 )
 
+from .ctx import get_context
 from .log import log, is_debug
 from .render_context import LRUDict
 from .ffmpeg import (

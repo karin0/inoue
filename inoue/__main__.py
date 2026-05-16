@@ -2,16 +2,16 @@ import os
 import sys
 import time
 import atexit
-import asyncio
 
 from telegram import Message, Update, User, MessageOriginChannel
 from telegram.ext import ContextTypes, BaseHandler
-from telegram.error import NetworkError
 from telegram.constants import ChatID
 
-from bot import app, bot, post_init, on_error, Sender, Responder, shorten, use_context
+from bot import app, Responder, shorten
 
-from .log import log, notify, do_notify, is_debug, trace
+from .ctx import use_context, Sender
+from .log import log, notify, trace
+from .commands import reply_usage
 from .env import (
     ME,
     USER_ID,
@@ -21,7 +21,6 @@ from .env import (
     IGNORE_CHAT_IDS,
     LOCK_FILE,
 )
-from .commands import set_commands, stats, reply_usage
 from .handlers import (
     handle_msg,
     handle_post,
@@ -31,7 +30,7 @@ from .handlers import (
     handle_guest,
 )
 
-import inoue.misc as misc, inoue.media as media, inoue.run as run  # noqa: F401, E401
+from . import misc, media, run  # noqa: F401, E401
 
 
 async def handle_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -162,28 +161,7 @@ class Handler(BaseHandler):
         return True
 
 
-def _post_init():
-    log.info('%s initiated: %s', ME, bot.bot)
-    if is_debug:
-        return set_commands(bot)
-    return asyncio.gather(
-        set_commands(bot), do_notify(*stats(bot.bot, f'{ME} initiated'))
-    )
-
-
-async def handle_error(e) -> None:
-    if isinstance(e, NetworkError):
-        with notify.suppress():
-            log.exception('Network error in %s: %s', type(e).__name__, e)
-    elif isinstance(e, Exception):
-        log.exception('Exception: %s: %s', type(e).__name__, e, exc_info=e)
-    else:
-        log.exception('Unknown error in update %s: %s', e)
-
-
 def init_app():
-    post_init(_post_init)
-    on_error(handle_error)
     app.add_handler(Handler(handle_update))
 
 
@@ -207,7 +185,7 @@ def main():
     get_lock()
     init_app()
     app.run_polling()
-    log.info('%s stopped.', ME)
+    log.info('%s is exiting.', ME)
     drop_lock()
 
 

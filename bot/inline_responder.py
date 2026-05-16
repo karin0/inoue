@@ -10,11 +10,12 @@ from telegram import (
 from telegram.constants import ChatAction, MessageLimit
 from telegram.error import BadRequest
 
+from . import env
 from .app import bot
+from .env import log
 from .payload import MediaPayload, CachedPayload, payload_has_input
-from .responder import Responder, EditHandle, is_captured
+from .responder import Responder, EditHandle
 from .text import escape, html_escape, shorten, truncate_text
-from .env import log, MEDIA_STAGING_CHAT_ID, MEDIA_STAGING_MESSAGE_THREAD_ID
 
 type InlineMessageIdFactory = Callable[[Message, InlineQueryResult], Awaitable[str]]
 
@@ -37,14 +38,12 @@ class InlineResponder(Responder):
         '_media',
         '_deferred',
         '_dirty',
-        '_text',
     )
 
     def __init__(
-        self,
-        msg: Message,
-        inline_message_id: str | InlineMessageIdFactory,
+        self, msg: Message, inline_message_id: str | InlineMessageIdFactory
     ) -> None:
+        super().__init__()
         self._msg = msg
         self._inline_message_id: str | InlineMessageIdFactory = inline_message_id
         self._fragments: list[tuple[str, str | None]] = []
@@ -54,7 +53,6 @@ class InlineResponder(Responder):
         self._media: CachedPayload | None = None
         self._deferred = False
         self._dirty = False
-        self._text = None
 
     def __repr__(self) -> str:
         return f'InlineResponder({self._msg!r}, {self._inline_message_id!r})'
@@ -114,7 +112,7 @@ class InlineResponder(Responder):
         disable_web_page_preview: bool | None = None,
         allow_not_modified: bool = False,
     ) -> InlineFragmentHandle:
-        if is_captured(self._msg, text, parse_mode):
+        if self._try_capture(text, parse_mode):
             cached = False
 
         if reply_markup is not None:
@@ -229,13 +227,7 @@ class InlineResponder(Responder):
     async def reply_copy(
         self, from_chat_id: int, message_id: int
     ) -> InlineFragmentHandle:
-        staged = await bot.forward_message(
-            MEDIA_STAGING_CHAT_ID,
-            from_chat_id,
-            message_id,
-            message_thread_id=MEDIA_STAGING_MESSAGE_THREAD_ID,
-            disable_notification=True,
-        )
+        staged = await env.driver.stage_message(from_chat_id, message_id)
         text = staged.text or staged.caption or None
         if (cached := MediaPayload.extract(staged)) is not None:
             return await self.reply(text, media=cached)

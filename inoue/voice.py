@@ -10,7 +10,6 @@ from telegram.constants import ChatAction
 from bot import (
     create_task,
     escape,
-    get_context,
     Responder,
     InlineResponder,
     EditHandle,
@@ -19,6 +18,7 @@ from bot import (
 )
 
 from .log import log
+from .ctx import get_context
 from .ffmpeg import encode_voice
 from .ytdlp import run_ytdlp, extract_url, Output
 

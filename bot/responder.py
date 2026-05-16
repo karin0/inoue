@@ -1,14 +1,14 @@
 import asyncio
-from contextvars import ContextVar
 from contextlib import contextmanager
-from typing import Awaitable, Protocol, Literal, overload
+from typing import Awaitable, Iterator, Protocol, Literal, overload
 
 from telegram import Message, InlineKeyboardMarkup
 from telegram.constants import ChatAction
 from telegram.error import BadRequest
 
+from . import env
 from .app import bot, create_task
-from .env import log, db, encode_id
+from .env import log
 from .payload import MediaPayload, payload_has_input
 
 # A responder is a wrapped `Message` that enforces an edit-after-reply pattern.
@@ -17,9 +17,11 @@ from .payload import MediaPayload, payload_has_input
 
 
 class Responder(Protocol):
-    __slots__ = ()
+    __slots__ = ('_text', '_capture_buf')
 
-    _text: str | None
+    def __init__(self):
+        self._text: str | None = None
+        self._capture_buf: list[tuple[str, str | None]] | None = None
 
     @overload
     def reply(
@@ -143,6 +145,30 @@ class Responder(Protocol):
     def create(msg: Message) -> Responder:
         return MessageResponder(msg)
 
+    @contextmanager
+    def capture(
+        self, buf: list[tuple[str, str | None]] | None = None
+    ) -> Iterator[list[tuple[str, str | None]]]:
+        if buf is None:
+            buf = []
+        old = self._capture_buf
+        self._capture_buf = buf
+        try:
+            yield buf
+        finally:
+            self._capture_buf = old
+
+    def is_captured(self) -> bool:
+        return self._capture_buf is not None
+
+    def _try_capture(self, text: str | None, parse_mode: str | None) -> bool:
+        if (buf := self._capture_buf) is not None:
+            log.debug('_try_capture: %r %s', self, text)
+            if text:
+                buf.append((text, parse_mode))
+            return True
+        return False
+
 
 class EditHandle(Protocol):
     __slots__ = ()
@@ -221,26 +247,12 @@ class MessageEditHandle(EditHandle):
         return self.message
 
 
-reroute_capture: ContextVar[tuple[Message, list[tuple[str, str | None]]] | None] = (
-    ContextVar('reroute_capture', default=None)
-)
-
-
-def is_captured(msg: Message, text: str | None, parse_mode: str | None) -> bool:
-    if (reroute := reroute_capture.get()) is not None and reroute[0] is msg:
-        log.debug('reroute_capture: %r %s', msg, text)
-        if text:
-            reroute[1].append((text, parse_mode))
-        return True
-    return False
-
-
 class MessageResponder(Responder):
-    __slots__ = ('msg', '_text')
+    __slots__ = 'msg'
 
     def __init__(self, msg: Message):
+        super().__init__()
         self.msg = msg
-        self._text = None
 
     @overload
     async def reply(
@@ -280,7 +292,7 @@ class MessageResponder(Responder):
         allow_not_modified: bool = False,
     ) -> MessageEditHandle | None:
         m = self.msg
-        key = f'{encode_id(m.chat_id)}-{m.message_id}'
+        key = env.driver.message_key(m.chat_id, m.message_id)
 
         def _reply_text(text: str) -> Awaitable[Message]:
             return m.reply_text(
@@ -317,20 +329,20 @@ class MessageResponder(Responder):
                 val = str(resp.message_id)
                 if as_caption:
                     val = '@' + val
-                db[key] = val
+                env.driver[key] = val
                 log.debug('_do_reply: %s -> %s', key, val)
             return MessageEditHandle.from_message(resp, as_caption)
 
-        if is_captured(m, text, parse_mode) or not cached:
+        if self._try_capture(text, parse_mode) or not cached:
             # Do not try to edit the reply if the reply is captured, or we will
             # mess up the original reply of the capturing context (`/render`).
             return await _do_reply(False)
 
-        if not (val := db.get(key)):
+        if not (val := env.driver.get(key)):
             return await _do_reply()
 
         if media is not None and not payload_has_input(media):
-            db.discard(key)
+            env.driver.discard(key)
             return await _do_reply()
 
         if val[0] == '@':
@@ -384,13 +396,13 @@ class MessageResponder(Responder):
                         if not text:
                             return MessageEditHandle(m.chat.id, resp_msg_id, True, resp)
                         resp = await _reply_text(text)
-                        db[key] = str(resp.message_id)
+                        env.driver[key] = str(resp.message_id)
                         return MessageEditHandle.from_message(resp)
                     if as_caption:
                         log.info('Too long for caption, fallback to text: %s', e)
                         assert text
                         resp = await _reply_text(text)
-                        db[key] = str(resp.message_id)
+                        env.driver[key] = str(resp.message_id)
                         return MessageEditHandle.from_message(resp)
                 raise
         except Exception as e:
@@ -409,7 +421,7 @@ class MessageResponder(Responder):
                 log.info('Message not modified: %s -> %s', key, val)
                 return None
 
-            db.discard(key)
+            env.driver.discard(key)
             log.warning(
                 'Failed to edit response: %s -> %s: %s: %s',
                 key,

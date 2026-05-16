@@ -1,6 +1,6 @@
 from html import escape as html_escape  # noqa: F401
 
-from .env import MAX_TEXT_LENGTH
+from telegram.constants import MessageLimit
 
 
 def shorten(s: str | None, limit: int = 30) -> str:
@@ -12,7 +12,7 @@ def shorten(s: str | None, limit: int = 30) -> str:
     return s
 
 
-def truncate_text(s: str, limit: int = MAX_TEXT_LENGTH) -> str:
+def truncate_text(s: str, limit: int = MessageLimit.MAX_TEXT_LENGTH) -> str:
     s = s.strip()
     if len(s) > limit:
         if limit < 12:

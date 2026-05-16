@@ -4,14 +4,13 @@ from typing import Any, Callable, Iterable, Coroutine, Awaitable, Type, overload
 
 from telegram import CallbackQuery, Message, Bot
 
-from .env import log, USER_ID
+from . import env
+from .env import log
 from .app import bot
-from .ctx import get_context
 from .responder import Responder
 
 type MessageArg = str
 type CallbackData = str
-
 type CallbackParam = Message | MessageArg | CallbackQuery | CallbackData | Bot | Responder | str | int
 
 CALLBACK_PARAM_TYPES = (
@@ -35,7 +34,7 @@ def _unwrap[T](x: T | None) -> T:
 
 
 class Route[**P, R]:
-    __slots__ = ('_func', '_public', '_params', '_va')
+    __slots__ = ('_func', 'public', '_params', '_va')
 
     def __init__(self, func: Handler[P, R], public: bool):
         params: list[Type[CallbackParam]] = []
@@ -71,12 +70,12 @@ class Route[**P, R]:
         )
 
         self._func: Callable = func
-        self._public = public
+        self.public = public
         self._params = tuple(params)
         self._va = va_ty
 
     def __repr__(self) -> str:
-        return f'<{"Public " if self._public else ""}Route: {self._func.__name__}>'
+        return f'<{"Public " if self.public else ""}Route: {self._func.__name__}>'
 
     __str__ = __repr__
 
@@ -88,12 +87,7 @@ class Route[**P, R]:
         self, rs: Responder | None, argv: Iterable[str] = ()
     ) -> Coroutine[Any, Any, R]:
         log.debug('Calling route: %s: %r', self, argv)
-        update = get_context().update
-        if not (
-            self._public
-            or ((u := update.effective_user) is not None and u.id == USER_ID)
-        ):
-            raise PermissionError('Unauthorized')
+        update = env.driver.get_update(rs, public=self.public)
 
         it = iter(argv)
         args = []
@@ -124,9 +118,7 @@ class Route[**P, R]:
         return self._func(*args)
 
 
-_cmd_handlers: dict[str, Route] = {}
-
-get_command_handler = _cmd_handlers.get
+commands: dict[str, Route] = {}
 
 
 @overload
@@ -158,10 +150,10 @@ def command[H: Handler](
         if not name:
             raise ValueError('command: name cannot be empty')
 
-        if name in _cmd_handlers:
+        if name in commands:
             raise ValueError(f'command: {name} already exists')
 
-        _cmd_handlers[name] = Route(func, public)
+        commands[name] = Route(func, public)
         return func
 
     if func is None or isinstance(func, str):
@@ -169,12 +161,6 @@ def command[H: Handler](
         return decorator
 
     return decorator(func)
-
-
-def iter_commands() -> (
-    Iterable[tuple[str, tuple[Callable[[Responder], Awaitable], bool]]]
-):
-    return ((name, (route, route._public)) for name, route in _cmd_handlers.items())
 
 
 _cb_handlers: dict[str, Route] = {}

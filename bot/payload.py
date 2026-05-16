@@ -37,8 +37,9 @@ from telegram import (
     InputMediaVideo,
 )
 
+from . import env
+from .env import log
 from .app import bot
-from .env import log, MEDIA_STAGING_CHAT_ID, MEDIA_STAGING_MESSAGE_THREAD_ID
 
 type Media = Audio | Document | PhotoSize | Sticker | Video | Voice
 CACHED_MEDIA_TYPES = (Audio, Document, PhotoSize, Sticker, Video, Voice, str)
@@ -155,15 +156,7 @@ class MediaPayload[T: Content](Protocol):
         )
 
     async def stage(self, caption: str | None = None) -> MediaPayload[Media] | None:
-        from .ctx import get_context
-
-        msg = await self.send(
-            MEDIA_STAGING_CHAT_ID,
-            message_thread_id=MEDIA_STAGING_MESSAGE_THREAD_ID,
-            caption=caption,
-            disable_notification=get_context().sender_is_host(),
-        )
-
+        msg = await env.driver.stage_media(self, caption=caption)
         if (r := MediaPayload.extract(msg, self.KIND)) is not None:
             return r
         log.error('Failed to stage media: %s', msg)

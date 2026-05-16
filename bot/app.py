@@ -1,36 +1,22 @@
 import os
-from typing import Callable, Awaitable
 
 from telegram import Bot
 from telegram.ext import Application, ApplicationBuilder, ContextTypes
 
-from .env import log, db
-
-_post_init_hooks: list[Callable[[], Awaitable]] = []
-_error_hooks: list[Callable[[Exception | None], Awaitable]] = []
-
-post_init = _post_init_hooks.append
-on_error = _error_hooks.append
+from . import env
+from .env import log
 
 
 async def _post_init(app: Application) -> None:
-    global _post_init_hooks
-
-    db.connect()
-    for hook in _post_init_hooks:
-        await hook()
-    _post_init_hooks.clear()
-    del _post_init_hooks
+    env.driver.post_init()
 
 
 async def _post_stop(_: Application) -> None:
-    db.close()
+    env.driver.post_stop()
 
 
 async def handle_error(update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    e = context.error
-    for hook in _error_hooks:
-        await hook(e)
+    env.driver.on_error(context.error)
 
 
 def _build_app() -> Application:

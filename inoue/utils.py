@@ -2,7 +2,7 @@ from typing import Awaitable, Callable, Sequence, Concatenate
 
 from telegram.error import BadRequest
 
-from bot import bot, reroute_capture, truncate_text, Responder, get_command_handler
+from bot import bot, commands, truncate_text, Responder
 
 from .log import log
 from .env import CHAN_ID
@@ -71,7 +71,7 @@ def _extract_cmd_handler(text: str) -> Callable[[Responder], Awaitable] | None:
             if x > 0
         )
         cmd = text[1:p]
-        callback = get_command_handler(cmd)
+        callback = commands.get(cmd)
         log.debug('route_cmd: %r -> %r %r %r', text, p, cmd, callback)
         if callback is not None:
             log.info('route_cmd: %s: dispatching to %s', cmd, callback)
@@ -91,23 +91,19 @@ def reroute_cmd(
     This is deliberately made two stages to finish the command setup before
     yielding to async. See `/voice`.
     '''
-    if reroute_capture.get() is not None:
+    if rs.is_captured():
         log.warning('reroute: already in reroute_cmd: %s', rs)
         return None
 
     if (callback := _extract_cmd_handler(text)) is not None:
-        with rs.use_text(text):
-            return _reroute_cmd(rs, text, callback(rs))
+        buf = []
+        with rs.use_text(text), rs.capture(buf):
+            return _reroute_cmd(rs, text, buf, callback(rs))
 
 
 async def _reroute_cmd(
-    rs: Responder, text: str, coro: Awaitable
+    rs: Responder, text: str, buf: list[tuple[str, str | None]], coro: Awaitable
 ) -> Sequence[tuple[str, str | None]]:
-    with rs.use_text(text):
-        buf = []
-        token = reroute_capture.set((rs.get_message(), buf))
-        try:
-            await coro
-        finally:
-            reroute_capture.reset(token)
+    with rs.use_text(text), rs.capture(buf):
+        await coro
         return buf
