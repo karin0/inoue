@@ -152,7 +152,7 @@ class InlineResponder(Responder):
         if cached:
             self._cached_idx = idx
 
-        if text or media is not None:
+        if text or media is not None or reply_markup is not None:
             if allow_not_modified:
                 try:
                     await self._emit()

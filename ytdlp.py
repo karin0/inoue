@@ -27,7 +27,6 @@ from dispatch import MessageArg, command
 from util import (
     log,
     is_debug,
-    bot,
     create_task,
     get_context,
     MediaPayload,
@@ -272,7 +271,7 @@ class Output:
             return title
         return os.path.basename(self.path)
 
-    def _payload(self, audio_only: bool) -> MediaPayload:
+    def _payload(self, audio_only: bool) -> MediaPayload[Path]:
         path = Path(self.path)
         title = self.title
         performer = self.performer
@@ -554,17 +553,15 @@ async def _finish_voice(
 
 
 async def handle_yt_chosen_result(
-    result_id: str,
-    parsed: tuple[str, str],
-    inline_message_id: str,
+    result_id: str, parsed: tuple[str, str], rs: Responder
 ):
     url, arg = parsed
     log.info('handle_yt_chosen_result: %s: %s / %s', result_id, url, arg)
-    markup = None
+
+    is_voice = result_id == 'yt_voice'
+    audio_only = is_voice or result_id == 'yt_audio'
 
     try:
-        is_voice = result_id == 'yt_voice'
-        audio_only = is_voice or result_id == 'yt_audio'
         output = await run_ytdlp(url, audio_only=audio_only)
         url = output.url or url
         caption = None if 'q' in arg else url
@@ -572,25 +569,19 @@ async def handle_yt_chosen_result(
         if is_voice:
 
             async def worker():
-                nonlocal markup
+                nonlocal caption
                 result = await encode_voice(
                     output.path, lambda *_: None, output.duration
                 )
                 markup = await _finish_voice(output, result, url)
-                await bot.edit_message_caption(
-                    inline_message_id=inline_message_id,
-                    caption=caption,
-                    reply_markup=markup,
-                )
+                c, caption = caption, None
+                await rs.reply(c, reply_markup=markup)
 
             create_task(worker())
 
     except Exception as e:
         log.exception('handle_yt_chosen_result: failed for %s', url)
-        error_msg = truncate(f'❌ {type(e).__name__}: {e}', 200)
-        await bot.edit_message_caption(
-            caption=error_msg, inline_message_id=inline_message_id
-        )
+        await rs.reply(truncate(f'❌ {type(e).__name__}: {e}', 200))
         return
 
     # Upload to staging chat to get file_id, then edit inline message.
@@ -598,19 +589,12 @@ async def handle_yt_chosen_result(
     raw_payload = output._payload(audio_only=audio_only)
 
     if (payload := await raw_payload.stage(stage_caption)) is not None:
-        if (input_media := payload.as_input_now(caption)) is not None:
-            if isinstance(payload.content, MEDIA_TYPES):
-                _media_cache[url] = payload
-            else:
-                log.error(f'Bad staged media: {payload}')
-            log.info('Media ready: %s', payload)
-            return await bot.edit_message_media(
-                input_media, inline_message_id=inline_message_id, reply_markup=markup
-            )
-        log.error('No input_media: %s', payload)
-
-    await bot.edit_message_caption(
-        inline_message_id=inline_message_id,
-        caption='Failed: ' + url,
-        reply_markup=markup,
-    )
+        if isinstance(payload.content, MEDIA_TYPES):
+            _media_cache[url] = payload
+        else:
+            log.error(f'Bad staged media: {payload}')
+        log.info('Media ready: %s', payload)
+        c, caption = caption, None
+        await rs.reply(c, media=payload)
+    else:
+        await rs.reply('Failed: ' + url)

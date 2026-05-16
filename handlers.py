@@ -178,7 +178,8 @@ async def handle_chosen_inline(result: ChosenInlineResult):
     if result_id.startswith('yt_'):
         query = result.query.strip()
         if result.inline_message_id and (parsed := extract_url(query)) is not None:
-            await handle_yt_chosen_result(result_id, parsed, result.inline_message_id)
+            rs = InlineResponder(MessageStub.cast(result), result.inline_message_id)
+            await handle_yt_chosen_result(result_id, parsed, rs)
         else:
             log.warning('Invalid chosen inline result: %s', result)
     elif not result_id.startswith('noop'):
