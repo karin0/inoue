@@ -29,8 +29,8 @@ from .text import pre_block
 from .utils import route_cmd
 from .inoue import render_receipt
 from .rg import handle_rg
-from .voice import try_handle_voice
-from .sticker import try_handle_sticker
+from .voice import handle_voice
+from .sticker import handle_sticker
 from .todo import handle_todo_msg
 from .ytdlp import extract_url, handle_yt_inline_query, handle_yt_chosen_result
 from .render import handle_render_doc, handle_render_group, handle_render_inline_query
@@ -103,10 +103,9 @@ async def handle_msg(msg: Message, rs: Responder | None = None, direct: bool = T
         log.debug('Via bot: %s', msg)
         return
 
-    if (fut := try_handle_voice(msg, rs)) is not None:
-        return await fut
-
-    if await try_handle_sticker(msg, rs):
+    if await handle_voice.route(rs, as_command=False) or await handle_sticker(
+        msg, rs, as_command=False
+    ):
         return
 
     # ID Bot

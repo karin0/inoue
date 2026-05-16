@@ -16,6 +16,7 @@ from .payload import (
 from .dispatch import (
     MessageArg,
     CallbackData,
+    RequireDefer,
     Route,
     command,
     callback_query,
@@ -49,6 +50,7 @@ __all__ = [
     'VoicePayload',
     'MessageArg',
     'CallbackData',
+    'RequireDefer',
     'Route',
     'command',
     'callback_query',

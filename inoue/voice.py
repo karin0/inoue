@@ -1,7 +1,6 @@
 import os
 import math
 import asyncio
-from typing import Awaitable
 from datetime import timedelta
 
 from telegram import Message, Document, Audio, Video
@@ -11,9 +10,10 @@ from bot import (
     create_task,
     escape,
     Responder,
-    InlineResponder,
     EditHandle,
     VoicePayload,
+    MessageArg,
+    RequireDefer,
     command,
 )
 
@@ -169,32 +169,7 @@ def extract_media(
         return media, media.duration
 
 
-# This is sync before we must defer the `rs` before entering async, otherwise
-# this would not work in `reroute_cmd`, which usually runs as a `Task` after we
-# yield.
-def try_handle_voice(
-    msg: Message, rs: Responder, parse_url: bool = False
-) -> Awaitable | None:
-    arg = rs.get_arg()
-    info = extract_media(msg) or (
-        msg.reply_to_message and extract_media(msg.reply_to_message)
-    )
-    parsed = None
-    if info or (parse_url and (parsed := extract_url(arg)) is not None):
-        if isinstance(rs, InlineResponder):
-            # XXX: A voice cannot be edited onto an existing message, so we have
-            # to defer the `InlineResponder`.
-            # Otherwise, the inline message would be sent before the voice is ready.
-            log.info('try_handle_voice: deferring: %r', rs)
-
-            # An inline message cannot contain two media, so we have to skip sending
-            # the original audio.
-            return rs.wait_until(_try_handle_voice(rs, info, parsed, arg, False))
-
-        return _try_handle_voice(rs, info, parsed, arg)
-
-
-async def _try_handle_voice(
+async def _handle_voice(
     rs: Responder,
     info: tuple[Media | Output, float | timedelta] | None,
     parsed: tuple[str, str] | None,
@@ -228,12 +203,32 @@ async def _try_handle_voice(
         await convert_voice(rs, *info, bitrate_k, quality, quiet)
 
 
+# XXX: No `InputMediaVoice` exists, so the voice result cannot be edited onto
+# an inline message.
+# When `rs` is an `InlineResponder`, the caller must defer the emission until
+# the voice is ready.
+# Otherwise, the inline message would be sent before the voice is ready.
 @command(public=True)
-def handle_voice(msg: Message, rs: Responder):
-    fut = try_handle_voice(msg, rs, parse_url=True)
-    if fut is not None:
-        return fut
-    return rs.reply_cached(
-        r'Send or reply to a media message with `/voice [q]`, or use `/voice <url>`\.',
-        'MarkdownV2',
+async def handle_voice(
+    rs: Responder,
+    msg: Message,
+    arg: MessageArg,
+    flush: RequireDefer,
+    as_command: bool = True,
+) -> bool:
+    info = extract_media(msg) or (
+        msg.reply_to_message and extract_media(msg.reply_to_message)
     )
+    parsed = None
+    if info or (as_command and (parsed := extract_url(arg)) is not None):
+        # An inline message cannot contain two media, so we have to skip sending
+        # the original audio when deferred.
+        await _handle_voice(rs, info, parsed, arg, flush is None)
+        return True
+
+    if as_command:
+        await rs.reply_cached(
+            r'Send or reply to a media message with `/voice [q]`, or use `/voice <url>`\.',
+            'MarkdownV2',
+        )
+    return False

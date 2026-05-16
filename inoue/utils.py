@@ -84,13 +84,9 @@ def route_cmd(rs: Responder) -> Awaitable | None:
         return callback(rs)
 
 
-def reroute_cmd(
+async def reroute_cmd(
     rs: Responder, text: str
-) -> Awaitable[Sequence[tuple[str, str | None]]] | None:
-    '''
-    This is deliberately made two stages to finish the command setup before
-    yielding to async. See `/voice`.
-    '''
+) -> Sequence[tuple[str, str | None]] | None:
     if rs.is_captured():
         log.warning('reroute: already in reroute_cmd: %s', rs)
         return None
@@ -98,12 +94,5 @@ def reroute_cmd(
     if (callback := _extract_cmd_handler(text)) is not None:
         buf = []
         with rs.use_text(text), rs.capture(buf):
-            return _reroute_cmd(rs, text, buf, callback(rs))
-
-
-async def _reroute_cmd(
-    rs: Responder, text: str, buf: list[tuple[str, str | None]], coro: Awaitable
-) -> Sequence[tuple[str, str | None]]:
-    with rs.use_text(text), rs.capture(buf):
-        await coro
+            await callback(rs)
         return buf

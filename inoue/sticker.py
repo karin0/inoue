@@ -139,7 +139,7 @@ async def send(
     )
 
 
-async def _try_handle_sticker(rs: Responder, src: Message) -> bool:
+async def _handle_sticker(rs: Responder, src: Message) -> bool:
     if sti := src.sticker:
         base, emoji = sti.set_name, sti.emoji
         if sti.is_video:
@@ -194,19 +194,17 @@ async def _try_handle_sticker(rs: Responder, src: Message) -> bool:
     return False
 
 
-async def try_handle_sticker(msg: Message, rs: Responder) -> bool:
+@command(public=True)
+async def handle_sticker(msg: Message, rs: Responder, as_command: bool = True) -> bool:
     try:
-        return await _try_handle_sticker(rs, msg) or (
-            (m := msg.reply_to_message) is not None and await _try_handle_sticker(rs, m)
+        r = await _handle_sticker(rs, msg) or (
+            (m := msg.reply_to_message) is not None and await _handle_sticker(rs, m)
         )
     except TooLarge:
         await rs.reply_cached('File is too large.')
         return True
-
-
-@command(public=True)
-async def handle_sticker(msg: Message, rs: Responder):
-    if not await try_handle_sticker(msg, rs):
+    if not r and as_command:
         await rs.reply_cached(
             'Send or reply to a photo/animation to convert it into a sticker.'
         )
+    return r

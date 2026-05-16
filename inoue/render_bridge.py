@@ -322,13 +322,13 @@ class Bridge(Box):
         return self._promise(asyncio.sleep(seconds))
 
     async def _reroute_cmd(
-        self, cmd: str, coro: Awaitable[Sequence[tuple[str, str | None]]] | None
+        self, rs: Responder, cmd: str
     ) -> Fragment[Raw | str] | Raw | str | None:
-        if coro is None:
-            self._cb._error(f'command not found: {cmd!r}')
-            return None
-        r = await coro
+        r = await reroute_cmd(rs, cmd)
         log.info('Bridge: exec %r: %r', cmd, r)
+        if r is None:
+            self._cb._error(f'exec failed: {cmd!r}')
+            return None
         if len(r) == 1:
             text, parse_mode = r[0]
             # Avoid a repeated escaping.
@@ -349,8 +349,7 @@ class Bridge(Box):
             raise ValueError(f'command must start with /, got {cmd!r}')
         if (rs := self._cb._responder) is None:
             raise RuntimeError('No responder')
-        coro = reroute_cmd(rs, cmd)
-        return self._promise(self._reroute_cmd(cmd, coro))
+        return self._promise(self._reroute_cmd(rs, cmd))
 
     @public
     def dbg(self) -> str:

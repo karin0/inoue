@@ -63,28 +63,33 @@ class InlineResponder(Responder):
     async def reply_chat_action(self, action: ChatAction) -> None:
         log.debug('InlineResponder: ignored chat action: %s', action)
 
-    def wait_until(self, coro: Awaitable) -> Awaitable:
-        # No `InputMediaVoice` exists, so a pending voice media cannot be edited
-        # into the inline message.
-        # Caller must defer our emission until the voice is ready.
+    def wait_until[T](self, coro: Awaitable[T]) -> Awaitable[T] | None:
+        # A `MediaPayload` without `InputMedia` cannot be edited onto the inline
+        # message.
+        # When a pending voice is present, the caller (or dispatcher) must defer
+        # our emission until the voice is ready.
         if isinstance(self._inline_message_id, str):
             log.warning(
                 'InlineResponder: cannot defer after the inline message is emitted: %s',
                 self,
             )
-            return coro
+            return None
 
         log.info('InlineResponder: deferred: %s', self)
         self._deferred = True
         return self._flush_after(coro)
 
-    async def _flush_after(self, coro: Awaitable) -> None:
+    async def _flush_after[T](self, coro: Awaitable[T]) -> T:
         try:
-            await coro
+            return await coro
         finally:
-            self._deferred = False
-            if self._dirty:
-                await self._emit()
+            await self.flush()
+
+    async def flush(self) -> None:
+        self._deferred = False
+        if self._dirty:
+            log.info('InlineResponder: flushing deferred: %s', self)
+            await self._emit()
 
     async def _stage_media(self, payload: MediaPayload) -> None:
         if isinstance(self._inline_message_id, str) and not payload_has_input(payload):

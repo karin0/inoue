@@ -1,6 +1,6 @@
 import inspect
 from itertools import islice
-from typing import Any, Callable, Iterable, Coroutine, Awaitable, Type, overload
+from typing import Callable, Iterable, Awaitable, Protocol, cast, overload
 
 from telegram import CallbackQuery, Message, Bot
 
@@ -8,23 +8,29 @@ from . import env
 from .env import log
 from .app import bot
 from .responder import Responder
+from .inline_responder import InlineResponder
 
 type MessageArg = str
 type CallbackData = str
-type CallbackParam = Message | MessageArg | CallbackQuery | CallbackData | Bot | Responder | str | int
+type RequireDefer = Callable[[], Awaitable[None]] | None
 
-CALLBACK_PARAM_TYPES = (
-    Message,
-    MessageArg,
-    CallbackQuery,
-    CallbackData,
-    Bot,
-    Responder,
-    str,
-    int,
+type CallbackParam = Message | MessageArg | CallbackQuery | CallbackData | Bot | Responder | RequireDefer | str | int
+
+UNIQUE_PARAM_TYPES = frozenset(
+    (
+        Message,
+        MessageArg,
+        CallbackQuery,
+        CallbackData,
+        Bot,
+        Responder,
+        RequireDefer,
+    )
 )
+FREE_PARAM_TYPES = (str, int)
 
-type Handler[**P, R] = Callable[P, Awaitable[R]]
+type DefaultType = tuple[str, object]
+type ParamType = type[CallbackParam] | DefaultType
 
 
 def _unwrap[T](x: T | None) -> T:
@@ -33,64 +39,71 @@ def _unwrap[T](x: T | None) -> T:
     return x
 
 
-class Route[**P, R]:
+type Handler[**P, T] = Callable[P, Awaitable[T]]
+
+
+class Route[**P, T]:
     __slots__ = ('_func', 'public', '_params', '_va')
 
-    def __init__(self, func: Handler[P, R], public: bool):
-        params: list[Type[CallbackParam]] = []
-        va_ty: Type[str | int] | None = None
+    def __init__(self, func: Handler[P, T], public: bool):
+        self._func: Handler[..., T] = func
+        self.public = public
+        self._va: type[str | int] | None = None
+
         sig = inspect.signature(func)
-        for name, param in sig.parameters.items():
-            kind = param.kind
-            ty = param.annotation
-
-            if kind == param.VAR_POSITIONAL:
-                if va_ty is not None:
-                    raise TypeError('Multiple *args')
-                if ty not in (str, int):
-                    raise TypeError(f'*args must be str or int, got {ty}')
-                va_ty = ty
-                continue
-
-            if kind not in (param.POSITIONAL_ONLY, param.POSITIONAL_OR_KEYWORD):
-                raise TypeError(f'Keyword argument: {name}')
-
-            if ty not in CALLBACK_PARAM_TYPES:
-                raise TypeError(f'Bad parameter: {ty}')
-
-            params.append(ty)
+        self._params = tuple(self._build(sig))
 
         log.debug(
             'Handler: %s%s: public=%s, params=%d, va=%s',
             func.__name__,
             sig,
             public,
-            len(params),
-            va_ty,
+            len(self._params),
+            self._va,
         )
 
-        self._func: Callable = func
-        self.public = public
-        self._params = tuple(params)
-        self._va = va_ty
+    def _build(self, sig: inspect.Signature) -> Iterable[ParamType]:
+        seen = set()
+        for name, param in sig.parameters.items():
+            kind = param.kind
+            ty = param.annotation
 
-    def __repr__(self) -> str:
-        return f'<{"Public " if self.public else ""}Route: {self._func.__name__}>'
+            if kind == param.VAR_POSITIONAL:
+                if self._va is not None:
+                    raise TypeError('Multiple *args')
+                if ty not in (str, int):
+                    raise TypeError(f'*args must be str or int, got {ty}')
+                self._va = ty
+                continue
 
-    __str__ = __repr__
+            if kind == param.VAR_KEYWORD:
+                continue
 
-    @property
-    def __name__(self) -> str:
-        return repr(self)
+            if kind == param.KEYWORD_ONLY:
+                raise TypeError('Keyword-only parameters are unsupported')
+
+            assert kind in (param.POSITIONAL_ONLY, param.POSITIONAL_OR_KEYWORD)
+
+            if ty in UNIQUE_PARAM_TYPES:
+                if ty in seen:
+                    raise TypeError(f'Duplicate parameter: {ty}')
+                seen.add(ty)
+            elif ty not in FREE_PARAM_TYPES:
+                if param.default is param.empty:
+                    raise TypeError(f'Bad parameter: {param}')
+                ty = (name, param.default)
+
+            yield ty
 
     def __call__(
-        self, rs: Responder | None, argv: Iterable[str] = ()
-    ) -> Coroutine[Any, Any, R]:
+        self, rs: Responder | None, argv: Iterable[str] = (), **kwargs
+    ) -> Awaitable[T]:
         log.debug('Calling route: %s: %r', self, argv)
         update = env.driver.get_update(rs, public=self.public)
 
         it = iter(argv)
         args = []
+        defer = None
         for ty in self._params:
             if ty is Message:
                 args.append(_unwrap(rs).get_message())
@@ -108,6 +121,14 @@ class Route[**P, R]:
                 args.append(next(it))
             elif ty is int:
                 args.append(int(next(it)))
+            elif ty is RequireDefer:
+                if isinstance(rs, InlineResponder):
+                    defer = (rs.wait_until, len(args))
+                    args.append(rs.flush)
+                else:
+                    args.append(None)
+            elif isinstance(ty, tuple):
+                args.append(kwargs.get(ty[0], ty[1]))
             else:
                 raise TypeError(f'Bad parameter: {ty}')
 
@@ -115,28 +136,53 @@ class Route[**P, R]:
             args.extend(map(self._va, it))
 
         log.debug('Injected to %s: %r', self._func.__name__, args)
+        if defer is not None:
+            fut = defer[0](self._func(*args))
+            if fut is not None:
+                return fut
+            args[defer[1]] = None
         return self._func(*args)
 
+    def __repr__(self) -> str:
+        return f'<{"Public " if self.public else ""}Route: {self._func.__name__}>'
+
+    __str__ = __repr__
+
+    @property
+    def __name__(self) -> str:
+        return repr(self)
+
+
+class Decorated[**P, T](Protocol):
+    @property
+    def route(self) -> Route[P, T]: ...
+
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Awaitable[T]: ...
+
+
+type Decorator[**P, T] = Callable[[Handler[P, T]], Decorated[P, T]]
 
 commands: dict[str, Route] = {}
 
 
 @overload
-def command[H: Handler](func: H, /, *, public: bool = False) -> H: ...
+def command[**P, T](
+    func: Handler[P, T], /, *, public: bool = False
+) -> Decorated[P, T]: ...
 
 
 @overload
-def command[H: Handler](
+def command[**P, T](
     func: str | None = None, /, *, public: bool = False
-) -> Callable[[H], H]: ...
+) -> Decorator[P, T]: ...
 
 
-def command[H: Handler](
-    func: H | str | None = None, /, *, public: bool = False
-) -> H | Callable[[H], H]:
+def command[**P, T](
+    func: Handler[P, T] | str | None = None, /, *, public: bool = False
+) -> Decorated[P, T] | Decorator[P, T]:
     name_ = None
 
-    def decorator(func: H) -> H:
+    def decorator(func: Handler[P, T]) -> Decorated[P, T]:
         name = name_
 
         if name is None:
@@ -153,8 +199,9 @@ def command[H: Handler](
         if name in commands:
             raise ValueError(f'command: {name} already exists')
 
-        commands[name] = Route(func, public)
-        return func
+        commands[name] = route = Route(func, public)
+        setattr(func, 'route', route)
+        return cast(Decorated[P, T], func)
 
     if func is None or isinstance(func, str):
         name_ = func
@@ -167,13 +214,13 @@ _cb_handlers: dict[str, Route] = {}
 _cb_filters: list[tuple[Callable[[CallbackData], bool], Route]] = []
 
 
-def callback_query(
+def callback_query[**P, T](
     key: str | None = None,
     *,
     filter: Callable[[CallbackData], bool] | None = None,
     public: bool = False,
-):
-    def decorator[H: Handler](func: H) -> H:
+) -> Decorator[P, T]:
+    def decorator(func: Handler[P, T]) -> Decorated[P, T]:
         route = Route(func, public)
 
         if filter is not None:
@@ -191,14 +238,15 @@ def callback_query(
         else:
             raise ValueError('callback_query: either key or filter must be provided')
 
-        return func
+        setattr(func, 'route', route)
+        return cast(Decorated[P, T], func)
 
     return decorator
 
 
 def _dispatch_argv(
     rs: Responder | None, data: str, map: dict[str, Route]
-) -> Coroutine | None:
+) -> Awaitable | None:
     args = data.split('_')
     if (route := map.get(args[0])) is not None:
         return route(rs, islice(args, 1, None))
@@ -218,8 +266,8 @@ def dispatch_callback(rs: Responder | None, data: str) -> Awaitable:
 _start_handlers: dict[str, Route] = {}
 
 
-def start(key: str, *, public: bool = False) -> Callable[[Handler], Handler]:
-    def decorator[H: Handler](func: H) -> H:
+def start[**P, T](key: str, *, public: bool = False) -> Decorator[P, T]:
+    def decorator(func: Handler[P, T]) -> Decorated[P, T]:
         route = Route(func, public)
 
         if not key:
@@ -229,10 +277,11 @@ def start(key: str, *, public: bool = False) -> Callable[[Handler], Handler]:
             raise ValueError(f'start: {key} already exists')
 
         _start_handlers[key] = route
-        return func
+        setattr(func, 'route', route)
+        return cast(Decorated[P, T], func)
 
     return decorator
 
 
-def dispatch_start(rs: Responder, arg: MessageArg) -> Coroutine | None:
+def dispatch_start(rs: Responder, arg: MessageArg) -> Awaitable | None:
     return _dispatch_argv(rs, arg, _start_handlers) if arg else None
