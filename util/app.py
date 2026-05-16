@@ -48,6 +48,7 @@ def _build_app() -> Application:
     builder = (
         ApplicationBuilder()
         .token(os.environ['TELEGRAM_BOT_TOKEN'])
+        .concurrent_updates(True)
         .post_init(_post_init)
         .post_stop(_post_stop)
         .read_timeout(30)
