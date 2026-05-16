@@ -200,9 +200,20 @@ def make_markup(
         data = encode_flags(state) + BUTTON_SIGN + key + memory + path
         row.append(InlineKeyboardButton(name, callback_data=data))
 
-    def push_flag(name: str):
+    def push_flag(label: str, old: bool, v: bool):
+        name = label + (':=' if old else '=') + '01'[v]
         data = encode_flags(state) + memory + path
-        row.append(InlineKeyboardButton(name, callback_data=data))
+        row.append(
+            InlineKeyboardButton(
+                name,
+                callback_data=data,
+                style=(
+                    (KeyboardButtonStyle.SUCCESS if v else KeyboardButtonStyle.DANGER)
+                    if old
+                    else None
+                ),
+            )
+        )
 
     for k in buttons:
         if icon := get_env(ctx, 'icon.' + k):
@@ -223,12 +234,12 @@ def make_markup(
 
             if (icon := get_env(ctx, 'icon.' + k)) is not None:
                 if label := to_str(icon):
-                    push_flag(label + (':=' if old else '=') + '01'[v])
+                    push_flag(label, old, v)
                 else:
                     log.debug('make_markup: hiding flag %s due to empty icon', k)
             elif not hide_flags:
                 label = SPECIAL_FLAG_ICONS.get(k, k)
-                push_flag(label + (':=' if old else '=') + '01'[v])
+                push_flag(label, old, v)
             else:
                 log.debug('make_markup: hiding flag %s', k)
 
