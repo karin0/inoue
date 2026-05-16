@@ -24,13 +24,13 @@ from typing import (
 from collections.abc import MutableMapping
 
 from render_core import Box, Value, Fragment, to_str
-
-from log import log
 from bot import create_task, Responder, escape, html_escape
-from text import cleanup_text, cleanup_text_md
-from utils import reroute_cmd
-from motto import hitokoto
-from segments import (
+
+from .log import log
+from .text import cleanup_text, cleanup_text_md
+from .utils import reroute_cmd
+from .motto import hitokoto
+from .segments import (
     BaseElement,
     Segment,
     Element,

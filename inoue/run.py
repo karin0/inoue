@@ -10,8 +10,6 @@ from typing import Awaitable, Callable, cast
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction
 
-from log import log
-from env import ME, MAX_TEXT_LENGTH
 from bot import (
     create_task,
     Responder,
@@ -19,8 +17,11 @@ from bot import (
     command,
     MessageArg,
 )
-from misc import reply_file
-from text import pre_block
+
+from .log import log
+from .env import ME, MAX_TEXT_LENGTH
+from .misc import reply_file
+from .text import pre_block
 
 UPDATE_CWD = os.environ['UPDATE_CWD']
 

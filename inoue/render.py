@@ -27,10 +27,7 @@ from telegram import (
 )
 from telegram.constants import MessageLimit, ReactionEmoji, KeyboardButtonStyle
 
-from db import db
-from log import log, do_notify
-from env import USER_ID, CHAN_ID, MAX_TEXT_LENGTH, list_env, encode_id
-from text import cleanup_text, pre_block
+from render_core import Engine, Value, to_str
 from bot import (
     bot,
     get_context,
@@ -46,7 +43,12 @@ from bot import (
     callback_query,
     command,
 )
-from segments import (
+
+from .db import db
+from .log import log, do_notify
+from .env import USER_ID, CHAN_ID, MAX_TEXT_LENGTH, list_env, encode_id
+from .text import cleanup_text, pre_block
+from .segments import (
     Segment,
     Element,
     Pre,
@@ -57,10 +59,9 @@ from segments import (
     get_renderer,
     render_segment,
 )
-from render_core import Engine, Value, to_str
-from render_bridge import Bridge, LocalPath, to_segment
-from utils import get_msg_url, try_send_text_or_not_modified
-from render_context import OverriddenDict, encode_value, decode_value
+from .render_bridge import Bridge, LocalPath, to_segment
+from .utils import get_msg_url, try_send_text_or_not_modified
+from .render_context import OverriddenDict, encode_value, decode_value
 
 # '/' is kept for compatibility, which was used for '-'.
 BUTTON_SIGN = '!'

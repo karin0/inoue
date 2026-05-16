@@ -8,7 +8,9 @@ import unittest
 from typing import Callable, Mapping
 from unittest.mock import Mock
 
-log = logging.getLogger('render_core')
+from . import Value, Engine
+from .context import log, trace
+from .lex import Chunker
 
 if os.environ.get('TEST_TRACE') == '1':
     log.setLevel(logging.DEBUG)
@@ -16,22 +18,18 @@ if os.environ.get('TEST_TRACE') == '1':
 else:
     log.setLevel(logging.CRITICAL)
 
-sys.modules['util'] = mock_util = Mock('util')
-mock_util.log = log
+sys.modules['inoue.log'] = mock_log = Mock('log')
+mock_log.log = log
 
-sys.modules['db'] = mock_db = Mock('db')
+sys.modules['inoue.db'] = mock_db = Mock('db')
 mock_db.db = None
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from render_core import Value, Engine
-from render_core.context import trace
-from render_core.lex import Chunker
-
-import render_context as render_ctx
-from render_context import OverriddenDict
+import inoue.render_context as render_ctx
 
 render_ctx.persisted = persisted = {}
+OverriddenDict = render_ctx.OverriddenDict
 
 
 test_text = """

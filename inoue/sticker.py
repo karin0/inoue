@@ -10,9 +10,10 @@ from pathvalidate import sanitize_filename
 from telegram import Animation, Document, Message, PhotoSize, Sticker
 from telegram.constants import ChatAction
 
-from log import log
-from ffmpeg import run_ffmpeg
 from bot import bot, Responder, DocumentPayload, command
+
+from .log import log
+from .ffmpeg import run_ffmpeg
 
 STICKER_SIDE = 512
 MAX_FILE_SIZE = 10 << 20

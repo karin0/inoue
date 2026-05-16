@@ -2,9 +2,10 @@ from typing import Awaitable, Callable, Sequence, Concatenate
 
 from telegram.error import BadRequest
 
-from log import log
-from env import CHAN_ID
 from bot import bot, reroute_capture, truncate_text, Responder, get_command_handler
+
+from .log import log
+from .env import CHAN_ID
 
 
 def get_msg_url(msg_id, chat_id=None) -> str:

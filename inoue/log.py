@@ -17,8 +17,9 @@ from bot import (
     create_task,
     Responder,
 )
-from env import ME_LOWER, MAX_TEXT_LENGTH, USER_ID, GROUP_ID, LOG_THREAD_ID
-from text import escape_pre
+
+from .env import ME_LOWER, MAX_TEXT_LENGTH, USER_ID, GROUP_ID, LOG_THREAD_ID
+from .text import escape_pre
 
 
 class NotifyHandler(logging.Handler):

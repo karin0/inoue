@@ -11,7 +11,6 @@ from telegram import (
     BotCommandScopeChatAdministrators,
 )
 
-from log import log
 from bot import (
     escape,
     get_context,
@@ -22,11 +21,13 @@ from bot import (
     get_command_handler,
     dispatch_start,
 )
-from env import ME, CHAN_ID, TRUSTED_IDS
-from db import db
-from motto import greeting, hitokoto
-from run import handle_cmd
-from text import pre_block, pre_block_raw
+
+from .log import log
+from .env import ME, CHAN_ID, TRUSTED_IDS
+from .db import db
+from .motto import greeting, hitokoto
+from .run import handle_cmd
+from .text import pre_block, pre_block_raw
 
 try:
     from conf import reply_usage

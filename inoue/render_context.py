@@ -2,9 +2,10 @@ from typing import Iterator, Mapping
 from collections import UserDict, OrderedDict
 from collections.abc import ItemsView, MutableMapping
 
-from db import db
-from log import log
 from render_core import Context, Value, Box, is_value_type
+
+from .db import db
+from .log import log
 
 LRU_CAPACITY = 128
 

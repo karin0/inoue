@@ -1,9 +1,9 @@
 # ruff: noqa: F401, F403
 import logging
 
-from db import db
+from inoue.db import db
 
-from env import (
+from inoue.env import (
     USER_ID,
     MEDIA_STAGING_CHAT_ID,
     MEDIA_STAGING_MESSAGE_THREAD_ID,

@@ -23,7 +23,6 @@ from telegram import (
 )
 from telegram.constants import ChatAction
 
-from log import log, is_debug
 from bot import (
     MessageArg,
     command,
@@ -38,8 +37,10 @@ from bot import (
     Responder,
     EditHandle,
 )
-from render_context import LRUDict
-from ffmpeg import (
+
+from .log import log, is_debug
+from .render_context import LRUDict
+from .ffmpeg import (
     encode_voice,
     encode_video_note,
     VIDEO_NOTE_MAX_DURATION,

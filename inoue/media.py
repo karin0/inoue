@@ -1,9 +1,10 @@
 from telegram import Message
 
-from db import db
-from log import log
 from bot import escape, Responder, MessageArg, command, start
-from utils import get_msg_url, get_deep_link_url
+
+from .db import db
+from .log import log
+from .utils import get_msg_url, get_deep_link_url
 
 
 def extract_media(msg: Message) -> tuple[str, str] | None:

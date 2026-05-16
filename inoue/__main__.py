@@ -9,8 +9,10 @@ from telegram.ext import ContextTypes, BaseHandler
 from telegram.error import NetworkError
 from telegram.constants import ChatID
 
-from log import log, notify, do_notify, is_debug, trace
-from env import (
+from bot import app, bot, post_init, on_error, Sender, Responder, shorten, use_context
+
+from .log import log, notify, do_notify, is_debug, trace
+from .env import (
     ME,
     USER_ID,
     CHAN_ID,
@@ -19,9 +21,8 @@ from env import (
     IGNORE_CHAT_IDS,
     LOCK_FILE,
 )
-from bot import app, bot, post_init, on_error, Sender, Responder, shorten, use_context
-from commands import set_commands, stats, reply_usage
-from handlers import (
+from .commands import set_commands, stats, reply_usage
+from .handlers import (
     handle_msg,
     handle_post,
     handle_callback_query,
@@ -30,14 +31,14 @@ from handlers import (
     handle_guest,
 )
 
-import misc, media, run  # noqa: F401, E401
+import inoue.misc as misc, inoue.media as media, inoue.run as run  # noqa: F401, E401
 
 
 async def handle_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # ruff: noqa: E731
     t0 = time.perf_counter()
 
-    from future import patch_update
+    from .future import patch_update
 
     update = patch_update(update)
 

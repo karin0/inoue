@@ -9,8 +9,6 @@ from dataclasses import dataclass, field
 
 from telegram import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
-from log import log
-from env import MAX_TEXT_LENGTH
 from bot import (
     escape,
     truncate_text,
@@ -21,9 +19,12 @@ from bot import (
     callback_query,
     start,
 )
-from text import pre_block_raw
-from utils import get_deep_link_url
-from segments import Segment, Link, Bold, Underline, Formatter
+
+from .log import log
+from .env import MAX_TEXT_LENGTH
+from .text import pre_block_raw
+from .utils import get_deep_link_url
+from .segments import Segment, Link, Bold, Underline, Formatter
 
 # >>> 2026-01-02 15:04:05 (1)
 SECTION_SEP = b'>>> 202'

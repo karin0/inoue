@@ -1,7 +1,8 @@
 import re
 
-from env import MAX_TEXT_LENGTH
 from bot import truncate_text
+
+from .env import MAX_TEXT_LENGTH
 
 
 def escape_pre(s: str) -> str:
