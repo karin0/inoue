@@ -171,9 +171,20 @@ class MediaPayload[T: Content](Protocol):
 
     @staticmethod
     def extract(msg: Message, kind: str | None = None) -> MediaPayload[Media] | None:
-        if (r := extract_media(msg, kind)) is not None:
-            typ, media = r
-            return typ(media)
+        media: Media | tuple[PhotoSize, ...] | None
+        if kind is not None:
+            if media := getattr(msg, kind):
+                if isinstance(media, (tuple, list)):
+                    media = media[-1]
+                return ALL_PAYLOAD[kind](media)
+
+        for k, typ in ALL_PAYLOAD.items():
+            if media := getattr(msg, k, None):
+                if kind is not None:
+                    log.info('extract_media: fallback: %s -> %s', kind, k)
+                if isinstance(media, (tuple, list)):
+                    media = media[-1]
+                return typ(media)
 
     async def as_cached(self) -> CachedPayload | None:
         if isinstance(self.content, CACHED_MEDIA_TYPES):
@@ -629,22 +640,3 @@ ALL_PAYLOAD: dict[str, type[MediaPayloadType]] = {
         StickerPayload,
     )
 }
-
-
-def extract_media(
-    msg: Message, kind: str | None = None
-) -> tuple[type[MediaPayloadType], Media] | None:
-    media: Media | tuple[PhotoSize, ...] | None
-    if kind is not None:
-        if media := getattr(msg, kind):
-            if isinstance(media, (tuple, list)):
-                media = media[-1]
-            return ALL_PAYLOAD[kind], media
-
-    for k, typ in ALL_PAYLOAD.items():
-        if media := getattr(msg, k, None):
-            if kind is not None:
-                log.info('extract_payload: fallback: %s -> %s', kind, k)
-            if isinstance(media, (tuple, list)):
-                media = media[-1]
-            return typ, media
