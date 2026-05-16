@@ -1,7 +1,6 @@
 import os
 import asyncio
 import logging
-import traceback
 import functools
 
 from datetime import datetime
@@ -179,34 +178,36 @@ async def do_notify(
     revocable: bool = False,
     quiet: bool = False,
 ):
-    loop = asyncio.get_event_loop()
-    now = loop.time()
-    while notify_moments and now - notify_moments[0] >= NOTIFY_LIMIT_INTERVAL_SEC:
-        notify_moments.popleft()
-
-    if len(notify_moments) >= NOTIFY_LIMIT_BURST:
-        notify_buf.append(text)
-        dt = NOTIFY_LIMIT_INTERVAL_SEC - (now - notify_moments[0]) + 1
-        with notify.suppress():
-            log.warning('do_notify: rate limited, flushing in %.3f secs', dt)
-        loop.call_later(dt, flush_notify_buf)
-        return
-    notify_moments.append(now)
-
-    if not quiet and (m := message or get_ctx_msg()) is not None:
-        try:
-            return await Responder.create(m).reply(
-                text,
-                parse_mode,
-                cached=revocable,
-                disable_web_page_preview=True,
-            )
-        except Exception as e:
-            traceback.print_exc()
-            text += f'\nreply_text: {type(e).__name__}: {e}'
-            text = truncate_text(text)
-
     try:
+        loop = asyncio.get_event_loop()
+        now = loop.time()
+        while notify_moments and now - notify_moments[0] >= NOTIFY_LIMIT_INTERVAL_SEC:
+            notify_moments.popleft()
+
+        if len(notify_moments) >= NOTIFY_LIMIT_BURST:
+            notify_buf.append(text)
+            dt = NOTIFY_LIMIT_INTERVAL_SEC - (now - notify_moments[0]) + 1
+            with notify.suppress():
+                log.warning('do_notify: rate limited, flushing in %.3f secs', dt)
+            loop.call_later(dt, flush_notify_buf)
+            return
+        notify_moments.append(now)
+
+        if not quiet and (m := message or get_ctx_msg()) is not None:
+            try:
+                return await Responder.create(m).reply(
+                    text,
+                    parse_mode,
+                    cached=revocable,
+                    disable_web_page_preview=True,
+                )
+            except Exception as e:
+                with notify.suppress():
+                    log.exception('do_notify: reply failed')
+                text += f'\nreply: {type(e).__name__}: {e}'
+                text = truncate_text(text)
+                parse_mode = None
+
         if quiet:
             await bot.send_message(
                 GROUP_ID,
