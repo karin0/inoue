@@ -43,7 +43,7 @@ from util import (
     escape,
     cleanup_text,
     do_notify,
-    encode_chat_id,
+    encode_id,
     Responder,
     EditHandle,
     PhotoPayload,
@@ -650,7 +650,7 @@ def handle_render(msg: Message, rs: Responder, arg: MessageArg):
         assert isinstance(row, tuple)
         doc_id, text = row
     else:
-        chat_prefix = encode_chat_id(msg, '')
+        chat_prefix = encode_id(msg.chat_id, '')
         path = f'#{chat_prefix}{msg.message_id}'
         db['r-' + path] = text
         doc_id = None

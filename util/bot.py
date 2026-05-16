@@ -9,7 +9,7 @@ from .log import log
 from .text import truncate_text
 from .app import bot
 from .ctx import get_msg, get_text, use_text_override
-from .env import USER_ID, CHAN_ID, GROUP_ID
+from .env import CHAN_ID
 from .responder import reroute_capture
 
 
@@ -23,17 +23,6 @@ def get_msg_url(msg_id, chat_id=None) -> str:
 def get_deep_link_url(arg: str) -> str:
     assert bot is not None
     return f'https://t.me/{bot.username}?start={arg}'
-
-
-def encode_chat_id(m: Message, default: str = 'u') -> str:
-    chat_id = m.chat_id
-    if chat_id == USER_ID:
-        return default
-    if chat_id == CHAN_ID:
-        return 'c'
-    if chat_id == GROUP_ID:
-        return 'g'
-    return f'G{chat_id}'
 
 
 async def try_send_text[**P, R](

@@ -11,6 +11,16 @@ GROUP_ID = int(os.environ['GROUP_ID'])
 TODO_ID = int(os.environ['TODO_ID'])
 
 
+def encode_id(chat_id: int, default: str = 'u') -> str:
+    if chat_id == USER_ID:
+        return default
+    if chat_id == CHAN_ID:
+        return 'c'
+    if chat_id == GROUP_ID:
+        return 'g'
+    return f'G{chat_id}'
+
+
 def list_env(key: str, sep: str = ',') -> tuple[str, ...]:
     if val := os.environ.get(key):
         return tuple(r for s in val.split(sep) if (r := s.strip()))

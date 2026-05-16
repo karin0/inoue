@@ -9,7 +9,7 @@ from telegram.error import BadRequest
 
 from .log import log
 from .app import bot, create_task
-from .env import CHAN_ID, GROUP_ID, USER_ID
+from .env import encode_id
 from .payload import MediaPayload, payload_has_input
 
 from db import db
@@ -198,17 +198,6 @@ class MessageEditHandle(EditHandle):
         return self.message
 
 
-def encode_chat_id(m: Message, default: str = 'u') -> str:
-    chat_id = m.chat_id
-    if chat_id == USER_ID:
-        return default
-    if chat_id == CHAN_ID:
-        return 'c'
-    if chat_id == GROUP_ID:
-        return 'g'
-    return f'G{chat_id}'
-
-
 reroute_capture: ContextVar[tuple[Message, list[tuple[str, str | None]]] | None] = (
     ContextVar('reroute_capture', default=None)
 )
@@ -267,7 +256,7 @@ class MessageResponder(Responder):
         allow_not_modified: bool = False,
     ) -> MessageEditHandle | None:
         m = self.msg
-        key = f'{encode_chat_id(m)}-{m.message_id}'
+        key = f'{encode_id(m.chat_id)}-{m.message_id}'
 
         def _reply_text(text: str) -> Awaitable[Message]:
             return m.reply_text(
