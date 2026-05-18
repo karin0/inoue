@@ -2,10 +2,17 @@ import os
 import sys
 import time
 import atexit
+import asyncio
 
 from telegram import Message, Update, User, MessageOriginChannel
 from telegram.ext import ContextTypes, BaseHandler
 from telegram.constants import ChatID
+
+# aiohttp must be initialized after a event loop is set.
+try:
+    asyncio.get_running_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
 
 from bot import app, Responder, shorten
 
