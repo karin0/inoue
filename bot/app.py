@@ -12,15 +12,17 @@ from . import env
 from .env import log
 
 
-async def _post_init(app: Application) -> None:
-    env.driver.post_init()
+async def _post_init(app: Application):
+    if asyncio.iscoroutine(r := env.driver.post_init()):
+        await r
 
 
-async def _post_stop(_: Application) -> None:
-    env.driver.post_stop()
+async def _post_stop(_: Application):
+    if asyncio.iscoroutine(r := env.driver.post_stop()):
+        await r
 
 
-async def handle_error(update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_error(update, context: ContextTypes.DEFAULT_TYPE):
     env.driver.on_error(context.error)
 
 

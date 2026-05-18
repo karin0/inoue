@@ -216,7 +216,7 @@ def handle_guest(msg: Message):
 
 async def handle_callback_query(query: CallbackQuery):
     if not (data := query.data) or data == 'noop':
-        return query.answer()
+        return await query.answer()
 
     try:
         if not isinstance(msg := query.message, Message):
