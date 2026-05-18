@@ -180,6 +180,7 @@ class MediaPayload[T: Content](Protocol):
 
     async def as_cached(self) -> CachedPayload | None:
         if isinstance(self.content, CACHED_MEDIA_TYPES):
+            log.debug('as_cached: already cached: %r', self)
             # XXX: A str could be a file_id or URL, but we don't use media URLs.
             return cast(CachedPayload, self)
         return await self.stage()
@@ -195,6 +196,10 @@ class MediaPayload[T: Content](Protocol):
         parse_mode: str | None = None,
     ) -> InputMedia | None:
         return None
+
+    def __repr__(self) -> str:
+        c = self.content
+        return f'<{type(self).__name__}: {f'[{len(c)} bytes]' if isinstance(c, bytes) else c}>'
 
 
 class MediaPayloadWithInput[T: Content](MediaPayload[T], Protocol):
