@@ -160,8 +160,6 @@ class Route[**P, T]:
     def __repr__(self) -> str:
         return f'<{"Public " if self.public else ""}Route: {self._func.__name__}>'
 
-    __str__ = __repr__
-
     @property
     def __name__(self) -> str:
         return repr(self)

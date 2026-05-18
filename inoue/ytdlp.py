@@ -227,10 +227,8 @@ class Output:
             self.thumbnail_path,
         )
 
-    def __str__(self) -> str:
+    def __repr__(self) -> str:
         return f'<ytdlp.Output: {self.path}, {self.duration}, {self.thumbnail_path}>'
-
-    __repr__ = __str__
 
     def _get(self, key: str) -> str | None:
         if (val := self.info.get(key)) is not None:

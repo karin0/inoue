@@ -54,7 +54,7 @@ async def handle_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     sender_name = None
     valid = False
 
-    if sender := update.effective_sender:
+    if (sender := update.effective_sender) is not None:
         sender_id = sender.id
         if isinstance(sender, User):
             sender_name = sender.full_name
@@ -64,7 +64,7 @@ async def handle_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             sender_name = sender.title
             src = f'{sender_name} [{sender.type} {sender_id}]'
 
-    if chat := update.effective_chat:
+    if (chat := update.effective_chat) is not None:
         if chat.id in IGNORE_CHAT_IDS:
             return
 
@@ -77,6 +77,8 @@ async def handle_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             valid = chat.id == CHAN_ID or (
                 # The content must be from CHAN_ID to be trusted, even if
                 # auto-forwarded to GROUP_ID.
+                # Note that we may only receive such updates if we are an admin
+                # or the privacy mode is disabled.
                 chat.id == GROUP_ID
                 and (msg := effective_msg)
                 and (from_user := msg.from_user)
