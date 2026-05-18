@@ -69,7 +69,7 @@ async def handle_msg(msg: Message, rs: Responder | None = None, direct: bool = T
     context = get_context()
     log.debug('handle_msg: rs: %s, sender: %s', rs, context.sender)
 
-    if msg.chat_id == TODO_ID:
+    if TODO_ID and msg.chat_id == TODO_ID:
         # Responders are not used for messages in `TODO_ID`, which has a different
         # interaction model.
         if context.sender_is_host():

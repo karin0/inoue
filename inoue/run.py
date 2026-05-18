@@ -23,7 +23,7 @@ from .env import ME, MAX_TEXT_LENGTH
 from .misc import reply_file
 from .text import pre_block
 
-UPDATE_CWD = os.environ['UPDATE_CWD']
+UPDATE_CWD = os.environ.get('UPDATE_CWD')
 
 
 @command

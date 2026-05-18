@@ -10,7 +10,10 @@ from .log import log, is_debug
 
 
 def sentences() -> Iterable[str]:
-    file = os.environ['MOTTO_FILE']
+    if not (file := os.environ.get('MOTTO_FILE')):
+        yield __name__
+        return
+
     with open(file, 'r', encoding='utf-8') as fp:
         s = fp.read()
 
@@ -50,6 +53,7 @@ def hitokoto_sentences():
     sentences_dir = os.environ.get('SENTENCES_BUNDLE_DIR')
     if not sentences_dir:
         log.info('SENTENCES_BUNDLE_DIR unset, hitokoto sentences disabled')
+        yield __name__
         return
 
     HITOKOTO_TYPES = os.environ.get('HITOKOTO_TYPES', '').strip()

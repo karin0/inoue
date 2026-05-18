@@ -168,7 +168,7 @@ class RGQuery:
         yield (-1, -1)
 
 
-CWD = os.environ['RG_CWD']
+CWD = os.environ.get('RG_CWD')
 QUERIES: list[RGQuery] = []
 QUERY_LIMIT = 10
 QUERY_IDX = 0
@@ -457,13 +457,13 @@ async def handle_rg(rs: Responder, arg: MessageArg):
             if (c := bare[0]).isdigit():
                 off = '' if c == '0' else c
             else:
-                off = '4'  # Simple for /rg foo
+                off = '4'
         else:
             raise ValueError(text)
     else:
-        off = '2'  # Simple Miyagi for plain text
+        off = '2'
 
-    query = await _run_rg(arg, CWD + off)
+    query = await _run_rg(arg, (CWD + off) if CWD else '.')
 
     if not query.files:
         return await rs.reply_cached('No matches.')
