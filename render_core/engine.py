@@ -1285,7 +1285,8 @@ class Engine(Interpreter):
             raise
         except Exception as e:
             self._error(f'evaluate: {expr!r}: {type(e).__name__}: {e}')
-            log.exception('evaluate: %s', expr)
+            if is_tracing:
+                log.exception('evaluate: %s', expr)
             return ''
 
         if isinstance(val, tuple):
