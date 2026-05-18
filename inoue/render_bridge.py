@@ -1,23 +1,22 @@
 import os
-import re
 import gc
 import sys
 import time
 import base64
 import asyncio
 import inspect
-import weakref
 import tempfile
 import subprocess
 
 from functools import wraps
 from types import MethodType
 from datetime import datetime
-from typing import Any, Awaitable, Callable, Concatenate, cast, TYPE_CHECKING
 from collections.abc import MutableMapping
+from weakref import WeakSet, WeakValueDictionary, ref
+from typing import Any, Callable, Concatenate, Coroutine, cast, TYPE_CHECKING
 
 from render_core import Box, Value, Fragment, to_str
-from bot import create_task, Responder, escape, html_escape, shorten
+from bot import create_task, Responder, escape, html_escape
 
 from .log import log
 from .text import cleanup_text, cleanup_text_md
@@ -60,98 +59,105 @@ def _call_then[T: PromiseResult](callback: Callback[T], arg) -> T | Promise[T] |
         r = callback(*arg.values(), **arg)
     else:
         r = callback(arg)
-    log.debug('then: result: %r', r)
     return r
 
 
 class Promise[T: PromiseResult](Box):
-    __slots__ = ('_inner', '_func', '_backref', '_cb', '__weakref__')
+    __slots__ = ('_inner', '_func', '_next', '__weakref__')
 
-    def __init__(self, func: Callback[T] | None, cb: Callable[[], None]):
-        cb()
+    def __init__(self, func: Callback[T] | None = None):
         self._inner: list[Promise] | tuple[T | Promise[T] | None] = []
         self._func = func
-        self._backref: weakref.WeakSet[Promise] = weakref.WeakSet()
-        self._cb = cb
+        self._next: WeakSet[Promise] = WeakSet()
         INSTANCES.add(self)
 
     def _resolve(self, prev: PromiseResult):
         log.debug('Promise._resolve: %r\n prev: %r', self, prev)
+
         if isinstance(prev, Promise):
             prev._chain(self)
             return
 
         if self._func is not None:
-            try:
-                result = _call_then(self._func, prev)
-            except Exception as e:
-                log.exception(
-                    'Promise._resolve: callback error: %s: %s', type(e).__name__, e
-                )
-                result = None
-            self._func = None
+            result = _call_then(self._func, prev)
+            log.debug('Promise._resolve: returned: %r\n -> %r', self, result)
         else:
             # When `_func` is None, the input type must be the same as the output
             # type `T`.
             result = cast(T | None, prev)
 
-        log.debug('Promise._resolve: resolving: %r\n -> %r', self, result)
+        del self._func
         inner = self._inner
         if not isinstance(inner, list):
-            self._inner = (None,)
+            self._cancel()
             raise RuntimeError('Promise._resolve: already resolved: %r %r', self, inner)
 
-        # We track all promises `p` such that `p._inner == (self,)` in
-        # `self._backref` to unfold the waiting chain.
+        # We track all our "resolved" successors, i.e. `v` such that
+        # `v._inner == (self,)` in `self._next` to collapse the waiting chain.
         self._inner = r = (result,)
-        for b in self._backref:
-            b._inner = r
+        for v in self._next:
+            v._inner = r
 
         if isinstance(result, Promise):
-            # Technically "resolved", but actually waiting for another promise.
+            # Technically "resolved", but actually still one in-degree produced
+            # by `_func`.
+            # We relink our successors to that predecessor to avoid leaks from a
+            # growing waiting chain.
             if result is self:
-                self._inner = (None,)
-                self._backref.clear()
+                # A self loop. Do not clear `_next`, leave them getting cancelled.
+                self._cancel()
                 log.error('Promise._resolve: loop chaining: %r', inner)
                 raise ValueError('Promise._resolve: loop chaining')
 
-            result._backref.add(self)
-            for b in self._backref:
-                if b is result:
-                    self._inner = (None,)
-                    self._backref.clear()
-                    b._inner = (None,)
+            for v in self._next:
+                if v is not result:
+                    result._next.add(v)
+                else:
+                    # A 2-cycle. Further detection is skipped.
+                    self._cancel()
+                    v._cancel()
                     log.error('Promise._resolve: circular chaining: %r', inner)
                     raise ValueError('Promise._resolve: circular chaining')
-                result._backref.add(b)
-            self._backref.clear()
 
-            # Transfer callbacks to the new promise, or there would be an indefinite
-            # waiting chain and cause leaks.
+            result._next.add(self)
+            self._next.clear()
             for cb in inner:
                 result._chain(cb)
         else:
-            self._backref.clear()
+            self._next.clear()
             for cb in inner:
                 cb._resolve(result)
 
-    def _invoke(self, prev: asyncio.Future[T | Promise[T]]) -> None:
-        log.debug('Promise: invoke %r\n prev: %r', self, prev)
+    def _cancel(self):
+        log.debug('Promise._cancel: %r', self)
+        inner = self._inner
+        self._inner = r = (None,)
+        for v in self._next:
+            v._inner = r
+        self._next.clear()
+        if isinstance(inner, list):
+            for cb in inner:
+                cb._cancel()
+
+    def _invoke(self, prev: asyncio.Task[T | Promise[T]]) -> None:
+        log.debug('Promise: invoke %r\n task: %s', self, _format_task(prev))
         if prev.cancelled():
-            log.info('Promise: cancelled: %r, %r', self, prev)
-            self._resolve(None)
-        elif (exc := prev.exception()) is not None:
+            self._cancel()
+            return
+        try:
+            r = prev.result()
+        except Exception as e:
             log.error(
                 'Promise: exception: %r, %r: %s: %s',
                 self,
                 prev,
-                type(exc).__name__,
-                exc,
-                exc_info=exc,
+                type(e).__name__,
+                e,
+                exc_info=e,
             )
             self._resolve(None)
         else:
-            self._resolve(prev.result())
+            self._resolve(r)
 
     def _chain(self, fut: Promise):
         inner = self._inner
@@ -160,26 +166,41 @@ class Promise[T: PromiseResult](Box):
         else:
             fut._resolve(inner[0])
 
-    def _then[U: PromiseResult](self, func: Callback[U]) -> Promise[U]:
-        fut = Promise(func, self._cb)
-        self._chain(fut)
-        return fut
-
     def then(self, *funcs: tuple[Callback, ...]) -> Promise:
-        p = self
+        promise = self
         if not all(callable(f) for f in funcs):
             raise TypeError(f'Promise.then: callback must be callable, got {funcs}')
         for f in funcs:
             f: Any
-            p = p._then(f)
-        return p
+            # p = p._then(f)
+            new = Promise(f)
+            promise._chain(new)
+            promise = new
+        return promise
 
     def __repr__(self) -> str:
-        inner = self._inner
-        n = len(self._backref)
+        return _repr(self, set())
+
+
+def _repr_list(obj: list, vis: set[int]) -> str:
+    return f'[{", ".join(_repr(v, vis) for v in obj)}]'
+
+
+def _repr(obj, vis: set[int]) -> str:
+    if not isinstance(obj, Promise):
+        return repr(obj)
+    x = id(obj)
+    if x in vis:
+        return '<Promise(...)>'
+    vis.add(x)
+    try:
+        inner = obj._inner
+        n = len(obj._next)
         if isinstance(inner, list):
-            return f'<Promise({len(inner)}/{n}): callbacks={inner!r} func={self._func}>'
-        return f'<Promise(resolved/{n}): {inner[0]!r}>'
+            return f'<Promise({len(inner)}/{n}): {_repr_list(inner, vis)} func={getattr(obj, '_func', '/')}>'
+        return f'<Promise(resolved/{n}): {_repr(inner[0], vis)}>'
+    finally:
+        vis.remove(x)
 
 
 def to_segment(val: Value | None) -> Segment:
@@ -278,25 +299,119 @@ def trusted[**P, R](
         return wrapper2
 
 
-INSTANCES: weakref.WeakSet[RenderContext | Promise] = weakref.WeakSet()
+INSTANCES = WeakSet()
+
+TASK_GROUPS: WeakValueDictionary[str, Tasks] = WeakValueDictionary()
+
+
+def count_tasks(key: str) -> int:
+    if (tasks := TASK_GROUPS.get(key)) is not None:
+        return len(tasks._tasks)
+    return 0
+
+
+def _format_task(task: asyncio.Task) -> str:
+    if task.cancelled():
+        state = 'cancelled'
+    elif task.done():
+        try:
+            r = task.result()
+        except Exception as e:
+            state = f'exception: {type(e).__name__}: {e}'
+        else:
+            if (r := task.result()) is not None:
+                state = f'done: {r!r}'
+            else:
+                state = 'done'
+    else:
+        state = 'pending'
+
+    if (coro := task.get_coro()) is not None:
+        name = coro.__qualname__
+    else:
+        name = '<unknown>'
+
+    return f'<{task.get_name()} ({name}): {state}>'
+
+
+class Tasks:
+    __slots__ = ('_tasks', '__weakref__')
+
+    def __init__(self):
+        self._tasks: set[asyncio.Task] = set()
+
+    def __repr__(self) -> str:
+        return f'Tasks[{', '.join(_format_task(t) for t in self._tasks)}]'
+
+    def __bool__(self) -> bool:
+        return bool(self._tasks)
+
+    def create[T: PromiseResult](
+        self, coro: Coroutine[Any, Any, T], ctx: RenderContext
+    ) -> Promise[T]:
+        promise = Promise()
+
+        def callback(fut: asyncio.Task[T], _=ctx):
+            self._tasks.discard(fut)
+            promise._invoke(fut)
+
+        task = asyncio.create_task(coro)
+        task.add_done_callback(callback)
+        self._tasks.add(task)
+        return promise
+
+    def cancel(self):
+        log.debug('Tasks.cancel: %r', self)
+        if tasks := self._tasks:
+            for task in tasks:
+                task.cancel()
+            create_task(self._wait())
+
+    async def _wait(self):
+        log.debug('Tasks.wait: %r', self)
+        tasks = self._tasks
+        r = await asyncio.gather(*tasks, return_exceptions=True)
+        log.debug('Tasks.wait: done: %r', r)
+        if tasks:
+            log.debug('Tasks.wait: still pending: %r', self)
 
 
 class Bridge(Box):
-    __slots__ = ('_ctx', '_trusted', '_cb_ref', '_promise_cap', '_temp_files')
+    __slots__ = ('_ctx', '_trusted', '_cb_ref', '_promise_cap', '_temp_files', '_tasks')
 
     def __init__(
-        self, ctx: MutableMapping[str, Value], trusted: int | None, cb: RenderContext
+        self,
+        ctx: MutableMapping[str, Value],
+        trusted: int | None,
+        task_policy: str | None,
+        tasks_key: str | None,
+        cb: RenderContext,
     ) -> None:
         super().__init__()
         self._ctx = ctx
         self._trusted = trusted
-        self._cb_ref = weakref.ref(cb, self._finalize)
+        self._cb_ref = ref(cb, self._finalize)
         self._promise_cap = 5 if trusted is None else 1000
         self._temp_files = []
+
+        if tasks_key and (tasks := TASK_GROUPS.get(tasks_key)) is not None:
+            log.debug('Bridge: remaining tasks: %s, %r', tasks_key, tasks)
+            tasks.cancel()
+
+        if task_policy:
+            # Reason to reject.
+            self._tasks = task_policy
+        elif tasks_key:
+            TASK_GROUPS[tasks_key] = tasks = Tasks()
+            log.debug('Bridge: allowing tasks: %s', tasks_key)
+            self._tasks = tasks
+        else:
+            raise TypeError('tasks_key is required when task_policy is None')
+
         INSTANCES.add(cb)
 
     def __repr__(self) -> str:
-        return f'Bridge({self._trusted})'
+        return f'Bridge({self._trusted}, {self._cb_ref!r})'
 
     @property
     def _cb(self) -> RenderContext:
@@ -308,6 +423,8 @@ class Bridge(Box):
         # Break the reference cycle, since the Context can hold references to
         # `Bridge` and `SubDoc` (which holds `Engine`).
         self._ctx.clear()
+        if isinstance(self._tasks, Tasks):
+            self._tasks.cancel()
         cnt = 0
         for file in self._temp_files:
             try:
@@ -338,18 +455,17 @@ class Bridge(Box):
             return val
         raise AttributeError(name)
 
-    def _promise[T: PromiseResult](self, coro: Awaitable[T]) -> Promise:
-        def cb(_=self._cb):
-            if self._promise_cap is not None:
-                if self._promise_cap <= 0:
-                    raise RuntimeError('Promise capacity exceeded')
-                self._promise_cap -= 1
+    def _promise[T: PromiseResult](self, coro: Coroutine[Any, Any, T]) -> Promise[T]:
+        if self._promise_cap is not None:
+            if self._promise_cap <= 0:
+                raise RuntimeError('Promise capacity exceeded')
+            self._promise_cap -= 1
 
-        # Let each promise hold a reference to `self._cb` to keep it alive until
-        # all promises are resolved.
-        fut = Promise(None, cb)
-        create_task(coro).add_done_callback(fut._invoke)
-        return fut
+        if isinstance(tasks := self._tasks, Tasks):
+            # Let each task hold a reference to the `RenderContext` to keep it
+            # alive until all promises are resolved.
+            return tasks.create(coro, self._cb)
+        raise RuntimeError(f'Promise: {tasks}')
 
     @trusted
     def communicate(self, cmd, input='') -> Promise[dict[str, Value]]:
@@ -384,7 +500,7 @@ class Bridge(Box):
     @public
     def edit_message(self, text) -> Promise:
         log.debug('Bridge: edit_message: %r %r', text, self._cb)
-        return self._promise(self._cb._update_text(to_segment(text)))
+        return self._promise(self._cb._edit_message(to_segment(text)))
 
     @public
     def sleep(self, seconds: float) -> Promise[None]:
@@ -473,35 +589,23 @@ def system(cmd: str) -> str:
     return result.strip()
 
 
-def _format(ctx: RenderContext | Promise) -> str:
-    rc = sys.getrefcount(ctx)
-    if isinstance(ctx, Promise):
-        return f'{ctx!r}: {rc}\n'
-
-    data = ctx.data
-    doc = ctx.engine.get_doc()
-    if doc is None:
-        doc = '/'
-    else:
-        # Clean up indentation.
-        doc = re.sub(r'\s+', ' ', doc) if doc else ''
-        doc = repr(shorten(doc, 80))
-    rs = ctx._responder
-    if rs is None:
-        text = '/'
-    else:
-        text = repr(shorten(rs.get_text(), 80).replace('\n', ' '))
-    return f'{data.get('_source', '?')} ({data.get('_chat_id', '?')}, {data.get('_msg_id', '?')}, {rc}): {ctx._path}\n {doc}\n {text}\n'
-
-
 @trusted
 def top(do_gc: bool = False) -> Fragment[str]:
     if do_gc:
         gc.collect()
     n = len(INSTANCES)
-    log.debug('top: %d instances', n)
+    m = len(TASK_GROUPS)
+    info = f'{n} instances, {m} task groups'
+    log.debug('top: %s', info)
     return Fragment(
-        [f'{n} instance{'s' if n != 1 else ''}:\n', *map(_format, INSTANCES)]
+        [
+            info + '\n',
+            *sorted(f'[{id(o)} {sys.getrefcount(o)}] {o!r}\n' for o in INSTANCES),
+            *(
+                f'[{id(o)} {sys.getrefcount(o)} {k}]: {o!r}\n'
+                for k, o in TASK_GROUPS.items()
+            ),
+        ]
     )
 
 

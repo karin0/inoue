@@ -34,6 +34,7 @@ from bot import (
     truncate_text,
     escape,
     Responder,
+    MessageEditHandle,
     EditHandle,
     PhotoPayload,
     DocumentPayload,
@@ -59,8 +60,8 @@ from .segments import (
     get_renderer,
     render_segment,
 )
-from .render_bridge import Bridge, LocalPath, to_segment
-from .utils import get_msg_url, try_send_text_or_not_modified
+from .utils import get_msg_url
+from .render_bridge import Bridge, LocalPath, to_segment, count_tasks
 from .render_context import OverriddenDict, encode_value, decode_value
 
 # '/' is kept for compatibility, which was used for '-'.
@@ -70,10 +71,7 @@ MEMORY_SIGN = '@'
 PATH_SIGNS = ':#`'
 CALLBACK_SPECIAL = frozenset(CALLBACK_SIGNS + MEMORY_SIGN + PATH_SIGNS)
 
-SPECIAL_FLAG_ICONS = {
-    '_pre': '📋',
-    '_fold': '💌',
-}
+SPECIAL_FLAG_ICONS = {'_pre': '📋', '_fold': '💌'}
 
 
 def is_safe_key(key: str | None) -> bool:
@@ -94,7 +92,8 @@ ENV_PREFIX = '_env.'
 MEMORY_KEY = '_mem'
 BUTTON_KEY = '_btn'
 SPECIAL_KEYS = (MEMORY_KEY, BUTTON_KEY)
-BUTTON_PREFIX = ENV_PREFIX + 'btn' + '.'
+BUTTON_PREFIX = ENV_PREFIX + 'btn.'
+ICON_PREFIX = ENV_PREFIX + 'icon.'
 
 
 def get_env[T](ctx: Mapping[str, Value], key: str, default: T = None) -> Value | T:
@@ -198,7 +197,13 @@ def make_markup(
 
     def push_button(name: str, key: str):
         data = encode_flags(state) + BUTTON_SIGN + key + memory + path
-        row.append(InlineKeyboardButton(name, callback_data=data))
+        row.append(
+            InlineKeyboardButton(
+                name,
+                callback_data=data,
+                style=KeyboardButtonStyle.DANGER if key == '_cancel' else None,
+            )
+        )
 
     def push_flag(label: str, old: bool, v: bool):
         name = label + (':=' if old else '=') + '01'[v]
@@ -302,12 +307,34 @@ def make_markup(
 
 
 type MessageSpec = tuple[str, str | None, InlineKeyboardMarkup | None]
-type UpdateCallback = Callable[
-    [MessageSpec], Awaitable[Message | bool | EditHandle | None]
-]
+type UpdateCallback = Callable[[MessageSpec], Awaitable[EditHandle]]
 type MarkupState = tuple[dict[str, bool], str]
 
 OVERFLOWED_TEXT = '…\n'
+
+
+def create_data(overrides: dict[str, Value]) -> OverriddenDict:
+    source = None
+    context = get_context()
+
+    # Existing `overrides` are frozen and immutable in `Engine`, so this is safe.
+    update = context.update
+    if (user := update.effective_user) is not None:
+        overrides['_user_id'] = user.id
+        overrides['_user_name'] = source = user.full_name
+    if (chat := update.effective_chat) is not None:
+        overrides['_chat_id'] = chat.id
+        if title := chat.title:
+            overrides['_chat_title'] = title
+            source = f'{title} @ {source}' if source else title
+    if source:
+        overrides['_source'] = source
+    if (msg := update.effective_message) is not None:
+        overrides['_msg_id'] = msg.message_id
+
+    log.info('create_data: %s', overrides)
+
+    return OverriddenDict({}, overrides)
 
 
 class RenderContext:
@@ -328,7 +355,7 @@ class RenderContext:
 
     def __init__(
         self,
-        overrides: dict[str, Value] | None = None,
+        data: OverriddenDict | None = None,
         markup_state: MarkupState | None = None,
         as_caption: bool = False,
         doc_id: int | None = None,
@@ -336,42 +363,24 @@ class RenderContext:
         update_callback: UpdateCallback | None = None,
         responder: Responder | None = None,
     ):
+        if data is None:
+            data = create_data({})
+
+        self.data = data
         self._markup_state = markup_state
         self._as_caption = as_caption
-        self._responder = responder
+        self._responder = rs = responder
         self.set_path(path)
         self.set_update_callback(update_callback)
 
         self._doc_refs = {doc_id: ''} if doc_id is not None else {}
         self._render_time = None
 
-        if overrides is None:
-            overrides = {}
-
-        trusted = source = None
-
         context = get_context()
         if (sender := context.sender) is not None and sender.id in (USER_ID, CHAN_ID):
-            overrides['_trusted'] = trusted = sender.id
-
-        # Existing `overrides` are frozen and immutable in `Engine`, so this is safe.
-        update = context.update
-        if (user := update.effective_user) is not None:
-            overrides['_user_id'] = user.id
-            overrides['_user_name'] = source = user.full_name
-        if (chat := update.effective_chat) is not None:
-            overrides['_chat_id'] = chat.id
-            if title := chat.title:
-                overrides['_chat_title'] = title
-                source = f'{title} @ {source}' if source else title
-        if source:
-            overrides['_source'] = source
-        if (msg := update.effective_message) is not None:
-            overrides['_msg_id'] = msg.message_id
-            if (reply := msg.reply_to_message) is not None:
-                overrides['_replied'] = repr(reply)
-
-        log.info('create_engine: %s', overrides)
+            data.overrides['_trusted'] = trusted = sender.id
+        else:
+            trusted = None
 
         # We assume contents from USER_ID and saved docs are trusted.
         # However, docs (typically in ALLOWED_GUEST_DOC_PREFIXES) need to escalate
@@ -381,8 +390,20 @@ class RenderContext:
         self._trusted = trusted
         self._can_escalate = trusted or doc_id
 
-        self.data = OverriddenDict({}, overrides)
-        bridge = Bridge(self.data, trusted, self)
+        if not (path and update_callback and rs):
+            task_policy = 'uneditable context'
+        elif self.data.get(BUTTON_KEY) == '_cancel':
+            task_policy = 'context cancelled'
+        else:
+            task_policy = None
+
+        bridge = Bridge(
+            data,
+            trusted,
+            task_policy,
+            rs.get_message_key() if rs is not None else None,
+            self,
+        )
 
         # Access to attributes with underscores should be forbidden in `simpleeval`,
         # so `os` is safe.
@@ -408,7 +429,7 @@ class RenderContext:
         if self._update_callback is not None:
             func, lock = self._update_callback
             async with lock:
-                return await func(spec)
+                return (await func(spec)).get_message_key()
 
     def _escalate(self) -> int | None:
         if (token := self._can_escalate) is not None:
@@ -418,6 +439,22 @@ class RenderContext:
             return token
 
         log.warning('Escalation rejected: %r', self._trusted)
+
+    def __repr__(self):
+        data = self.data
+        doc = self.engine.get_doc()
+        if doc is None:
+            doc = '/'
+        else:
+            # Clean up indentation.
+            doc = re.sub(r'\s+', ' ', doc) if doc else ''
+            doc = repr(shorten(doc, 80))
+        rs = self._responder
+        if rs is None:
+            text = '/'
+        else:
+            text = repr(shorten(rs.get_text(), 80).replace('\n', ' '))
+        return f'RenderContext: {data.get('_source', '?')} ({data.get('_chat_id', '?')}, {data.get('_msg_id', '?')}): {self._path}\n {doc}\n {text}'
 
     def _doc_loader(self, name: str) -> str | None:
         row = get_doc(name, bool(self._trusted))
@@ -438,23 +475,14 @@ class RenderContext:
         return result
 
     # Exposed as a callback to Bridge, used for `edit_message`.
-    async def _update_text(self, seg: Segment) -> int | None:
+    async def _edit_message(self, seg: Segment) -> str | None:
         if self._update_callback is None:
-            log.info('_update_text: no update_callback')
+            log.info('_edit_message: no update_callback')
             return
 
         self._render_time = int(time.time())
         spec = self._format_response(seg)
-        r = await self._invoke_update_callback(spec)
-        log.debug('_update_text: %s', r)
-        if isinstance(r, Message):
-            return r.message_id
-        if (
-            r is not None
-            and not isinstance(r, int)
-            and (msg := r.get_message()) is not None
-        ):
-            return msg.message_id
+        return await self._invoke_update_callback(spec)
 
     def render(self, text: str) -> Awaitable[MessageSpec]:
         return self.to_response(self.render_text(text))
@@ -496,6 +524,10 @@ class RenderContext:
         if self._path is None:
             markup = state = None
         else:
+            rs = self._responder
+            if rs is not None and (c := count_tasks(rs.get_message_key())):
+                ctx[BUTTON_PREFIX + '_cancel'] = 1
+                ctx[ICON_PREFIX + '_cancel'] = f'🛑{c}'
             markup, state = make_markup(
                 self._path, ctx, self._markup_state, self._doc_refs
             )
@@ -667,8 +699,14 @@ def handle_render(msg: Message, rs: Responder, arg: MessageArg):
         db['r-' + path] = text
         doc_id = None
 
-    ctx = RenderContext(doc_id=doc_id, path=path, responder=rs)
-    ctx.set_update_callback(create_reply_callback(rs, ctx.data))
+    data = create_data({})
+    ctx = RenderContext(
+        data=data,
+        doc_id=doc_id,
+        path=path,
+        responder=rs,
+        update_callback=create_reply_callback(rs, data),
+    )
     return ctx.render(text)
 
 
@@ -891,52 +929,39 @@ def handle_render_callback(callback: CallbackQuery, data: CallbackData, rs: Resp
         case _:
             raise ValueError('bad render callback: ' + data)
 
-    as_caption = bool(rs.get_message().caption)
-    ctx = RenderContext(
-        overrides=dict(flags),
-        markup_state=(flags, data),
-        doc_id=doc_id,
-        path=path,
-        as_caption=as_caption,
-        responder=rs,
-    )
-    inner = ctx.data
-    ctx.set_update_callback(create_callback_query_callback(callback, as_caption, inner))
+    inner = create_data(dict(flags))
     if clicked_button is not None:
         inner[BUTTON_KEY] = clicked_button
     if memory is not None:
         inner[MEMORY_KEY] = decode_value(memory)
     inner['_state'] = data
+    handle = rs.as_edit_handle()
+    ctx = RenderContext(
+        data=inner,
+        markup_state=(flags, data),
+        doc_id=doc_id,
+        path=path,
+        as_caption=handle.as_caption if handle is not None else False,
+        responder=rs,
+        update_callback=(
+            create_callback_query_callback(handle, callback, inner)
+            if handle is not None
+            else None
+        ),
+    )
     return ctx.render(text)
 
 
 def create_callback_query_callback(
-    callback: CallbackQuery, as_caption: bool, data: Mapping[str, Value]
+    handle: MessageEditHandle,
+    callback: CallbackQuery,
+    data: Mapping[str, Value],
 ) -> UpdateCallback:
     answered = False
 
     async def edit_callback_message(spec: MessageSpec):
-        nonlocal answered, as_caption
-
-        text, parse_mode, markup = spec
-        if (media := extract_media(data)) is not None:
-            with media.as_input(text, parse_mode) as input_media:
-                r = await callback.edit_message_media(input_media, reply_markup=markup)
-            as_caption = True
-        elif as_caption:
-            r = await try_send_text_or_not_modified(
-                callback.edit_message_caption,
-                text,
-                parse_mode=parse_mode,
-                reply_markup=markup,
-            )
-        else:
-            r = await try_send_text_or_not_modified(
-                callback.edit_message_text,
-                text,
-                parse_mode=parse_mode,
-                reply_markup=markup,
-            )
+        nonlocal answered
+        await handle.edit(*spec, media=extract_media(data), allow_not_modified=True)
 
         if (not answered) and (answer := get_env(data, 'answer')):
             answered = True
@@ -948,7 +973,7 @@ def create_callback_query_callback(
             log.info('handle_render_callback: answer: %s, %s', answer, show_alert)
             await callback.answer(answer, show_alert=show_alert)
 
-        return r
+        return handle
 
     return edit_callback_message
 

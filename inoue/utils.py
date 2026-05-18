@@ -1,8 +1,6 @@
-from typing import Awaitable, Callable, Sequence, Concatenate
+from typing import Sequence
 
-from telegram.error import BadRequest
-
-from bot import bot, truncate_text, Responder
+from bot import bot, Responder
 
 from .log import log
 from .env import CHAN_ID
@@ -17,50 +15,6 @@ def get_msg_url(msg_id, chat_id=None) -> str:
 
 def get_deep_link_url(arg: str) -> str:
     return f'https://t.me/{bot.username}?start={arg}'
-
-
-async def try_send_text[**P, R](
-    func: Callable[Concatenate[str, P], Awaitable[R]],
-    text: str,
-    *args: P.args,
-    **kwargs: P.kwargs,
-) -> R:
-    '''`parse_mode` must be specified via `kwargs` to enable the fallback.'''
-    if not ('parse_mode' in kwargs or 'entities' in kwargs):
-        return await func(text, *args, **kwargs)
-
-    try:
-        return await func(text, *args, **kwargs)
-    except BadRequest as e:
-        if "Can't parse entities:" in (e_str := str(e)):
-            log.warning(
-                'try_send_text: falling back without entities: %s %s %s %s',
-                e,
-                func,
-                args,
-                kwargs,
-            )
-            new_text = truncate_text(f'{e_str}\n{text}')
-            kwargs.pop('parse_mode', None)
-            kwargs.pop('entities', None)
-            return await func(new_text, *args, **kwargs)
-        raise
-
-
-async def try_send_text_or_not_modified[**P, R](
-    func: Callable[Concatenate[str, P], Awaitable[R]],
-    text: str,
-    *args: P.args,
-    **kwargs: P.kwargs,
-) -> R | None:
-    '''`parse_mode` must be specified via `kwargs` to enable the fallback.'''
-    try:
-        return await try_send_text(func, text, *args, **kwargs)
-    except BadRequest as e:
-        if 'Message is not modified' in str(e):
-            log.info('try_send_text_allow_not_modified: message not modified')
-            return None
-        raise
 
 
 async def reroute_cmd(
