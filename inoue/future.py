@@ -1,4 +1,4 @@
-from typing import cast
+from typing import TYPE_CHECKING
 from telegram import Message, Update, InlineQueryResult
 
 from .log import log
@@ -7,73 +7,73 @@ from .log import log
 # This provides a dirty workaround to make things work.
 
 
-class UpdateProxyWithGuestMessage:
-    def __init__(self, update: Update, msg: Message):
+class UpdateProxy:
+    __slots__ = ('_update', 'guest_message')
+
+    def __init__(self, update: Update, guest_message: Message | None):
         self._update = update
-        self._message = msg
+        self.guest_message = guest_message
+
+    def __getattr__(self, name):
+        return getattr(self._update, name)
 
     def __repr__(self):
-        return f'UpdateProxyWithGuestMessage({self._update}, {self._message})'
-
-    __str__ = __repr__
-
-    def __getattr__(self, item):
-        return getattr(self._update, item)
-
-    @property
-    def guest_message(self):
-        return self._message
+        return f'UpdateProxy({self._update}, {self.guest_message})'
 
     @property
     def effective_message(self):
-        return self._message
-
-    @property
-    def effective_sender(self):
-        return self._message.from_user
+        return self.guest_message or self._update.effective_message
 
     @property
     def effective_user(self):
-        return self._message.from_user
+        if (r := self._update.effective_user) is not None:
+            return r
+
+        if (m := self.guest_message) is not None:
+            return m.from_user
+
+        # XXX: PTB does not set `from_user` from channel posts.
+        if (
+            m := self._update.channel_post or self._update.edited_channel_post
+        ) is not None:
+            log.debug('UpdateProxy: use from_user from channel post: %s', m)
+            return m.from_user
+
+    @property
+    def effective_sender(self):
+        if (r := self._update.effective_sender) is not None:
+            return r
+        return self.effective_user
 
     @property
     def effective_chat(self):
-        return self._message.chat
+        if (r := self._update.effective_chat) is not None:
+            return r
+        if (m := self.guest_message) is not None:
+            return m.chat
 
 
-class UpdateProxyWithoutGuestMessage:
-    def __init__(self, update: Update):
-        self._update = update
+if TYPE_CHECKING:
 
-    def __repr__(self):
-        return f'UpdateProxyWithoutGuestMessage({self._update})'
+    class UpdateExt(Update):
+        def __init__(self, update: Update, guest_message: Message | None): ...
 
-    __str__ = __repr__
+        guest_message: Message | None
 
-    def __getattr__(self, item):
-        return getattr(self._update, item)
-
-    @property
-    def guest_message(self):
-        return None
+else:
+    UpdateExt = UpdateProxy
 
 
-class UpdateEx(Update):
-    @property
-    def guest_message(self) -> Message | None: ...
-
-
-def patch_update(update: Update) -> UpdateEx:
+def patch_update(update: Update) -> UpdateExt:
     if hasattr(update, 'guest_message'):
-        log.debug('future: update has guest_message: %s', update)
-        return cast(UpdateEx, update)
+        log.warning('future: update has guest_message: %s', update)
 
     if (gm := update.api_kwargs.get('guest_message')) is not None:
         msg = Message.de_json(gm, bot=update.get_bot())
         log.debug('future: injected guest message: %s', msg)
-        return cast(UpdateEx, UpdateProxyWithGuestMessage(update, msg))
+        return UpdateExt(update, msg)
 
-    return cast(UpdateEx, UpdateProxyWithoutGuestMessage(update))
+    return UpdateExt(update, None)
 
 
 # A guest message mentions the bot in an alien chat, i.e. a group/channel we have
