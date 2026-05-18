@@ -1,7 +1,8 @@
 import asyncio
 from contextlib import contextmanager
-from typing import Awaitable, Iterator, Protocol, Literal, overload, TYPE_CHECKING
+from typing import Awaitable, Iterator, Protocol, TYPE_CHECKING
 
+from . import env
 from .env import log
 from .app import create_task
 
@@ -11,6 +12,7 @@ if TYPE_CHECKING:
 
     from .dispatch import Route
     from .payload import MediaPayload
+    from .message_responder import MessageEditHandle
 
 # A responder is a wrapped `Message` that enforces an edit-after-reply pattern.
 # It takes care of default reply parameters, media payload, inline message adaptation,
@@ -24,32 +26,6 @@ class Responder(Protocol):
         self._text: str | None = None
         self._capture_buf: list[tuple[str, str | None]] | None = None
 
-    @overload
-    def reply(
-        self,
-        text: str | None = None,
-        parse_mode: str | None = None,
-        reply_markup: InlineKeyboardMarkup | None = None,
-        *,
-        cached: bool = False,
-        media: MediaPayload | None = None,
-        disable_web_page_preview: bool | None = None,
-        allow_not_modified: Literal[False] = False,
-    ) -> Awaitable[EditHandle]: ...
-
-    @overload
-    def reply(
-        self,
-        text: str | None = None,
-        parse_mode: str | None = None,
-        reply_markup: InlineKeyboardMarkup | None = None,
-        *,
-        cached: bool = False,
-        media: MediaPayload | None = None,
-        disable_web_page_preview: bool | None = None,
-        allow_not_modified: Literal[True],
-    ) -> Awaitable[EditHandle | None]: ...
-
     def reply(
         self,
         text: str | None = None,
@@ -60,7 +36,7 @@ class Responder(Protocol):
         media: MediaPayload | None = None,
         disable_web_page_preview: bool | None = None,
         allow_not_modified: bool = False,
-    ) -> Awaitable[EditHandle | None]: ...
+    ) -> Awaitable[EditHandle]: ...
 
     def reply_cached(
         self,
@@ -71,7 +47,7 @@ class Responder(Protocol):
         media: MediaPayload | None = None,
         disable_web_page_preview: bool | None = None,
         allow_not_modified: bool = False,
-    ) -> Awaitable[EditHandle | None]:
+    ) -> Awaitable[EditHandle]:
         return self.reply(
             text,
             parse_mode,
@@ -84,11 +60,11 @@ class Responder(Protocol):
 
     def reply_copy(
         self, from_chat_id: int, message_id: int
-    ) -> Awaitable[EditHandle | None]: ...
+    ) -> Awaitable[EditHandle]: ...
 
     def reply_forward(
         self, from_chat_id: int, message_id: int
-    ) -> Awaitable[EditHandle | None]:
+    ) -> Awaitable[EditHandle]:
         '''
         Actually a forwarded message cannot have reply_parameters, but we provide
         this for convenience.
@@ -115,6 +91,13 @@ class Responder(Protocol):
             task.cancel()
 
     def get_message(self) -> Message: ...
+
+    def as_edit_handle(self) -> MessageEditHandle | None:
+        return None
+
+    def get_message_key(self) -> str:
+        msg = self.get_message()
+        return env.driver.message_key(msg.chat_id, msg.message_id)
 
     def get_text(self) -> str:
         if self._text is not None:
@@ -168,6 +151,12 @@ class Responder(Protocol):
         return self._capture_buf is not None
 
     def _try_capture(self, text: str | None, parse_mode: str | None) -> bool:
+        '''
+        Note: Do not try to edit the reply if the reply is captured, or we will
+        mess up the original reply of the capturing context (`/render`).
+
+        Always ignore `cached` when this returns True.
+        '''
         if (buf := self._capture_buf) is not None:
             log.debug('_try_capture: %r %s', self, text)
             if text:
@@ -193,5 +182,13 @@ class EditHandle(Protocol):
         reply_markup: InlineKeyboardMarkup | None = None,
     ) -> Awaitable: ...
 
-    def get_message(self) -> Message | None:
+    def get_message_key(self) -> str | None:
         return None
+
+    @staticmethod
+    def from_message(msg: Message) -> MessageEditHandle:
+        from .message_responder import MessageEditHandle
+
+        return MessageEditHandle(
+            (msg.chat_id, msg.message_id), as_caption=msg.text is None
+        )

@@ -16,6 +16,7 @@ from .env import log
 from .payload import MediaPayload, CachedPayload, payload_has_input
 from .responder import Responder, EditHandle
 from .text import escape, html_escape, shorten, truncate_text
+from .message_responder import MessageEditHandle
 
 type InlineMessageIdFactory = Callable[[Message, InlineQueryResult], Awaitable[str]]
 
@@ -38,6 +39,7 @@ class InlineResponder(Responder):
         '_media',
         '_deferred',
         '_dirty',
+        '_message_key',
     )
 
     def __init__(
@@ -53,12 +55,29 @@ class InlineResponder(Responder):
         self._media: CachedPayload | None = None
         self._deferred = False
         self._dirty = False
+        self._message_key = None
 
     def __repr__(self) -> str:
         return f'InlineResponder({self._msg!r}, {self._inline_message_id!r})'
 
     def get_message(self) -> Message:
         return self._msg
+
+    def get_message_key(self) -> str:
+        if self._message_key is None:
+            # Cache it to avoid a volatile result.
+            if isinstance(mid := self._inline_message_id, str):
+                self._message_key = mid
+            else:
+                m = self._msg
+                self._message_key = env.driver.message_key(m.chat_id, m.message_id)
+
+        return self._message_key
+
+    def as_edit_handle(self) -> MessageEditHandle | None:
+        if isinstance(mid := self._inline_message_id, str):
+            return MessageEditHandle(mid)
+        # Editing is impossible until the inline message is emitted and the ID is obtained.
 
     async def reply_chat_action(self, action: ChatAction) -> None:
         log.debug('InlineResponder: ignored chat action: %s', action)
@@ -70,7 +89,7 @@ class InlineResponder(Responder):
         # our emission until the voice is ready.
         if isinstance(self._inline_message_id, str):
             log.warning(
-                'InlineResponder: cannot defer after the inline message is emitted: %s',
+                'InlineResponder: cannot defer with existing inline message: %s',
                 self,
             )
             return None
@@ -95,7 +114,7 @@ class InlineResponder(Responder):
         if isinstance(self._inline_message_id, str) and not payload_has_input(payload):
             log.warning(
                 'InlineResponder: inline message sent but InputMedia is unavailable, '
-                'consider using `InlineResponder._defer()`: %s',
+                'consider using `InlineResponder.wait_until()`: %s',
                 payload,
             )
             return
@@ -252,18 +271,18 @@ def _collapse_fragments(
     all_parse_modes = set(p for _, p in fragments)
     if len(all_parse_modes) == 1:
         parse_mode = all_parse_modes.pop()
-        text = '\n\n'.join(t for t, _ in fragments)
+        text = '\n\n'.join(t for t, _ in fragments if t)
         return text, parse_mode
 
     all_parse_modes.discard(None)
     if len(all_parse_modes) == 1:
         parse_mode = all_parse_modes.pop()
         escaper = html_escape if parse_mode == 'HTML' else escape
-        text = '\n\n'.join(escaper(t) if m is None else t for t, m in fragments)
+        text = '\n\n'.join(escaper(t) if m is None else t for t, m in fragments if t)
         return text, parse_mode
 
     # Markdown and HTML mixed: fallback to plain text.
-    text = '\n\n'.join(t for t, _ in fragments)
+    text = '\n\n'.join(t for t, _ in fragments if t)
     limit = (
         MessageLimit.MAX_TEXT_LENGTH if is_text_only else MessageLimit.CAPTION_LENGTH
     )
@@ -305,5 +324,5 @@ class InlineFragmentHandle(EditHandle):
             r._reply_markup = None
             await r._emit()
 
-    def get_message(self) -> Message:
-        return self._rs.get_message()
+    def get_message_key(self) -> str:
+        return self._rs.get_message_key()
