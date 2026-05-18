@@ -11,14 +11,7 @@ from telegram import (
     BotCommandScopeChatAdministrators,
 )
 
-from bot import (
-    escape,
-    Responder,
-    MessageArg,
-    command,
-    dispatch_start,
-    commands,
-)
+from bot import escape, Responder, MessageArg, command, commands
 
 from .ctx import get_context
 from .log import log
@@ -154,7 +147,7 @@ async def handle_greet(rs: Responder, bot: Bot):
 
 @command
 def handle_start(rs: Responder, arg: MessageArg):
-    if (fut := dispatch_start(rs, arg)) is not None:
-        return fut
+    if (coro := rs.dispatch_start()) is not None:
+        return coro
 
     return reply_usage(rs)

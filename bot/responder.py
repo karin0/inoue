@@ -1,18 +1,20 @@
 import asyncio
+from datetime import datetime
 from contextlib import contextmanager
 from typing import Awaitable, Iterator, Protocol, TYPE_CHECKING
+
+from telegram import Message, Update, InlineKeyboardMarkup, User, Chat
+from telegram.constants import ChatType, ChatAction
 
 from . import env
 from .env import log
 from .app import create_task
 
 if TYPE_CHECKING:
-    from telegram import Message, InlineKeyboardMarkup
-    from telegram.constants import ChatAction
-
     from .dispatch import Route
     from .payload import MediaPayload, MediaPayloadWithInput
     from .message_responder import MessageEditHandle
+    from .future import UpdateExt
 
 # A responder is a wrapped `Message` that enforces an edit-after-reply pattern.
 # It takes care of default reply parameters, media payload, inline message adaptation,
@@ -127,11 +129,19 @@ class Responder(Protocol):
         if cmd := self.get_cmd():
             return commands.get(cmd)
 
-    @staticmethod
-    def create(msg: Message) -> Responder:
-        from .message_responder import MessageResponder
+    def dispatch_command(self) -> Awaitable | None:
+        if (route := self.get_route()) is not None:
+            return route(self)
 
-        return MessageResponder(msg)
+    def dispatch_callback_query(self, data: str) -> Awaitable | None:
+        from .dispatch import dispatch_callback
+
+        return dispatch_callback(self, data)
+
+    def dispatch_start(self) -> Awaitable | None:
+        from .dispatch import dispatch_start
+
+        return dispatch_start(self, self.get_arg())
 
     @contextmanager
     def capture(
@@ -162,6 +172,64 @@ class Responder(Protocol):
                 buf.append((text, parse_mode))
             return True
         return False
+
+    @staticmethod
+    def create(update: Update) -> tuple[Responder | None, UpdateExt]:
+        from .future import patch_update
+
+        update = patch_update(update)
+        return _create_rs(update), update
+
+    def __repr__(self) -> str:
+        return f'{type(self).__name__}({self.get_message()})'
+
+
+@staticmethod
+def _create_rs(update: UpdateExt) -> Responder | None:
+    from .message_responder import MessageResponder
+    from .inline_responder import InlineResponder
+    from .future import answer_guest_query
+
+    if (
+        msg := update.message
+        or update.edited_message
+        or update.channel_post
+        or update.edited_channel_post
+    ) is not None:
+        return MessageResponder(msg)
+
+    if (callback := update.callback_query) is not None:
+        if isinstance(msg := callback.message, Message):
+            return MessageResponder(msg)
+
+        if mid := callback.inline_message_id:
+            if msg is not None:
+                stub = Message(
+                    msg.message_id,
+                    msg.date,
+                    msg.chat,
+                    from_user=callback.from_user,
+                    text='',
+                )
+            else:
+                stub = _stub(callback.from_user)
+            return InlineResponder(stub, mid)
+
+        return None
+
+    if (chosen := update.chosen_inline_result) is not None:
+        if mid := chosen.inline_message_id:
+            return InlineResponder(_stub(chosen.from_user), mid)
+        return None
+
+    if (msg := update.guest_message) is not None:
+        return InlineResponder(msg, answer_guest_query)
+
+
+def _stub(from_user: User) -> Message:
+    return Message(
+        0, datetime.now(), Chat(0, ChatType.SENDER), from_user=from_user, text=''
+    )
 
 
 class EditHandle(Protocol):

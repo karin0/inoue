@@ -3,7 +3,9 @@ from contextvars import ContextVar
 from contextlib import contextmanager
 
 from telegram import Message, Update
+from telegram.constants import ChatType
 
+from bot import Responder
 from .env import USER_ID
 
 
@@ -18,7 +20,7 @@ class Sender(NamedTuple):
 
 class Context(NamedTuple):
     update: Update
-    msg: Message | None
+    rs: Responder | None
     sender: Sender | None
 
     @property
@@ -48,23 +50,33 @@ def get_ctx_sender() -> Sender | None:
         return ctx.sender
 
 
-def get_ctx_msg() -> Message | None:
+def get_ctx_rs() -> Responder | None:
     if (ctx := get_context(None)) is not None:
-        return ctx.msg
+        return ctx.rs
+
+
+def is_admin(update: Update, msg: Message) -> bool:
+    return (
+        (chat := update.effective_chat) is not None
+        and chat.type == ChatType.PRIVATE
+        and chat.id == USER_ID
+        and msg.from_user is not None
+        and msg.from_user.id == USER_ID
+    )
 
 
 @contextmanager
 def use_context(
     update: Update,
-    m: Message | None,
+    rs: Responder | None,
     sender: Sender | None,
 ):
     # Only messages from USER_ID are allowed to be set in the context, since it's
     # used for `do_notify` to notify system events.
-    if m and m.chat_id != USER_ID:
-        m = None
+    if rs is not None and not is_admin(update, rs.get_message()):
+        rs = None
 
-    token = current_context.set(Context(update, m, sender))
+    token = current_context.set(Context(update, rs, sender))
     try:
         yield
     finally:

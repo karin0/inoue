@@ -27,7 +27,6 @@ from bot import (
     truncate_text,
     escape,
     Responder,
-    MessageEditHandle,
     EditHandle,
     PhotoPayload,
     DocumentPayload,
@@ -969,7 +968,7 @@ def handle_render_callback(callback: CallbackQuery, data: CallbackData, rs: Resp
 
 
 def create_callback_query_callback(
-    handle: MessageEditHandle,
+    handle: EditHandle,
     callback: CallbackQuery,
     data: Mapping[str, Value],
 ) -> UpdateCallback:

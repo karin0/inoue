@@ -264,15 +264,13 @@ def _dispatch_argv(
         return route(rs, islice(args, 1, None))
 
 
-def dispatch_callback(rs: Responder | None, data: str) -> Awaitable:
+def dispatch_callback(rs: Responder | None, data: str) -> Awaitable | None:
     for filter_func, route in _cb_filters:
         if filter_func(data):
             return route(rs)
 
     if fut := _dispatch_argv(rs, data, _cb_handlers):
         return fut
-
-    raise ValueError(f'Bad callback query: {data}')
 
 
 _start_handlers: dict[str, Route] = {}

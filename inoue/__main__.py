@@ -40,13 +40,10 @@ from .handlers import (
 from . import misc, media, run  # noqa: F401, E401
 
 
-async def handle_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def handle_update(update: Update, _: ContextTypes.DEFAULT_TYPE):
     # ruff: noqa: E731
     t0 = time.perf_counter()
-
-    from .future import patch_update
-
-    update = patch_update(update)
+    rs, update = Responder.create(update)
 
     effective_msg = update.effective_message
     src = None
@@ -99,13 +96,18 @@ async def handle_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     trace('Update from %s: %s', src, update)
 
+    def _rs():
+        if rs is None:
+            raise ValueError(f'No responder for update: {update}')
+        return rs
+
     post = None
     if (msg := update.message) is not None:
         log.info('%s: msg %s', src, shorten(msg.text))
-        func = lambda: handle_msg(msg)
+        func = lambda: handle_msg(_rs())
     elif (msg := update.edited_message) is not None:
         log.info('%s: edited %s', src, shorten(msg.text))
-        func = lambda: handle_msg(msg)
+        func = lambda: handle_msg(_rs())
     elif (post := update.channel_post) is not None:
         log.info('%s: channel post %s', src, shorten(post.text))
         func = lambda: handle_post(post, sender)
@@ -116,16 +118,16 @@ async def handle_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if isinstance(callback.message, Message):
             msg = callback.message
         log.info('%s: callback %s', src, callback.data)
-        func = lambda: handle_callback_query(callback)
+        func = lambda: handle_callback_query(_rs(), callback)
     elif (query := update.inline_query) is not None:
         log.info('%s: inline %s', src, query.query)
         func = lambda: handle_inline_query(query)
     elif (chosen := update.chosen_inline_result) is not None:
         log.info('%s: chosen %s %s', src, chosen.result_id, chosen.query)
-        func = lambda: handle_chosen_inline(chosen)
+        func = lambda: handle_chosen_inline(_rs(), chosen)
     elif (post := update.guest_message) is not None:
         log.info('%s: guest message %s', src, shorten(post.text))
-        func = lambda: handle_guest(post)
+        func = lambda: handle_guest(_rs())
     else:
         log.warning('%s: unhandled: %s', src, update)
         func = None
@@ -146,15 +148,15 @@ async def handle_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if func is None:
         return
 
-    with use_context(update, msg, sender):
+    with use_context(update, msg and rs, sender):
         try:
             try:
-                if (fut := func()) is not None:
-                    await fut
+                if (coro := func()) is not None:
+                    await coro
             except (PermissionError, ValueError) as e:
                 log.exception('Error: %s: %s\nFrom: %s', type(e).__name__, e, src)
-                if msg is not None:
-                    await reply_usage(Responder.create(msg))
+                if rs is not None:
+                    await reply_usage(rs)
         except Exception as e:
             with notify.revocable():
                 # Can be edited to successful responses later after user edits

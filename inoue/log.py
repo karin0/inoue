@@ -7,18 +7,9 @@ from datetime import datetime
 from collections import deque
 from contextlib import contextmanager
 
-from telegram import Message
+from bot import bot, log as bot_log, truncate_text, escape, create_task, Responder
 
-from bot import (
-    bot,
-    log as bot_log,
-    truncate_text,
-    escape,
-    create_task,
-    Responder,
-)
-
-from .ctx import get_ctx_msg
+from .ctx import get_ctx_rs
 from .text import escape_pre
 from .env import ME_LOWER, MAX_TEXT_LENGTH, USER_ID, GROUP_ID, LOG_THREAD_ID
 
@@ -59,7 +50,7 @@ class NotifyHandler(logging.Handler):
         # Fetch the context before yielding to async.
         create_task(
             do_notify(
-                *self._format2(record), message=get_ctx_msg(), revocable=self._revocable
+                *self._format2(record), rs=get_ctx_rs(), revocable=self._revocable
             )
         )
 
@@ -192,7 +183,7 @@ async def do_notify(
     text: str,
     parse_mode: str | None = None,
     *,
-    message: Message | None = None,
+    rs: Responder | None = None,
     revocable: bool = False,
     quiet: bool = False,
 ):
@@ -211,9 +202,9 @@ async def do_notify(
             return
         notify_moments.append(now)
 
-        if not quiet and (m := message or get_ctx_msg()) is not None:
+        if not quiet and (rs := rs or get_ctx_rs()) is not None:
             try:
-                return await Responder.create(m).reply(
+                return await rs.reply(
                     text,
                     parse_mode,
                     cached=revocable,

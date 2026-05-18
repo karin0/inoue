@@ -17,16 +17,13 @@ from telegram.constants import ChatType, MessageEntityType
 from bot import (
     bot,
     Responder,
-    InlineResponder,
     VoicePayload,
     callback_query,
-    dispatch_callback,
     CallbackData,
 )
 
-from .future import answer_guest_query
 from .log import log
-from .ctx import get_context, Sender
+from .ctx import get_context, is_admin, Sender
 from .env import USER_ID, CHAN_ID, GROUP_ID, TODO_ID
 from .text import pre_block
 from .inoue import render_receipt
@@ -64,11 +61,9 @@ def handle_post(channel_post: Message, sender: Sender | None):
         return handle_render_doc(channel_post)
 
 
-async def handle_msg(msg: Message, rs: Responder | None = None, direct: bool = True):
-    if rs is None:
-        rs = Responder.create(msg)
-
+async def handle_msg(rs: Responder, direct: bool = True):
     context = get_context()
+    msg = rs.get_message()
     log.debug('handle_msg: rs: %s, sender: %s', rs, context.sender)
 
     if TODO_ID and msg.chat_id == TODO_ID:
@@ -90,8 +85,8 @@ async def handle_msg(msg: Message, rs: Responder | None = None, direct: bool = T
     # Reroute if the text starts with a command.
     # This allows commands to be sent as any styled text (pre/quote), rather than
     # a canonical BOT_COMMAND entity.
-    if (handler := rs.get_route()) is not None:
-        return await handler(rs)
+    if (coro := rs.dispatch_command()) is not None:
+        return await coro
 
     chat = msg.chat
     if chat.type != ChatType.PRIVATE and direct and not strip_mention(rs):
@@ -133,11 +128,7 @@ async def handle_msg(msg: Message, rs: Responder | None = None, direct: bool = T
         return await reply_usage(rs)
 
     # Administration is only allowed for the host in their own private chat.
-    if not (
-        context.sender_is_host()
-        and chat.id == USER_ID
-        and chat.type == ChatType.PRIVATE
-    ):
+    if not (context.sender_is_host() and is_admin(context.update, msg)):
         log.error('handle_msg: unauthorized update: %s', context)
         return
 
@@ -168,14 +159,11 @@ async def handle_inline_query(query: InlineQuery):
             await handle_render_inline_query(query, data)
 
 
-async def handle_chosen_inline(result: ChosenInlineResult):
+async def handle_chosen_inline(rs: Responder, result: ChosenInlineResult):
     result_id = result.result_id
     if result_id.startswith('yt_'):
         query = result.query.strip()
-        if result.inline_message_id and (parsed := extract_url(query)) is not None:
-            rs = InlineResponder(
-                message_stub(result.from_user), result.inline_message_id
-            )
+        if (parsed := extract_url(query)) is not None:
             await handle_yt_chosen_result(result_id, parsed, rs)
         else:
             log.warning('Invalid chosen inline result: %s', result)
@@ -209,42 +197,22 @@ def strip_mention(rs: Responder) -> bool:
     return False
 
 
-def handle_guest(msg: Message):
-    log.debug('handle_guest: %s', msg)
-    rs = InlineResponder(msg, answer_guest_query)
+def handle_guest(rs: Responder):
+    log.debug('handle_guest: %s', rs)
     if strip_mention(rs):
-        return handle_msg(msg, rs, direct=False)
+        return handle_msg(rs, direct=False)
+    raise ValueError(f'missing MENTION entity in guest message: {rs}')
 
-    raise ValueError(f'missing MENTION entity in guest message: {msg}')
 
-
-async def handle_callback_query(query: CallbackQuery):
+async def handle_callback_query(rs: Responder | None, query: CallbackQuery):
+    log.debug('inline callback: %r', query)
     if not (data := query.data) or data == 'noop':
         return await query.answer()
 
     try:
-        if not isinstance(msg := query.message, Message):
-            log.debug('inline callback: %r', query)
-            if (mid := query.inline_message_id) is not None:
-                # A guest message created the callback. We continue editing the same
-                # inline message, like a continuation of `handle_guest`.
-                if msg is not None:
-                    # Leave a `text` to avoid setting `as_caption`.
-                    stub = Message(
-                        msg.message_id,
-                        msg.date,
-                        msg.chat,
-                        from_user=query.from_user,
-                        text='',
-                    )
-                else:
-                    stub = message_stub(query.from_user)
-                rs = InlineResponder(stub, mid)
-            else:
-                rs = None
-        else:
-            rs = Responder.create(msg)
-        await dispatch_callback(rs, data)
+        if rs is not None and (coro := rs.dispatch_callback_query(data)) is not None:
+            return await coro
+        log.warning('Bad callback query: %s, %s', data, rs)
     except Exception as e:
         await query.answer('Error', show_alert=True)
         raise e
@@ -257,10 +225,8 @@ def message_stub(from_user: User) -> Message:
 
 
 @callback_query('relay')
-def handle_relay_callback(
-    query: CallbackQuery, data: CallbackData, msg: Message, rs: Responder
-):
+def handle_relay_callback(query: CallbackQuery, data: CallbackData, rs: Responder):
     text = data[data.index('_') + 1 :]
-    log.debug('relay: %r %s', msg, text)
+    log.debug('relay: %s', text)
     rs.set_text(text)
-    return asyncio.gather(handle_msg(msg, rs, direct=False), query.answer())
+    return asyncio.gather(handle_msg(rs, direct=False), query.answer())

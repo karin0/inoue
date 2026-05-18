@@ -1,7 +1,7 @@
 from typing import TYPE_CHECKING
 from telegram import Message, Update, InlineQueryResult
 
-from .log import log
+from .env import log
 
 # PTB does not provide support for guest messages in API 10.0 yet.
 # This provides a dirty workaround to make things work.
