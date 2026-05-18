@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from telegram.constants import ChatAction
 
     from .dispatch import Route
-    from .payload import MediaPayload
+    from .payload import MediaPayload, MediaPayloadWithInput
     from .message_responder import MessageEditHandle
 
 # A responder is a wrapped `Message` that enforces an edit-after-reply pattern.
@@ -167,6 +167,16 @@ class Responder(Protocol):
 class EditHandle(Protocol):
     __slots__ = ()
 
+    def edit(
+        self,
+        text: str | None = None,
+        parse_mode: str | None = None,
+        reply_markup: InlineKeyboardMarkup | None = None,
+        media: MediaPayloadWithInput | None = None,
+        disable_web_page_preview: bool | None = None,
+        allow_not_modified: bool = False,
+    ) -> Awaitable[Message | bool]: ...
+
     def edit_text(
         self,
         text: str,
@@ -174,20 +184,25 @@ class EditHandle(Protocol):
         reply_markup: InlineKeyboardMarkup | None = None,
         *,
         disable_web_page_preview: bool | None = None,
-    ) -> Awaitable: ...
+    ) -> Awaitable[Message | bool]: ...
 
     def edit_reply_markup(
         self,
         reply_markup: InlineKeyboardMarkup | None = None,
-    ) -> Awaitable: ...
+    ) -> Awaitable[Message | bool]: ...
 
     def get_message_key(self) -> str | None:
         return None
 
+    def as_responder(self) -> Responder | None:
+        return None
+
     @staticmethod
-    def from_message(msg: Message) -> MessageEditHandle:
+    def from_message(message: Message) -> MessageEditHandle:
         from .message_responder import MessageEditHandle
 
         return MessageEditHandle(
-            (msg.chat_id, msg.message_id), as_caption=msg.text is None
+            (message.chat_id, message.message_id),
+            as_caption=message.text is None,
+            message=message,
         )

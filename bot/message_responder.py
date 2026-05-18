@@ -71,9 +71,14 @@ async def edit_message(
 
 
 class MessageEditHandle(EditHandle):
-    __slots__ = ('chat_id', 'message_id', 'as_caption', 'inline_message_id')
+    __slots__ = ('chat_id', 'message_id', 'as_caption', 'inline_message_id', '_msg')
 
-    def __init__(self, id: tuple[int, int] | str, as_caption: bool = False):
+    def __init__(
+        self,
+        id: tuple[int, int] | str,
+        as_caption: bool = False,
+        message: Message | None = None,
+    ):
         if isinstance(id, str):
             self.inline_message_id = id
             self.chat_id = None
@@ -82,6 +87,7 @@ class MessageEditHandle(EditHandle):
             self.chat_id, self.message_id = id
             self.inline_message_id = None
         self.as_caption = as_caption
+        self._msg = message
 
     def get_message_key(self) -> str:
         if self.inline_message_id:
@@ -153,6 +159,10 @@ class MessageEditHandle(EditHandle):
             inline_message_id=self.inline_message_id,
             reply_markup=reply_markup,
         )
+
+    def as_responder(self) -> MessageResponder | None:
+        if self._msg is not None:
+            return MessageResponder(self._msg)
 
 
 class MessageResponder(Responder):
@@ -317,5 +327,6 @@ class MessageResponder(Responder):
     def get_message(self) -> Message:
         return self.msg
 
-    def as_edit_handle(self) -> MessageEditHandle:
-        return MessageEditHandle.from_message(self.msg)
+    def as_edit_handle(self) -> MessageEditHandle | None:
+        if (u := self.msg.from_user) is not None and u.is_bot:
+            return MessageEditHandle.from_message(self.msg)
