@@ -1,7 +1,7 @@
 import re
 import shlex
 import asyncio
-from typing import Awaitable
+from typing import Awaitable, TYPE_CHECKING
 
 from telegram import (
     User,
@@ -29,12 +29,17 @@ from .run import handle_cmd
 from .text import pre_block, pre_block_raw
 
 try:
-    from conf import reply_usage
+    from conf import reply_usage  # pyright: ignore[reportMissingImports]
 except ImportError as e:
     log.info('Using default reply_usage: %s', e)
 
     def reply_usage(rs: Responder) -> Awaitable:
         return rs.reply_cached(f'Hello, {get_context().sender_name}!')
+
+
+if TYPE_CHECKING:
+
+    def reply_usage(rs: Responder) -> Awaitable: ...
 
 
 REG_TEMPLATE_ARG = re.compile(r'\$(\*|\d+)')
