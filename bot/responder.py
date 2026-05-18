@@ -71,22 +71,21 @@ class Responder(Protocol):
         '''
         ...
 
-    def reply_chat_action(self, action: ChatAction) -> Awaitable: ...
+    def reply_chat_action(self, action: ChatAction) -> Awaitable[bool]: ...
 
     async def _keep_action(self, action: ChatAction):
-        try:
-            while True:
-                await self.reply_chat_action(action)
-                await asyncio.sleep(4)
-        except asyncio.CancelledError:
-            pass
+        while True:
+            if not await self.reply_chat_action(action):
+                log.warning('reply_chat_action failed: %s', self)
+                return
+            await asyncio.sleep(4)
 
     @contextmanager
     def keep_chat_action(self, action: ChatAction):
         '''Re-send chat action every 4s so it stays visible during long operations.'''
         task = create_task(self._keep_action(action))
         try:
-            yield task
+            yield
         finally:
             task.cancel()
 

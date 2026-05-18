@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from typing import Awaitable, Callable
 
 from telegram import (
@@ -79,8 +80,14 @@ class InlineResponder(Responder):
             return MessageEditHandle(mid)
         # Editing is impossible until the inline message is emitted and the ID is obtained.
 
-    async def reply_chat_action(self, action: ChatAction) -> None:
-        log.debug('InlineResponder: ignored chat action: %s', action)
+    async def reply_chat_action(self, action: ChatAction) -> bool:
+        log.debug('InlineResponder: ignored reply_chat_action: %s', action)
+        return False
+
+    @contextmanager
+    def keep_chat_action(self, action: ChatAction):
+        log.debug('InlineResponder: ignored keep_chat_action: %s', action)
+        yield
 
     def wait_until[T](self, coro: Awaitable[T]) -> Awaitable[T] | None:
         # A `MediaPayload` without `InputMedia` cannot be edited onto the inline

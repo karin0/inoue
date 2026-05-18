@@ -289,7 +289,7 @@ class MessageResponder(Responder):
             )
             return await _do_reply()
 
-    def reply_chat_action(self, action: ChatAction):
+    def reply_chat_action(self, action: ChatAction) -> Awaitable[bool]:
         return self.msg.reply_chat_action(action)
 
     async def reply_copy(self, from_chat_id: int, message_id: int) -> MessageEditHandle:
