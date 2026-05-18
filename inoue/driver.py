@@ -40,11 +40,11 @@ class DriverImpl(DataStore, Driver):
     def on_error(e: Exception | None):
         if isinstance(e, NetworkError):
             with notify.suppress():
-                log.exception('Network error in %s: %s', type(e).__name__, e)
+                log.error('Network error: %s: %s', type(e).__name__, e)
         elif isinstance(e, Exception):
-            log.exception('Exception: %s: %s', type(e).__name__, e, exc_info=e)
+            log.error('Exception: %s: %s', type(e).__name__, e, exc_info=e)
         else:
-            log.exception('Unknown error in update %s: %s', e)
+            log.error('Unknown error: %s', e)
 
     @staticmethod
     def message_key(chat_id: int, message_id: int) -> str:
