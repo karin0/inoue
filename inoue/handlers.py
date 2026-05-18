@@ -1,10 +1,12 @@
 import sys
 import asyncio
-from typing import cast
 from pathlib import Path
+from datetime import datetime
 
 from telegram import (
     Message,
+    User,
+    Chat,
     MessageOriginChannel,
     ChosenInlineResult,
     InlineQuery,
@@ -171,7 +173,9 @@ async def handle_chosen_inline(result: ChosenInlineResult):
     if result_id.startswith('yt_'):
         query = result.query.strip()
         if result.inline_message_id and (parsed := extract_url(query)) is not None:
-            rs = InlineResponder(MessageStub.cast(result), result.inline_message_id)
+            rs = InlineResponder(
+                message_stub(result.from_user), result.inline_message_id
+            )
             await handle_yt_chosen_result(result_id, parsed, rs)
         else:
             log.warning('Invalid chosen inline result: %s', result)
@@ -224,7 +228,18 @@ async def handle_callback_query(query: CallbackQuery):
             if (mid := query.inline_message_id) is not None:
                 # A guest message created the callback. We continue editing the same
                 # inline message, like a continuation of `handle_guest`.
-                rs = InlineResponder(MessageStub.cast(msg or query), mid)
+                if msg is not None:
+                    # Leave a `text` to avoid setting `as_caption`.
+                    stub = Message(
+                        msg.message_id,
+                        msg.date,
+                        msg.chat,
+                        from_user=query.from_user,
+                        text='',
+                    )
+                else:
+                    stub = message_stub(query.from_user)
+                rs = InlineResponder(stub, mid)
             else:
                 rs = None
         else:
@@ -235,26 +250,10 @@ async def handle_callback_query(query: CallbackQuery):
         raise e
 
 
-# We use `InaccessibleMessage`, `CallbackQuery` or `ChosenInlineResult` as a
-# minimal stub to provide `Message.from_user` and give `None` for everything else,
-# which is enough for dispatching until `get_route()`.
-class MessageStub:
-    __slots__ = ('_data',)
-
-    def __init__(self, data):
-        self._data = data
-
-    @staticmethod
-    def cast(data) -> Message:
-        return cast(Message, MessageStub(data))
-
-    def __getattr__(self, item: str):
-        r = getattr(self._data, item, None)
-        log.debug('MessageStub: getattr %r -> %r', item, r)
-        return r
-
-    def __repr__(self) -> str:
-        return f'MessageStub({self._data!r})'
+def message_stub(from_user: User) -> Message:
+    return Message(
+        0, datetime.now(), Chat(0, ChatType.SENDER), from_user=from_user, text=''
+    )
 
 
 @callback_query('relay')
