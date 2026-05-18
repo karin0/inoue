@@ -89,6 +89,17 @@ class MicrosecondFormatter(logging.Formatter):
         return datetime.fromtimestamp(record.created).strftime('%m-%d %H:%M:%S.%f')
 
 
+FILTER_WORDS = tuple(os.environ.get('LOG_FILTER_WORDS', '').split())
+
+
+class Filter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if FILTER_WORDS and record.levelno <= logging.INFO:
+            s = record.getMessage()
+            return not any(word in s for word in FILTER_WORDS)
+        return True
+
+
 notify = NotifyHandler()
 
 TRACE = os.environ.get('TRACE') == '1'
@@ -126,6 +137,9 @@ def _get_logger(name):
     logger = logging.getLogger(name)
     logger.addHandler(notify)
     bot_log.addHandler(notify)
+
+    if FILTER_WORDS:
+        h.addFilter(Filter())
 
     for name in ('telegram', 'httpcore', 'httpx', 'asyncio'):
         logging.getLogger(name).setLevel(logging.WARNING)
