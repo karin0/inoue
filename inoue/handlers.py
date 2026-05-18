@@ -1,4 +1,5 @@
 import sys
+import asyncio
 from typing import cast
 from pathlib import Path
 
@@ -257,11 +258,10 @@ class MessageStub:
 
 
 @callback_query('relay')
-async def handle_relay_callback(
+def handle_relay_callback(
     query: CallbackQuery, data: CallbackData, msg: Message, rs: Responder
 ):
     text = data[data.index('_') + 1 :]
     log.debug('relay: %r %s', msg, text)
     rs.set_text(text)
-    await handle_msg(msg, rs, direct=False)
-    await query.answer()
+    return asyncio.gather(handle_msg(msg, rs, direct=False), query.answer())
