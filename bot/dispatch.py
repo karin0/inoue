@@ -150,12 +150,12 @@ class Route[**P, T]:
             args.extend(map(self._va, it))
 
         log.debug('Injected to %s: %r', self._func.__name__, args)
+        coro = self._func(*args)
         if defer is not None:
-            fut = defer[0](self._func(*args))
-            if fut is not None:
+            if (fut := defer[0](coro)) is not None:
                 return fut
             args[defer[1]] = None
-        return self._func(*args)
+        return coro
 
     def __repr__(self) -> str:
         return f'<{"Public " if self.public else ""}Route: {self._func.__name__}>'
