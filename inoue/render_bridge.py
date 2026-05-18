@@ -107,7 +107,7 @@ class Promise[T: PromiseResult](Box):
                 # A self loop. Do not clear `_next`, leave them getting cancelled.
                 self._cancel()
                 log.error('Promise._resolve: loop chaining: %r', inner)
-                raise ValueError('Promise._resolve: loop chaining')
+                raise ValueError('loop chaining')
 
             for v in self._next:
                 if v is not result:
@@ -117,7 +117,7 @@ class Promise[T: PromiseResult](Box):
                     self._cancel()
                     v._cancel()
                     log.error('Promise._resolve: circular chaining: %r', inner)
-                    raise ValueError('Promise._resolve: circular chaining')
+                    raise ValueError('circular chaining')
 
             result._next.add(self)
             self._next.clear()
@@ -299,17 +299,6 @@ def trusted[**P, R](
         return wrapper2
 
 
-INSTANCES = WeakSet()
-
-TASK_GROUPS: WeakValueDictionary[str, Tasks] = WeakValueDictionary()
-
-
-def count_tasks(key: str) -> int:
-    if (tasks := TASK_GROUPS.get(key)) is not None:
-        return len(tasks._tasks)
-    return 0
-
-
 def _format_task(task: asyncio.Task) -> str:
     if task.cancelled():
         state = 'cancelled'
@@ -352,8 +341,15 @@ class Tasks:
         promise = Promise()
 
         def callback(fut: asyncio.Task[T], _=ctx):
-            self._tasks.discard(fut)
-            promise._invoke(fut)
+            self._tasks.remove(fut)
+            try:
+                promise._invoke(fut)
+            except ValueError as e:
+                # Circular chaining detected.
+                promise._cancel()
+                log.warning('Tasks.callback: %s: %s', type(e).__name__, e)
+                ctx._error(f'Promise: {e}')
+            ctx.flush_errors()
 
         task = asyncio.create_task(coro)
         task.add_done_callback(callback)
@@ -374,6 +370,16 @@ class Tasks:
         log.debug('Tasks.wait: done: %r', r)
         if tasks:
             log.debug('Tasks.wait: still pending: %r', self)
+
+
+INSTANCES = WeakSet()
+TASK_GROUPS: WeakValueDictionary[str, Tasks] = WeakValueDictionary()
+
+
+def count_tasks(key: str) -> int:
+    if (tasks := TASK_GROUPS.get(key)) is not None:
+        return len(tasks._tasks)
+    return 0
 
 
 class Bridge(Box):
@@ -473,6 +479,8 @@ class Bridge(Box):
 
     @trusted
     def mkstemp(self, *args, **kwargs) -> 'LocalPath':
+        if isinstance(self._tasks, str):
+            raise RuntimeError(self._tasks)
         fd, path = tempfile.mkstemp(*args, **kwargs)
         self._temp_files.append(path)
         os.close(fd)

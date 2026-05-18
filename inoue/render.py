@@ -6,15 +6,7 @@ import weakref
 import builtins
 from pathlib import Path
 from itertools import chain, islice
-from typing import (
-    Container,
-    Iterable,
-    Mapping,
-    Callable,
-    Awaitable,
-    Type,
-    cast,
-)
+from typing import Container, Iterable, Mapping, Callable, Awaitable, Type, cast
 
 from telegram import (
     CallbackQuery,
@@ -30,6 +22,7 @@ from telegram.constants import MessageLimit, ReactionEmoji, KeyboardButtonStyle
 from render_core import Engine, Value, to_str
 from bot import (
     bot,
+    create_task,
     shorten,
     truncate_text,
     escape,
@@ -348,6 +341,8 @@ class RenderContext:
         '_can_escalate',
         '_as_caption',
         '_responder',
+        '_edit_handle',
+        '_error_idx',
         'data',
         'engine',
         '__weakref__',
@@ -375,6 +370,8 @@ class RenderContext:
 
         self._doc_refs = {doc_id: ''} if doc_id is not None else {}
         self._render_time = None
+        self._error_idx = 0
+        self._edit_handle = None
 
         context = get_context()
         if (sender := context.sender) is not None and sender.id in (USER_ID, CHAN_ID):
@@ -429,7 +426,8 @@ class RenderContext:
         if self._update_callback is not None:
             func, lock = self._update_callback
             async with lock:
-                return (await func(spec)).get_message_key()
+                self._edit_handle = handle = await func(spec)
+                return handle.get_message_key()
 
     def _escalate(self) -> int | None:
         if (token := self._can_escalate) is not None:
@@ -475,17 +473,34 @@ class RenderContext:
         return result
 
     # Exposed as a callback to Bridge, used for `edit_message`.
-    async def _edit_message(self, seg: Segment) -> str | None:
+    # We need to keep this sync to consume `error_idx` during rendering and
+    # before `flush_errors()` is called.
+    def _edit_message(self, seg: Segment):
         if self._update_callback is None:
-            log.info('_edit_message: no update_callback')
-            return
+            # Unlikely to happen, since we have checked the task policy.
+            raise RuntimeError('_edit_message called without update_callback')
 
         self._render_time = int(time.time())
         spec = self._format_response(seg)
-        return await self._invoke_update_callback(spec)
+        return self._invoke_update_callback(spec)
 
     def render(self, text: str) -> Awaitable[MessageSpec]:
         return self.to_response(self.render_text(text))
+
+    def flush_errors(self):
+        if (
+            (errors := self.engine.errors)
+            and self._error_idx < len(errors)
+            and (handle := self._edit_handle) is not None
+            and (rs := handle.as_responder()) is not None
+        ):
+            # We do not just use `self._responder`, which might override our original
+            # reply when handling a callback from an inline message.
+            # This ensures we only reply to our rendered message with a new one.
+            new_errors = errors[self._error_idx :]
+            self._error_idx = len(errors)
+            log.info('Flushing %d new errors: %r', len(new_errors), new_errors)
+            create_task(rs.reply('\n'.join(new_errors)))
 
     async def to_response(self, rendered: Segment) -> MessageSpec:
         spec = self._format_response(rendered)
@@ -603,6 +618,7 @@ class RenderContext:
 
         # Render the footers first, so we can truncate the body if overflowed.
         if errors := self.engine.errors:
+            self._error_idx = len(errors)
             fmt.try_append('\n\n---\n\n')
             for e in errors:
                 fmt.try_push(e, '\n')
