@@ -43,7 +43,11 @@ def _build_app() -> Application:
     # Looks like http://127.0.0.1:8081/
     if url := os.environ.get('LOCAL_SERVER'):
         log.info('Using local server: %s', url)
-        builder = builder.base_url(url + 'bot').base_file_url(url + 'file/bot').local_mode(True)
+        builder = builder.base_url(url + 'bot').base_file_url(url + 'file/bot')
+
+    if os.environ.get('LOCAL_MODE'):
+        log.debug('Running in local mode')
+        builder = builder.local_mode(True)
 
     app = builder.build()
     app.add_error_handler(handle_error)
