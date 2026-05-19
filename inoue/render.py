@@ -879,8 +879,8 @@ def handle_render_callback(callback: CallbackQuery, data: CallbackData, rs: Resp
     else:
         memory = None
 
-    if len(path := data[i:]) <= 2:
-        raise ValueError('bad path in render callback: ' + data)
+    if len(path := data[i:]) < 2:
+        raise ValueError(f'bad path in render callback: {data!r}, {path!r}')
 
     # Compatibility with old format
     if path[0] == ':' and path[1] in CALLBACK_SPECIAL:
