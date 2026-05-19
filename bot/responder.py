@@ -15,7 +15,6 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Iterator
 
     from .dispatch import Route
-    from .future import UpdateExt
     from .message_responder import MessageEditHandle
     from .payload import MediaPayload, MediaPayloadWithInput
 
@@ -173,52 +172,43 @@ class Responder(Protocol):
         return False
 
     @staticmethod
-    def create(update: Update) -> tuple[Responder | None, UpdateExt]:
-        from .future import patch_update
+    def create(update: Update) -> Responder | None:
+        from .inline_responder import InlineResponder
+        from .message_responder import MessageResponder
 
-        update = patch_update(update)
-        return _create_rs(update), update
+        if (
+            msg := update.message
+            or update.edited_message
+            or update.channel_post
+            or update.edited_channel_post
+        ) is not None:
+            return MessageResponder(msg)
+
+        if (callback := update.callback_query) is not None:
+            if isinstance(msg := callback.message, Message):
+                return MessageResponder(msg)
+
+            if mid := callback.inline_message_id:
+                if msg is not None:
+                    stub = Message(
+                        msg.message_id, msg.date, msg.chat, from_user=callback.from_user, text=''
+                    )
+                else:
+                    stub = _stub(callback.from_user)
+                return InlineResponder(stub, mid)
+
+            return None
+
+        if (chosen := update.chosen_inline_result) is not None:
+            if mid := chosen.inline_message_id:
+                return InlineResponder(_stub(chosen.from_user), mid)
+            return None
+
+        if (msg := update.guest_message) is not None:
+            return InlineResponder(msg, None)
 
     def __repr__(self) -> str:
         return f'{type(self).__name__}({self.get_message()})'
-
-
-@staticmethod
-def _create_rs(update: UpdateExt) -> Responder | None:
-    from .future import answer_guest_query
-    from .inline_responder import InlineResponder
-    from .message_responder import MessageResponder
-
-    if (
-        msg := update.message
-        or update.edited_message
-        or update.channel_post
-        or update.edited_channel_post
-    ) is not None:
-        return MessageResponder(msg)
-
-    if (callback := update.callback_query) is not None:
-        if isinstance(msg := callback.message, Message):
-            return MessageResponder(msg)
-
-        if mid := callback.inline_message_id:
-            if msg is not None:
-                stub = Message(
-                    msg.message_id, msg.date, msg.chat, from_user=callback.from_user, text=''
-                )
-            else:
-                stub = _stub(callback.from_user)
-            return InlineResponder(stub, mid)
-
-        return None
-
-    if (chosen := update.chosen_inline_result) is not None:
-        if mid := chosen.inline_message_id:
-            return InlineResponder(_stub(chosen.from_user), mid)
-        return None
-
-    if (msg := update.guest_message) is not None:
-        return InlineResponder(msg, answer_guest_query)
 
 
 def _stub(from_user: User) -> Message:

@@ -129,8 +129,8 @@ class Route[**P, T]:
             elif ty is int:
                 args.append(int(next(it)))
             elif ty is RequireDefer:
-                if isinstance(rs, InlineResponder):
-                    defer = (rs.wait_until, len(args))
+                if isinstance(rs, InlineResponder) and rs.can_defer():
+                    defer = rs.defer_until
                     args.append(rs.flush)
                 else:
                     args.append(None)
@@ -146,9 +146,9 @@ class Route[**P, T]:
         log.debug('Injected to %s: %r', self._func.__name__, args)
         coro = self._func(*args)
         if defer is not None:
-            if (fut := defer[0](coro)) is not None:
+            if (fut := defer(coro)) is not None:
                 return fut
-            args[defer[1]] = None
+            raise RuntimeError('Defer failed')
         return coro
 
     def __repr__(self) -> str:

@@ -35,7 +35,7 @@ from .log import log, notify, trace
 async def handle_update(update: Update, _: ContextTypes.DEFAULT_TYPE):
     # ruff: noqa: E731
     t0 = time.perf_counter()
-    rs, update = Responder.create(update)
+    rs = Responder.create(update)
 
     effective_msg = update.effective_message
     src = None

@@ -6,7 +6,7 @@ requires-python = ">=3.14"
 dependencies = [
     "lark>=1.3.1",
     "simpleeval>=1.0.3",
-    "python-telegram-bot[http2]>=22",
+    "python-telegram-bot>=22",
     "prettytable>=3.17.0",
     "yt-dlp>=2026.3.17",
     "pathvalidate>=3.3.1",
@@ -19,6 +19,7 @@ optional-dependencies = { regex = ["regex>=2026.4.4"] }
 
 [tool.uv.sources]
 ptbcontrib = { git = "https://github.com/python-telegram-bot/ptbcontrib.git", rev = "main" }
+python-telegram-bot = { git = "https://github.com/karin0/python-telegram-bot", rev = "inoue" }
 
 [dependency-groups]
 dev = [

@@ -1,9 +1,8 @@
-from collections.abc import Awaitable, Callable
 from contextlib import contextmanager
+from typing import TYPE_CHECKING, Protocol
 
 from telegram import (
     InlineKeyboardMarkup,
-    InlineQueryResult,
     InlineQueryResultArticle,
     InputTextMessageContent,
     Message,
@@ -12,13 +11,24 @@ from telegram.constants import ChatAction, MessageLimit
 from telegram.error import BadRequest
 
 from . import env
+from .app import bot
 from .env import log
 from .message_responder import MessageEditHandle
-from .payload import MediaPayload, MediaPayloadWithInput, payload_has_input
+from .payload import CachedPayload, MediaPayload, MediaPayloadWithInput, payload_has_input
 from .responder import EditHandle, Responder
 from .text import escape, html_escape, shorten, truncate_text
 
-type InlineMessageIdFactory = Callable[[Message, InlineQueryResult], Awaitable[str]]
+if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
+
+class Emitter(Protocol):
+    __slots__ = ()
+
+    def get_message_key(self, rs: InlineResponder) -> str: ...
+    def as_edit_handle(self) -> MessageEditHandle | None: ...
+    async def emit(self, rs: InlineResponder) -> bool: ...
+    async def extract_media(self, payload: MediaPayload) -> MediaPayload | None: ...
 
 
 class InlineResponder(Responder):
@@ -31,51 +41,37 @@ class InlineResponder(Responder):
 
     __slots__ = (
         '_msg',
-        '_inline_message_id',
         '_fragments',
         '_reply_markup',
         '_disable_web_page_preview',
         '_cached_idx',
         '_media',
-        '_deferred',
-        '_dirty',
-        '_message_key',
+        '_emitter',
     )
 
-    def __init__(self, msg: Message, inline_message_id: str | InlineMessageIdFactory) -> None:
+    def __init__(self, msg: Message, inline_message_id: str | None) -> None:
         super().__init__()
         self._msg = msg
-        self._inline_message_id: str | InlineMessageIdFactory = inline_message_id
         self._fragments: list[tuple[str, str | None]] = []
         self._reply_markup: InlineKeyboardMarkup | None = None
         self._disable_web_page_preview: bool | None = None
         self._cached_idx: int | None = None
         self._media: MediaPayload | None = None
-        self._deferred = False
-        self._dirty = False
-        self._message_key = None
+        self._emitter = (
+            InlineEmitter(inline_message_id) if inline_message_id is not None else GuestEmitter()
+        )
 
     def __repr__(self) -> str:
-        return f'InlineResponder({self._msg!r}, {self._inline_message_id!r})'
+        return f'InlineResponder({self._msg!r}, {self._emitter!r})'
 
     def get_message(self) -> Message:
         return self._msg
 
     def get_message_key(self) -> str:
-        if self._message_key is None:
-            # Cache it to avoid a volatile result.
-            if isinstance(mid := self._inline_message_id, str):
-                self._message_key = mid
-            else:
-                m = self._msg
-                self._message_key = env.driver.message_key(m.chat_id, m.message_id)
-
-        return self._message_key
+        return self._emitter.get_message_key(self)
 
     def as_edit_handle(self) -> MessageEditHandle | None:
-        if isinstance(mid := self._inline_message_id, str):
-            return MessageEditHandle(mid)
-        # Editing is prevented until the inline message is emitted.
+        return self._emitter.as_edit_handle()
 
     async def reply_chat_action(self, action: ChatAction) -> bool:
         log.debug('InlineResponder: ignored reply_chat_action: %s', action)
@@ -85,46 +81,6 @@ class InlineResponder(Responder):
     def keep_chat_action(self, action: ChatAction):
         log.debug('InlineResponder: ignored keep_chat_action: %s', action)
         yield
-
-    def wait_until[T](self, coro: Awaitable[T]) -> Awaitable[T] | None:
-        # A `MediaPayload` without `InputMedia` cannot be edited onto the inline
-        # message.
-        # When a pending voice is present, the caller (or dispatcher) must defer
-        # our emission until the voice is ready.
-        if isinstance(self._inline_message_id, str):
-            log.warning('InlineResponder: cannot defer with existing inline message: %s', self)
-            return None
-
-        log.info('InlineResponder: deferred: %s', self)
-        self._deferred = True
-        return self._flush_after(coro)
-
-    async def _flush_after[T](self, coro: Awaitable[T]) -> T:
-        try:
-            return await coro
-        finally:
-            await self.flush()
-
-    async def flush(self) -> None:
-        self._deferred = False
-        if self._dirty:
-            log.info('InlineResponder: flushing deferred: %s', self)
-            await self._emit()
-
-    async def _set_media(self, payload: MediaPayload) -> None:
-        if isinstance(self._inline_message_id, str):
-            if not payload_has_input(payload):
-                log.warning(
-                    'InlineResponder: inline message sent but InputMedia is unavailable, '
-                    'consider using `InlineResponder.wait_until()`: %s',
-                    payload,
-                )
-                return
-            log.debug('InlineResponder: set media: %s', payload)
-            self._media = payload
-        elif (media := await payload.as_cached()) is not None:
-            log.debug('InlineResponder: staged media: %s', media)
-            self._media = media
 
     async def reply(
         self,
@@ -157,7 +113,7 @@ class InlineResponder(Responder):
                 log.warning('InlineResponder: ignored extra media: %r', media)
                 media = None
             else:
-                await self._set_media(media)
+                self._media = await self._emitter.extract_media(media)
 
         frag = (text or '', parse_mode if text else None)
         if cached and (idx := self._cached_idx) is not None:
@@ -176,69 +132,33 @@ class InlineResponder(Responder):
         if text or media is not None or reply_markup is not None:
             if allow_not_modified:
                 try:
-                    await self._emit()
+                    await self.emit()
                 except BadRequest as e:
                     if 'Message is not modified' in str(e):
                         log.info('InlineResponder.reply: message not modified')
                     else:
                         raise
             else:
-                await self._emit()
+                await self.emit()
 
         return InlineFragmentHandle(self, idx)
 
-    async def _emit(self) -> Message | bool:
+    def _collapse(self) -> tuple[str, str | None]:
+        return _collapse_fragments(self._fragments, self._media is None)
+
+    async def emit(self) -> bool:
         if not self._fragments and self._media is None:
             log.info('InlineResponder: nothing to emit')
             return True
 
-        if self._deferred:
-            log.debug('InlineResponder: emitting deferred')
-            self._dirty = True
-            return True
-
-        text, parse_mode = _collapse_fragments(self._fragments, self._media is None)
-
         log.debug(
             'InlineResponder: emitting: %r %r %r %r',
-            text,
-            parse_mode,
+            self._emitter,
+            self._fragments,
             self._reply_markup,
             self._media,
         )
-
-        self._dirty = False
-        if isinstance(mid := self._inline_message_id, str):
-            log.info('InlineResponder: editing inline message: %s', mid)
-            handle = MessageEditHandle(mid)
-            if (media := self._media) is not None and not payload_has_input(media):
-                # We have warned about this in `_set_media`.
-                media = None
-            return await handle.edit(
-                text or None,
-                parse_mode,
-                self._reply_markup,
-                media=media,
-                disable_web_page_preview=self._disable_web_page_preview,
-            )
-
-        if (media := self._media) is not None and (media := await media.as_cached()) is not None:
-            result = media.as_inline_result(text or None, parse_mode, self._reply_markup)
-        else:
-            result = InlineQueryResultArticle(
-                id='noop',
-                title=shorten(text) or 'Text',
-                input_message_content=InputTextMessageContent(
-                    text,
-                    parse_mode=parse_mode,
-                    disable_web_page_preview=self._disable_web_page_preview,
-                ),
-                reply_markup=self._reply_markup,
-            )
-        log.debug('InlineResponder: emitting inline result: %s', result)
-        self._inline_message_id = r = await mid(self._msg, result)
-        log.info('InlineResponder: emitted inline message: %s', r)
-        return True
+        return await self._emitter.emit(self)
 
     async def reply_copy(self, from_chat_id: int, message_id: int) -> InlineFragmentHandle:
         staged = await env.driver.stage_message(from_chat_id, message_id)
@@ -250,6 +170,130 @@ class InlineResponder(Responder):
 
     def reply_forward(self, from_chat_id: int, message_id: int) -> Awaitable[InlineFragmentHandle]:
         return self.reply_copy(from_chat_id, message_id)
+
+    def can_defer(self) -> bool:
+        return isinstance(self._emitter, GuestEmitter) and not self._emitter._deferred
+
+    def defer_until[T](self, coro: Awaitable[T]) -> Awaitable[T] | None:
+        if isinstance(em := self._emitter, GuestEmitter):
+            log.info('InlineResponder: deferred: %s', self)
+            em._deferred = True
+            return self._flush_after(coro)
+
+    async def _flush_after[T](self, coro: Awaitable[T]) -> T:
+        try:
+            return await coro
+        finally:
+            await self.flush()
+
+    async def flush(self) -> bool | None:
+        if isinstance(em := self._emitter, GuestEmitter):
+            em._deferred = False
+            if em._dirty:
+                return await em.emit(self)
+
+
+class InlineEmitter(Emitter):
+    __slots__ = ('_inline_message_id',)
+
+    def __init__(self, inline_message_id: str) -> None:
+        self._inline_message_id = inline_message_id
+
+    def __repr__(self) -> str:
+        return f'InlineResponder({self._inline_message_id!r})'
+
+    def get_message_key(self, rs: InlineResponder) -> str:
+        return self._inline_message_id
+
+    def as_edit_handle(self) -> MessageEditHandle | None:
+        return MessageEditHandle(self._inline_message_id)
+
+    async def extract_media(self, payload: MediaPayload) -> MediaPayloadWithInput | None:
+        if payload_has_input(payload):
+            log.debug('InlineEmitter: media: %s', payload)
+            return payload
+        log.warning(
+            'InlineEmitter: inline message sent but InputMedia is unavailable, '
+            'For guest queries consider using `GuestEmitter.wait_until()`: %s',
+            payload,
+        )
+
+    async def emit(self, rs: InlineResponder) -> bool:
+        mid = self._inline_message_id
+        log.info('InlineEmitter: editing inline message: %s', mid)
+        handle = MessageEditHandle(mid)
+        text, parse_mode = rs._collapse()
+        if (media := rs._media) is not None and not payload_has_input(media):
+            # We have warned about this in `_set_media`.
+            media = None
+        r = await handle.edit(
+            text or None,
+            parse_mode,
+            rs._reply_markup,
+            media=media,
+            disable_web_page_preview=rs._disable_web_page_preview,
+        )
+        if not isinstance(r, bool):
+            raise RuntimeError(f'Not a bool: {r!r}')
+        return r
+
+
+class GuestEmitter(Emitter):
+    __slots__ = ('_deferred', '_dirty', '_message_key')
+
+    def __init__(self) -> None:
+        self._deferred = False
+        self._dirty = False
+        self._message_key = None
+
+    def __repr__(self) -> str:
+        return f'GuestResponder(deferred={self._deferred}, dirty={self._dirty})'
+
+    def get_message_key(self, rs: InlineResponder) -> str:
+        if self._message_key is None:
+            # Cache it to avoid a volatile result.
+            m = rs._msg
+            self._message_key = env.driver.message_key(m.chat_id, m.message_id)
+
+        return self._message_key
+
+    def as_edit_handle(self) -> None:
+        return None
+
+    async def extract_media(self, payload: MediaPayload) -> CachedPayload | None:
+        if (media := await payload.as_cached()) is not None:
+            log.debug('GuestEmitter: staged media: %s', media)
+            return media
+
+    async def emit(self, rs: InlineResponder) -> bool:
+        if self._deferred:
+            log.info('GuestEmitter: emitting deferred: %s', self)
+            self._dirty = True
+            return True
+
+        text, parse_mode = rs._collapse()
+        if (media := rs._media) is not None and (media := await media.as_cached()) is not None:
+            result = media.as_inline_result(text or None, parse_mode, rs._reply_markup)
+        else:
+            result = InlineQueryResultArticle(
+                id='noop',
+                title=shorten(text) or 'Text',
+                input_message_content=InputTextMessageContent(
+                    text,
+                    parse_mode=parse_mode,
+                    disable_web_page_preview=rs._disable_web_page_preview,
+                ),
+                reply_markup=rs._reply_markup,
+            )
+        log.debug('GuestEmitter: emitting inline result: %s', result)
+
+        if (gid := rs._msg.guest_query_id) is None:
+            raise ValueError('No guest_query_id in message: %s', rs._msg)
+        r = await bot.answer_guest_query(gid, result)
+
+        log.info('GuestEmitter: emitted inline message: %s', r)
+        rs._emitter = InlineEmitter(r.inline_message_id)
+        return True
 
 
 def _collapse_fragments(
@@ -299,8 +343,8 @@ class InlineFragmentHandle(EditHandle):
             r._disable_web_page_preview = disable_web_page_preview
         if media is not None:
             # This overrides the media for the entire inline message.
-            await r._set_media(media)
-        return await r._emit()
+            r._media = await r._emitter.extract_media(media)
+        return await r.emit()
 
     def edit_text(
         self,
@@ -316,7 +360,7 @@ class InlineFragmentHandle(EditHandle):
             r._reply_markup = reply_markup
         if disable_web_page_preview is not None:
             r._disable_web_page_preview = disable_web_page_preview
-        return r._emit()
+        return r.emit()
 
     async def edit_reply_markup(
         self, reply_markup: InlineKeyboardMarkup | None = None
@@ -324,10 +368,10 @@ class InlineFragmentHandle(EditHandle):
         r = self._rs
         if reply_markup is not None:
             r._reply_markup = reply_markup
-            return await r._emit()
+            return await r.emit()
         if r._reply_markup is not None:
             r._reply_markup = None
-            return await r._emit()
+            return await r.emit()
         return True
 
     def get_message_key(self) -> str:
