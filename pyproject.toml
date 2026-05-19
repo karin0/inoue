@@ -14,8 +14,8 @@ dependencies = [
     "rembg[cpu]>=2.0.75",
     "ptbcontrib",
     "aiohttp>=3.13.5",
+    "regex>=2026.4.4",
 ]
-optional-dependencies = { regex = ["regex>=2026.4.4"] }
 
 [tool.uv.sources]
 ptbcontrib = { git = "https://github.com/python-telegram-bot/ptbcontrib.git", rev = "main" }

@@ -9,13 +9,7 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, overload, override
 
-try:
-    import regex as re
-except ImportError:
-    import warnings
-
-    warnings.warn('regex module not found. Regex replacements will be disabled.', stacklevel=2)
-    re = None
+import regex
 
 from lark import Lark, Token, Tree
 from lark.exceptions import LarkError
@@ -45,18 +39,14 @@ if TYPE_CHECKING:
 MAX_DEPTH = 20
 MAX_GAS = 2000
 
-REPL_REGEX_FLAG_MAP = (
-    {
-        'a': re.ASCII,
-        'i': re.IGNORECASE,
-        'm': re.MULTILINE,
-        's': re.DOTALL,
-        'u': re.UNICODE,
-        'x': re.VERBOSE,
-    }
-    if re
-    else None
-)
+REPL_REGEX_FLAG_MAP = {
+    'a': regex.ASCII,
+    'i': regex.IGNORECASE,
+    'm': regex.MULTILINE,
+    's': regex.DOTALL,
+    'u': regex.UNICODE,
+    'x': regex.VERBOSE,
+}
 
 
 # https://stackoverflow.com/a/47956089
@@ -1647,15 +1637,11 @@ class Engine(Interpreter):
                     self._ctx[key] = val = val.replace(pat, sub)
 
                 case 'repl_pair_regex':
-                    if not re:
-                        self._error('regex replacement disabled')
-                        continue
-
                     flags = self._regex_flags(narrow(chs[2], Token).value) if len(chs) > 2 else 0
 
                     try:
-                        val = re.sub(pat, sub, val, flags=flags, timeout=0.1)
-                    except re.error as e:
+                        val = regex.sub(pat, sub, val, flags=flags, timeout=0.1)
+                    except regex.error as e:
                         self._error(f'regex replace: {e}')
                     else:
                         self._ctx[key] = val
@@ -1664,8 +1650,6 @@ class Engine(Interpreter):
                     raise ValueError(f'Bad repl pair: {pair.data}')
 
     def _regex_flags(self, spec: str) -> int:
-        assert REPL_REGEX_FLAG_MAP is not None
-
         flags = 0
         for c in spec:
             if (flag := REPL_REGEX_FLAG_MAP.get(c)) is None:

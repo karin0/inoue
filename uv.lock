@@ -1,6 +1,10 @@
 version = 1
 revision = 3
 requires-python = ">=3.14"
+resolution-markers = [
+    "python_full_version >= '3.15'",
+    "python_full_version < '3.15'",
+]
 
 [[package]]
 name = "aiohappyeyeballs"
@@ -274,14 +278,10 @@ dependencies = [
     { name = "prettytable" },
     { name = "ptbcontrib" },
     { name = "python-telegram-bot" },
+    { name = "regex" },
     { name = "rembg", extra = ["cpu"] },
     { name = "simpleeval" },
     { name = "yt-dlp" },
-]
-
-[package.optional-dependencies]
-regex = [
-    { name = "regex" },
 ]
 
 [package.dev-dependencies]
@@ -301,12 +301,11 @@ requires-dist = [
     { name = "prettytable", specifier = ">=3.17.0" },
     { name = "ptbcontrib", git = "https://github.com/python-telegram-bot/ptbcontrib.git?rev=main" },
     { name = "python-telegram-bot", git = "https://github.com/karin0/python-telegram-bot?rev=inoue" },
-    { name = "regex", marker = "extra == 'regex'", specifier = ">=2026.4.4" },
+    { name = "regex", specifier = ">=2026.4.4" },
     { name = "rembg", extras = ["cpu"], specifier = ">=2.0.75" },
     { name = "simpleeval", specifier = ">=1.0.3" },
     { name = "yt-dlp", specifier = ">=2026.3.17" },
 ]
-provides-extras = ["regex"]
 
 [package.metadata.requires-dev]
 dev = [
