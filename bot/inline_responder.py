@@ -130,23 +130,14 @@ class InlineResponder(Responder):
             self._cached_idx = idx
 
         if text or media is not None or reply_markup is not None:
-            if allow_not_modified:
-                try:
-                    await self.emit()
-                except BadRequest as e:
-                    if 'Message is not modified' in str(e):
-                        log.info('InlineResponder.reply: message not modified')
-                    else:
-                        raise
-            else:
-                await self.emit()
+            await self.emit(allow_not_modified=allow_not_modified)
 
         return InlineFragmentHandle(self, idx)
 
     def _collapse(self) -> tuple[str, str | None]:
         return _collapse_fragments(self._fragments, self._media is None)
 
-    async def emit(self) -> bool:
+    async def emit(self, *, allow_not_modified: bool = False) -> bool:
         if not self._fragments and self._media is None:
             log.info('InlineResponder: nothing to emit')
             return True
@@ -158,6 +149,14 @@ class InlineResponder(Responder):
             self._reply_markup,
             self._media,
         )
+        if allow_not_modified:
+            try:
+                return await self._emitter.emit(self)
+            except BadRequest as e:
+                if 'Message is not modified' in str(e):
+                    log.info('InlineResponder.emit: message unmodified')
+                    return True
+                raise
         return await self._emitter.emit(self)
 
     async def reply_copy(self, from_chat_id: int, message_id: int) -> InlineFragmentHandle:
@@ -344,7 +343,7 @@ class InlineFragmentHandle(EditHandle):
         if media is not None:
             # This overrides the media for the entire inline message.
             r._media = await r._emitter.extract_media(media)
-        return await r.emit()
+        return await r.emit(allow_not_modified=allow_not_modified)
 
     def edit_text(
         self,
