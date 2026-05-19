@@ -456,12 +456,11 @@ class RenderContext:
         return result
 
     # Exposed as a callback to Bridge, used for `edit_message`.
-    # We need to keep this sync to consume `error_idx` during rendering and
-    # before `flush_errors()` is called.
+    # We need to keep this sync to ensure this does not count as a last task in `count_tasks`,
+    # and to consume `error_idx` during rendering and before `flush_errors()` is called.
     def _edit_message(self, seg: Segment):
         if self._update_callback is None:
-            # Unlikely to happen, since we have checked the task policy.
-            raise RuntimeError('_edit_message called without update_callback')
+            raise RuntimeError('uneditable context')
 
         self._render_time = int(time.time())
         spec = self._format_response(seg)
