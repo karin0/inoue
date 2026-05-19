@@ -27,6 +27,7 @@ dev = [
     "ruff>=0.15.12",
     "pyright>=1.1.409",
     "pyinstrument>=5.1.2",
+    "pytest>=9.0.3",
 ]
 
 [tool.ruff]
