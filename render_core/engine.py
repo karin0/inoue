@@ -111,6 +111,21 @@ def _iter_py(tree: Tree) -> Iterable[Tree | Token]:
             yield from _iter_py(ch)
 
 
+class CodeSlice:
+    __slots__ = ('text', 'start', 'end')
+
+    def __init__(self, text: str, start: int, end: int):
+        self.text = text
+        self.start = start
+        self.end = end
+
+    def __str__(self) -> str:
+        return self.text[self.start : self.end]
+
+    def __repr__(self) -> str:
+        return f'CodeSlice({self.start}:{self.end}:{str(self)!r})'
+
+
 @functools.lru_cache
 def parse_fragment(text: str) -> Tree:
     root: Tree = BranchNormalizer().transform(parser.parse(text))
@@ -118,16 +133,19 @@ def parse_fragment(text: str) -> Tree:
         trace('Raw tree: %s', root.pretty())
     parts = []
     for tree in root.iter_subtrees_topdown():
+        tree_meta = tree.meta
+        slice = (
+            CodeSlice(text, tree_meta.start_pos, tree_meta.end_pos) if not tree_meta.empty else None
+        )
+        tree.source = slice  # type: ignore[attr-defined]
+        with suppress(AttributeError):
+            delattr(tree, '_meta')
         if tree.data == 'python':
-            tree_meta = tree.meta
             if is_not_quiet:
-                trace(
-                    'Python tree: %s\nfrom %r',
-                    tree.pretty(),
-                    text[tree_meta.start_pos : tree_meta.end_pos],
-                )
+                trace('Python tree: %s\nfrom %r', tree.pretty(), slice)
             out = []
-            last = tree_meta.start_pos
+            assert slice is not None
+            last = slice.start
             for ch in _iter_py(tree):
                 trace('Python part: %r', ch)
                 if isinstance(ch, Tree):
@@ -149,14 +167,12 @@ def parse_fragment(text: str) -> Tree:
                     parts.append(text[last : ch.start_pos])
                     parts.append(repl)
                     last = ch.end_pos
-            parts.append(text[last : tree_meta.end_pos])
+            parts.append(text[last : slice.end])
             out.append(''.join(parts))
             parts.clear()
             tree.children.clear()
             tree.children = out
             trace('Python final tree: %s', out)
-        with suppress(AttributeError):
-            delattr(tree, '_meta')
     return root
 
 
@@ -626,18 +642,14 @@ class Engine(Interpreter):
     def __getattr__(self, name: str):
         raise NotImplementedError(name)
 
-    def _tree_ctx(self) -> str:
-        if self._tree is None:
-            return 'unknown'
-        return self.debug_node(self._tree)
-
     def _error(self, msg: str):
-        ctx = self._tree_ctx()
-        log.info('Error: %s: %s', msg, ctx)
+        source = self._tree and self._tree.source  # type: ignore[attr-defined]
+        source = source and str(source)
+        log.info('Error: %s: %s', msg, source)
         if is_tracing:
             trace('%s', ''.join(traceback.format_stack()))
 
-        self.errors.append(f'{msg}: {ctx}')
+        self.errors.append(f'{msg}: {repr(source) if source else '<unknown>'}')
 
         if len(self.errors) > 5:
             self.errors.append('too many errors, aborting')
