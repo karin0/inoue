@@ -39,7 +39,13 @@ from bot import (
 )
 
 from .ctx import get_context
-from .ffmpeg import VIDEO_NOTE_MAX_DURATION, VIDEO_NOTE_SIDE, encode_video_note, encode_voice
+from .ffmpeg import (
+    VIDEO_NOTE_MAX_DURATION,
+    VIDEO_NOTE_SIDE,
+    EncodedVoice,
+    encode_video_note,
+    encode_voice,
+)
 from .log import is_debug, log
 from .render_context import LRUDict
 
@@ -477,9 +483,9 @@ def handle_yt_inline_query(query: InlineQuery, parsed: tuple[str, str]):
 
 
 async def _finish_voice(
-    output: Output, result: tuple[float, bytes, int], url: str
+    output: Output, result: EncodedVoice, url: str
 ) -> InlineKeyboardMarkup | None:
-    duration, data, bitrate = result
+    duration, data, bitrate, _ = result
     duration = media_duration(duration)
 
     if (cached := await VoicePayload(data, duration).stage()) is None:

@@ -2,7 +2,7 @@ import asyncio
 import os
 import sys
 
-from typing import TYPE_CHECKING, Literal, overload
+from typing import TYPE_CHECKING, Literal, NamedTuple, overload
 
 from bot import escape
 
@@ -145,31 +145,41 @@ def _estimate_bitrate_from_sample(sample_bitrate_k: int, sample_size: int) -> in
     return _clamp_bitrate(estimated)
 
 
+class EncodedVoice(NamedTuple):
+    duration: float
+    data: bytes
+    bitrate_k: int
+    iterations: int
+
+
 async def encode_voice(
     src: str,
     report: Callable[[int, str], None],
     duration: float,
     bitrate_k: int = 0,
     quality: bool = False,
-) -> tuple[float, bytes, int]:
+) -> EncodedVoice:
     curr_len = 0
-    raw_result: tuple[float, bytes, int] | None = None
+    raw_result: EncodedVoice | None = None
+    iterations = 0
 
-    async def do_encode(desc: str, bitrate_k: int) -> tuple[float, bytes, int] | None:
-        nonlocal curr_len, raw_result
+    async def do_encode(desc: str, bitrate_k: int) -> EncodedVoice | None:
+        nonlocal curr_len, raw_result, iterations
         out, info = await encode_opus(src, bitrate_k)
         curr_len = len(out)
         report(1, f'ffmpeg: `{info}` @ {curr_len}')
         success = curr_len <= MAX_VOICE_SIZE
+        iterations += 1
         log.info(
-            '%s encode %s: duration=%s bitrate=%sk output=%s',
+            '[%d] %s encode %s: duration=%s bitrate=%sk output=%s',
+            iterations,
             desc,
             'success' if success else 'failed',
             duration,
             bitrate_k,
             curr_len,
         )
-        raw_result = duration, out, bitrate_k
+        raw_result = EncodedVoice(duration, out, bitrate_k, iterations)
         if success:
             return raw_result
 
@@ -213,7 +223,7 @@ async def encode_voice(
     # Final fallback: return the latest output.
     assert raw_result is not None
     log.warning(
-        'Voice still exceeds 1 MiB at bitrate=%sk, output=%s bytes', raw_result[2], curr_len
+        'Voice still exceeds 1 MiB at bitrate=%sk, output=%s bytes', raw_result.bitrate_k, curr_len
     )
     return raw_result
 

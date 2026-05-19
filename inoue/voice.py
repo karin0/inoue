@@ -141,11 +141,11 @@ async def convert_voice(
             file_path = str(src)
 
     log.info('Encoding voice from %s', file_path)
-    duration, data, bitrate_k = await encode_voice(file_path, report, duration, bitrate_k, quality)
+    r = await encode_voice(file_path, report, duration, bitrate_k, quality)
     if queue is not None:
         queue.put_nowait(None)
-    report(2, f'Encoded into {len(data)} bytes at {bitrate_k} kbps')
-    await rs.reply(media=VoicePayload(data, math.ceil(duration) if duration >= 0 else None))
+    report(2, f'Encoded into {len(r.data)} bytes at {r.bitrate_k} kbps in {r.iterations} iters')
+    await rs.reply(media=VoicePayload(r.data, math.ceil(duration) if duration >= 0 else None))
 
 
 def extract_media(msg: Message) -> tuple[Media, int | timedelta] | None:
