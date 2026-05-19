@@ -247,7 +247,9 @@ def make_markup(
     if current_data:
         row.append(
             InlineKeyboardButton(
-                '🔄', callback_data=current_data, style=KeyboardButtonStyle.PRIMARY
+                '🔄',
+                callback_data=encode_flags(state) + memory + path,
+                style=KeyboardButtonStyle.PRIMARY,
             )
         )
 
