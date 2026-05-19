@@ -1,4 +1,5 @@
 import functools
+import keyword
 import operator
 import os
 import sys
@@ -18,6 +19,7 @@ except ImportError:
 
 from lark import Lark, Token, Tree
 from lark.exceptions import LarkError
+from lark.tree import Meta
 from lark.visitors import Interpreter, Transformer
 
 from .context import (
@@ -84,11 +86,34 @@ parser = Lark.open(
 )
 
 
+def _tree(name: str, *children: Tree | Token, meta: Meta | None = None) -> Tree:
+    return Tree(name, list(children), meta=meta)
+
+
 def _iter_py(tree: Tree) -> Iterable[Tree | Token]:
     # Find all tokens and native subtrees.
     for ch in tree.children:
         if isinstance(ch, Token):
-            yield ch
+            if ch.type == 'NAKED_LIT' and keyword.iskeyword(s := ch.value.strip()):
+                if not (ch.start_pos and ch.end_pos):
+                    raise ValueError(f'Missing meta for token: {ch}')
+                meta = Meta()
+                meta.empty = False
+                meta.start_pos = ch.start_pos
+                meta.end_pos = ch.end_pos
+                tree = _tree(
+                    'py_native',
+                    _tree(
+                        'unary_chain',
+                        _tree('unary', Token('UNARY_OP', '$'), Token('NAKED_LIT', s)),
+                    ),
+                    meta=meta,
+                )
+                if is_tracing:
+                    trace('Transforming keyword: %r -> %s', ch, tree.pretty())
+                yield tree
+            else:
+                yield ch
         elif ch.data == 'py_native':
             ch.data = 'expr'
             yield ch

@@ -404,7 +404,7 @@ class ScopedContext[T]:
         kwargs = dict(self._eval(k) for k in node.keywords)
 
         func_node = node.func
-        if isinstance(func_node, ast.Attribute):
+        if isinstance(func_node, (ast.Attribute, ast.Yield)):
             func = self._eval(func_node)
         elif isinstance(func_node, ast.Name):
             name = func_node.id

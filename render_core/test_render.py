@@ -378,6 +378,11 @@ class TestRender(unittest.TestCase):
         self.render_it('g = {f ⇒ f()\nf(1); }; g({h ⇒ `qwq});', eq='qwq' * 2)
         self.render_it('g = {f ⇒ f}; g({a=qwq\na});', eq='qwq')
         self.render_it('g = {f ⇒ int(f)<<1; f}; g({g({g({a="1"\na})})});', eq='84424221')
+        self.render_it(
+            'yield = 4; while = yield >> 1; if = {for ⇒ int(for)<<1; for}; '
+            'if({if({if({a=while-1\na})})});',
+            eq='84424221',
+        )
 
     def test_context_assignment(self):
         text = '{target=World}Hello {target}!'
