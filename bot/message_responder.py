@@ -1,5 +1,6 @@
 from typing import TYPE_CHECKING
 
+from telegram import InlineKeyboardMarkup, Message
 from telegram.error import BadRequest
 
 from . import env
@@ -11,7 +12,6 @@ from .responder import EditHandle, Responder
 if TYPE_CHECKING:
     from collections.abc import Awaitable
 
-    from telegram import InlineKeyboardMarkup, Message
     from telegram.constants import ChatAction
 
 
@@ -243,7 +243,7 @@ class MessageResponder(Responder):
 
         try:
             try:
-                await r.edit(
+                edited = await r.edit(
                     text=text,
                     parse_mode=parse_mode,
                     reply_markup=reply_markup,
@@ -269,7 +269,10 @@ class MessageResponder(Responder):
                         return MessageEditHandle.from_message(resp)
                 raise
             else:
-                return r
+                if not isinstance(edited, Message):
+                    # We don't handle inline messages, so this should not happen.
+                    raise RuntimeError(f'edit returned non-Message: {edited}')
+                return MessageEditHandle.from_message(edited)
         except Exception as e:
             if isinstance(e, TypeError):
                 raise
