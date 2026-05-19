@@ -36,7 +36,7 @@ from bot import (
     shorten,
     truncate_text,
 )
-from render_core import Engine, Value, to_str
+from render_core import Box, Engine, Value, to_str
 
 from .ctx import get_context
 from .db import db
@@ -449,6 +449,7 @@ class RenderContext:
 
     def render_text(self, text: str) -> Segment:
         val = self.engine.render_value(text)
+        self._atexit()
         self._render_time = int(time.time())
         log.debug('render_text: %r', val)
         result = to_segment(val)
@@ -466,10 +467,15 @@ class RenderContext:
         spec = self._format_response(seg)
         return self._invoke_update_callback(spec)
 
-    def render(self, text: str) -> Awaitable[MessageSpec]:
-        return self.to_response(self.render_text(text))
+    def _atexit(self):
+        if callable(hook := get_env(self.data, 'atexit')):
+            if isinstance(hook, Box):
+                hook()
+            else:
+                log.error('atexit is not a Box: %r', hook)
 
-    def flush_errors(self):
+    def _task_done(self):
+        self._atexit()
         if (
             (errors := self.engine.errors)
             and self._error_idx < len(errors)
@@ -483,6 +489,9 @@ class RenderContext:
             self._error_idx = len(errors)
             log.info('Flushing %d new errors: %r', len(new_errors), new_errors)
             create_task(rs.reply('\n'.join(new_errors)))
+
+    def render(self, text: str) -> Awaitable[MessageSpec]:
+        return self.to_response(self.render_text(text))
 
     async def to_response(self, rendered: Segment) -> MessageSpec:
         spec = self._format_response(rendered)

@@ -338,7 +338,7 @@ class Tasks:
                 promise._cancel()
                 log.warning('Tasks.callback: %s: %s', type(e).__name__, e)
                 ctx._error(f'Promise: {e}')
-            ctx.flush_errors()
+            ctx._task_done()
 
         task = asyncio.create_task(coro)
         task.add_done_callback(callback)
