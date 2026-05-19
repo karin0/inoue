@@ -1,35 +1,42 @@
-import os
 import asyncio
+import itertools
 import json
 import mmap
-import itertools
-from typing import Iterable, Sequence
-from subprocess import DEVNULL, PIPE
-from dataclasses import dataclass, field
+import os
 
-from telegram import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from dataclasses import dataclass, field
+from subprocess import DEVNULL, PIPE
+from typing import TYPE_CHECKING
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot import (
-    escape,
-    truncate_text,
-    Responder,
     EditHandle,
     MessageArg,
-    command,
+    Responder,
     callback_query,
+    command,
+    escape,
     start,
+    truncate_text,
 )
 
-from .log import log
 from .env import MAX_TEXT_LENGTH
+from .log import log
+from .segments import Bold, Formatter, Link, Segment, Underline
 from .text import pre_block_raw
 from .utils import get_deep_link_url
-from .segments import Segment, Link, Bold, Underline, Formatter
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
 
 # >>> 2026-01-02 15:04:05 (1)
 SECTION_SEP = b'>>> 202'
 SECTION_SEP_OFFSET = 2
 SECTION_GAP = 24
+
+SECTION_TEXT_LIMIT = MAX_TEXT_LENGTH << 2
+SECTION_FIND_LIMIT = SECTION_TEXT_LIMIT + SECTION_SEP_OFFSET
 
 
 @dataclass(frozen=True, slots=True, eq=False, match_args=False)
@@ -39,11 +46,8 @@ class Section:
     hit: bool
 
     @staticmethod
-    def discover(mm: mmap.mmap, off: int) -> 'Section | None':
+    def discover(mm: mmap.mmap, off: int) -> Section | None:
         # One character takes up to 4 bytes in UTF-8.
-        SECTION_TEXT_LIMIT = MAX_TEXT_LENGTH << 2
-        SECTION_FIND_LIMIT = SECTION_TEXT_LIMIT + SECTION_SEP_OFFSET
-
         bound = max(0, off - SECTION_FIND_LIMIT)
         section_start = mm.rfind(SECTION_SEP, bound, off)
 
@@ -64,12 +68,7 @@ class Section:
             return Section(start=section_start, end=section_end, hit=hit)
 
     def decode(self, mm: mmap.mmap) -> str:
-        return (
-            mm[self.start : self.end]
-            .decode('utf-8', errors='replace')
-            .strip('�')
-            .strip()
-        )
+        return mm[self.start : self.end].decode('utf-8', errors='replace').strip('�').strip()
 
     @property
     def next_offset(self) -> int:
@@ -100,27 +99,17 @@ class RGMatch:
         r = q + 30
 
         if l > 0:
-            if l <= 15:
-                pl = s[:l]
-            else:
-                pl = s[:15] + '...'
+            pl = s[:l] if l <= 15 else s[:15] + '...'
         else:
             pl = ''
             r -= l
             l = 0
 
-        if r >= len(s):
-            pr = ''
-        else:
-            pr = '...'
+        pr = '' if r >= len(s) else '...'
 
         return (
             Link(
-                [
-                    str(self.line_number) + ':' + pl + s[l:p],
-                    Underline(Bold(kw)),
-                    s[q:r] + pr,
-                ],
+                [str(self.line_number) + ':' + pl + s[l:p], Underline(Bold(kw)), s[q:r] + pr],
                 url=get_deep_link_url(f'rg_{i}_{j}_{k}'),
             ),
             '\n',
@@ -157,7 +146,8 @@ class RGQuery:
     def render(
         self, fmt: Formatter, i: int, file_offset: int, match_offset: int
     ) -> Iterable[tuple[int, int]]:
-        assert file_offset >= 0 and match_offset >= 0
+        assert file_offset >= 0
+        assert match_offset >= 0
         assert file_offset < len(self.files)
         for idx, f in enumerate(self.files[file_offset:]):
             j = idx + file_offset
@@ -177,7 +167,7 @@ PAGE_LIMIT = 10
 
 
 def push_query(q: RGQuery):
-    global QUERIES, QUERY_LIMIT, QUERY_IDX
+    global QUERY_IDX
     if len(QUERIES) >= QUERY_LIMIT:
         QUERIES[QUERY_IDX] = q
         r = QUERY_IDX
@@ -207,12 +197,14 @@ def do_show(rs: Responder, i: int, j: int, k: int | None, alt_off: int | None):
         assert k is not None
         off = file.matches[k].absolute_offset
 
-    with open(os.path.join(query.cwd, file.path), 'rb') as fp:
-        with mmap.mmap(fp.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-            if not (sect := Section.discover(mm, off)):
-                return rs.reply_cached('Unable to show the section.')
+    with (
+        open(os.path.join(query.cwd, file.path), 'rb') as fp,
+        mmap.mmap(fp.fileno(), 0, access=mmap.ACCESS_READ) as mm,
+    ):
+        if not (sect := Section.discover(mm, off)):
+            return rs.reply_cached('Unable to show the section.')
 
-            text = sect.decode(mm)
+        text = sect.decode(mm)
 
     text = truncate_text(text)
     parse_mode = None
@@ -232,24 +224,13 @@ def do_show(rs: Responder, i: int, j: int, k: int | None, alt_off: int | None):
             parse_mode = 'MarkdownV2'
 
     row = [
-        InlineKeyboardButton(
-            text='Prev',
-            callback_data=f'rg_show_{i}_{j}_{sect.prev_offset}',
-        ),
-        InlineKeyboardButton(
-            text='Back',
-            callback_data=f'rg_back_{i}',
-        ),
-        InlineKeyboardButton(
-            text='Next',
-            callback_data=f'rg_show_{i}_{j}_{sect.next_offset}',
-        ),
+        InlineKeyboardButton(text='Prev', callback_data=f'rg_show_{i}_{j}_{sect.prev_offset}'),
+        InlineKeyboardButton(text='Back', callback_data=f'rg_back_{i}'),
+        InlineKeyboardButton(text='Next', callback_data=f'rg_show_{i}_{j}_{sect.next_offset}'),
     ]
 
     return message.edit_text(
-        text,
-        reply_markup=InlineKeyboardMarkup.from_row(row),
-        parse_mode=parse_mode,
+        text, reply_markup=InlineKeyboardMarkup.from_row(row), parse_mode=parse_mode
     )
 
 
@@ -273,9 +254,7 @@ def handle_rg_callback(rs: Responder, cmd: str, idx: int, *args: int):
         case _:
             raise ValueError('bad rg callback: ' + cmd)
 
-    text, markup = render_query_menu(
-        query, idx, page_num=page_num, list_pages=list_pages
-    )
+    text, markup = render_query_menu(query, idx, page_num=page_num, list_pages=list_pages)
     message = query.message
     assert message is not None
     return message.edit_text(text, parse_mode='HTML', reply_markup=markup)
@@ -298,9 +277,7 @@ async def _run_rg(arg: str, cwd: str) -> RGQuery:
                 line = json.loads(line)
                 match line['type']:
                     case 'begin':
-                        files.append(
-                            RGFile(matches=[], path=line['data']['path']['text'])
-                        )
+                        files.append(RGFile(matches=[], path=line['data']['path']['text']))
                     case 'match':
                         if not files:
                             continue
@@ -333,10 +310,7 @@ def render_page(
     idx: int,
     page_num: int = 0,  # must be an existing or next page ( `<= len(page_offsets)`)
 ) -> str:
-    if page_num == 0:
-        offsets = (0, 0, 0)
-    else:
-        offsets = query.page_offsets[page_num - 1]
+    offsets = (0, 0, 0) if page_num == 0 else query.page_offsets[page_num - 1]
     *render_offset, total_offset = offsets
 
     # Each yield precedes the try_append for that match. The last yielded
@@ -354,10 +328,7 @@ def render_page(
     total = total_offset - 1
 
     fmt = Formatter(strict=True)
-    for offset in itertools.islice(
-        query.render(fmt, idx, *render_offset), PAGE_LIMIT + 1
-    ):
-        total += 1
+    total += len(list(itertools.islice(query.render(fmt, idx, *render_offset), PAGE_LIMIT + 1)))
     result = fmt.html()
 
     assert total >= total_offset
@@ -377,10 +348,7 @@ def button(text: str, callback_data: str = 'noop') -> InlineKeyboardButton:
 
 
 def render_query_menu(
-    query: RGQuery,
-    idx: int,
-    page_num: int = 0,
-    list_pages: bool = False,
+    query: RGQuery, idx: int, page_num: int = 0, list_pages: bool = False
 ) -> tuple[str, InlineKeyboardMarkup | None]:
     if page_num >= len(query.page_offsets):
         while True:
@@ -404,10 +372,7 @@ def render_query_menu(
     if list_pages:
         row = []
         for pn, (_, _, off) in enumerate(query.page_offsets):
-            if pn == page_num:
-                text = '📄'
-            else:
-                text = f'{off} ({pn})'
+            text = '📄' if pn == page_num else f'{off} ({pn})'
             row.append(button(text, f'rg_page_{idx}_{pn}'))
 
         last_off = query.page_offsets[-1][2]
@@ -415,8 +380,10 @@ def render_query_menu(
         if (left := query.match_cnt - last_off) > 0:
             # Not exhausted yet.
             guessed_max_page = last_pn + left // PAGE_LIMIT + 5
-            for next_pn in range(last_pn + 1, guessed_max_page):
-                row.append(button(f'? ({next_pn})', f'rg_page_{idx}_{next_pn}'))
+            row.extend(
+                button(f'? ({pn})', f'rg_page_{idx}_{pn}')
+                for pn in range(last_pn + 1, guessed_max_page)
+            )
 
         # Group by 5 buttons per row.
         rows = tuple(row[i : i + 5] for i in range(0, len(row), 5))
@@ -428,9 +395,7 @@ def render_query_menu(
         else:
             row.append(button(' '))
 
-        row.append(
-            button(f'{total} / {query.match_cnt} ({page_num})', f'rg_list_{idx}')
-        )
+        row.append(button(f'{total} / {query.match_cnt} ({page_num})', f'rg_list_{idx}'))
 
         if total < query.match_cnt:
             row.append(button('Next', f'rg_page_{idx}_{page_num + 1}'))
@@ -454,10 +419,7 @@ async def handle_rg(rs: Responder, arg: MessageArg):
     text = text.strip()
     if len(bare := text.removeprefix('/rg')) != len(text):
         if bare:
-            if (c := bare[0]).isdigit():
-                off = '' if c == '0' else c
-            else:
-                off = '4'
+            off = ('' if c == '0' else c) if (c := bare[0]).isdigit() else '4'
         else:
             raise ValueError(text)
     else:

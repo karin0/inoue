@@ -1,60 +1,62 @@
+import asyncio
+import builtins
 import os
 import re
 import time
-import asyncio
 import weakref
-import builtins
-from pathlib import Path
+
+from collections.abc import Awaitable, Callable, Container, Iterable, Mapping
 from itertools import chain, islice
-from typing import Container, Iterable, Mapping, Callable, Awaitable, Type, cast
+from pathlib import Path
+from typing import cast
 
 from telegram import (
     CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
     InlineQuery,
     InlineQueryResultArticle,
     InputTextMessageContent,
     Message,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
 )
-from telegram.constants import MessageLimit, ReactionEmoji, KeyboardButtonStyle
+from telegram.constants import KeyboardButtonStyle, MessageLimit, ReactionEmoji
 
-from render_core import Engine, Value, to_str
 from bot import (
-    bot,
-    create_task,
-    shorten,
-    truncate_text,
-    escape,
-    Responder,
-    EditHandle,
-    PhotoPayload,
-    DocumentPayload,
-    MessageArg,
     CallbackData,
+    DocumentPayload,
+    EditHandle,
+    MessageArg,
+    PhotoPayload,
+    Responder,
+    bot,
     callback_query,
     command,
+    create_task,
+    escape,
+    shorten,
+    truncate_text,
 )
+from render_core import Engine, Value, to_str
 
-from .db import db
-from .log import log, do_notify
 from .ctx import get_context
-from .env import USER_ID, CHAN_ID, MAX_TEXT_LENGTH, list_env, encode_id
-from .text import cleanup_text, pre_block
+from .db import db
+from .env import CHAN_ID, MAX_TEXT_LENGTH, USER_ID, encode_id, list_env
+from .log import do_notify, log
+from .render_bridge import Bridge, LocalPath, count_tasks, to_segment
+from .render_context import OverriddenDict, decode_value, encode_value
 from .segments import (
-    Segment,
-    Element,
-    Pre,
-    Time,
     BlockQuote,
-    Formatter,
     Bold,
+    Element,
+    Formatter,
+    Pre,
+    Segment,
+    Time,
     get_renderer,
     render_segment,
 )
+from .text import cleanup_text, pre_block
 from .utils import get_msg_url
-from .render_bridge import Bridge, LocalPath, to_segment, count_tasks
-from .render_context import OverriddenDict, encode_value, decode_value
 
 # '/' is kept for compatibility, which was used for '-'.
 BUTTON_SIGN = '!'
@@ -111,7 +113,7 @@ def get_env_flag[T](ctx: Mapping[str, Value], key: str, default: T = False) -> b
 def make_markup(
     path: str,
     ctx: Mapping[str, Value],
-    current_state: 'MarkupState | None',
+    current_state: MarkupState | None,
     doc_ids: dict[int, str] | None,
 ) -> tuple[InlineKeyboardMarkup | None, str | None]:
     # query data:
@@ -128,15 +130,13 @@ def make_markup(
 
     size = len(path.encode('utf-8'))
     if state:
-        size += sum(len(k.encode('utf-8')) for k in state.keys()) + len(state)
+        size += sum(len(k.encode('utf-8')) for k in state) + len(state)
 
     if size > InlineKeyboardButton.MAX_CALLBACK_DATA:
         return None, None
 
     memory = ''
-    if (val := ctx.get(MEMORY_KEY)) is not None and is_safe_mem(
-        payload := encode_value(val)
-    ):
+    if (val := ctx.get(MEMORY_KEY)) is not None and is_safe_mem(payload := encode_value(val)):
         delta = len(payload.encode('utf-8')) + 1
         if size + delta <= InlineKeyboardButton.MAX_CALLBACK_DATA:
             memory = '@' + payload
@@ -213,10 +213,7 @@ def make_markup(
         )
 
     for k in buttons:
-        if icon := get_env(ctx, 'icon.' + k):
-            label = str(icon)
-        else:
-            label = k
+        label = str(icon) if (icon := get_env(ctx, 'icon.' + k)) else k
         push_button(label, k)
 
     if flags:
@@ -258,17 +255,13 @@ def make_markup(
         if len(doc_ids) == 1:
             doc_id = next(iter(doc_ids))
             row.append(
-                InlineKeyboardButton(
-                    '🔗', get_msg_url(doc_id), style=KeyboardButtonStyle.SUCCESS
-                )
+                InlineKeyboardButton('🔗', get_msg_url(doc_id), style=KeyboardButtonStyle.SUCCESS)
             )
         else:
             for doc_id, doc_name in doc_ids.items():
                 row.append(
                     InlineKeyboardButton(
-                        f'🔗{doc_name}',
-                        get_msg_url(doc_id),
-                        style=KeyboardButtonStyle.SUCCESS,
+                        f'🔗{doc_name}', get_msg_url(doc_id), style=KeyboardButtonStyle.SUCCESS
                     )
                 )
 
@@ -278,18 +271,13 @@ def make_markup(
     row[0] = InlineKeyboardButton(
         ('⏪ ' if current_data else '🔄 ') + shorten(path[1:]),
         callback_data=path,
-        style=(
-            KeyboardButtonStyle.DANGER if current_data else KeyboardButtonStyle.PRIMARY
-        ),
+        style=(KeyboardButtonStyle.DANGER if current_data else KeyboardButtonStyle.PRIMARY),
     )
     row_ = cast(list[InlineKeyboardButton], row)
 
     row_limit_ = get_env(ctx, 'btns_per_row', 5)
     try:
-        if isinstance(row_limit_, (str, int, float)):
-            row_limit = int(row_limit_)
-        else:
-            row_limit = 5
+        row_limit = int(row_limit_) if isinstance(row_limit_, (str, int, float)) else 5
     except ValueError, TypeError:
         row_limit = 5
 
@@ -394,11 +382,7 @@ class RenderContext:
             task_policy = None
 
         bridge = Bridge(
-            data,
-            trusted,
-            task_policy,
-            rs.get_message_key() if rs is not None else None,
-            self,
+            data, trusted, task_policy, rs.get_message_key() if rs is not None else None, self
         )
 
         # Access to attributes with underscores should be forbidden in `simpleeval`,
@@ -408,7 +392,7 @@ class RenderContext:
         this = weakref.ref(self)
 
         def doc_loader(name: str) -> str | None:
-            return this()._doc_loader(name)  # type: ignore
+            return this()._doc_loader(name)  # pyright: ignore[reportOptionalMemberAccess]
 
         self.engine = Engine(self.data, doc_loader, funcs=bridge._get_func)
 
@@ -447,11 +431,11 @@ class RenderContext:
             doc = re.sub(r'\s+', ' ', doc) if doc else ''
             doc = repr(shorten(doc, 80))
         rs = self._responder
-        if rs is None:
-            text = '/'
-        else:
-            text = repr(shorten(rs.get_text(), 80).replace('\n', ' '))
-        return f'RenderContext: {data.get('_source', '?')} ({data.get('_chat_id', '?')}, {data.get('_msg_id', '?')}): {self._path}\n {doc}\n {text}'
+        text = '/' if rs is None else repr(shorten(rs.get_text(), 80).replace('\n', ' '))
+        return (
+            f'RenderContext: {data.get("_source", "?")} ({data.get("_chat_id", "?")}, '
+            f'{data.get("_msg_id", "?")}): {self._path}\n {doc}\n {text}'
+        )
 
     def _doc_loader(self, name: str) -> str | None:
         row = get_doc(name, bool(self._trusted))
@@ -466,9 +450,7 @@ class RenderContext:
         self._render_time = int(time.time())
         log.debug('render_text: %r', val)
         result = to_segment(val)
-        log.info(
-            'rendered %d -> %s (%s)', len(text), type(result).__name__, self._doc_refs
-        )
+        log.info('rendered %d -> %s (%s)', len(text), type(result).__name__, self._doc_refs)
         return result
 
     # Exposed as a callback to Bridge, used for `edit_message`.
@@ -542,9 +524,7 @@ class RenderContext:
             if rs is not None and (c := count_tasks(rs.get_message_key())):
                 ctx[BUTTON_PREFIX + '_cancel'] = 1
                 ctx[ICON_PREFIX + '_cancel'] = f'🛑{c}'
-            markup, state = make_markup(
-                self._path, ctx, self._markup_state, self._doc_refs
-            )
+            markup, state = make_markup(self._path, ctx, self._markup_state, self._doc_refs)
 
         if get_env_flag(ctx, 'plain'):
             parse_mode = None
@@ -559,11 +539,7 @@ class RenderContext:
         if self._trusted and (val := get_env(ctx, 'limit')):
             limit = val if isinstance(val, int) else int(to_str(val))
         else:
-            limit = (
-                MessageLimit.CAPTION_LENGTH
-                if as_caption
-                else MessageLimit.MAX_TEXT_LENGTH
-            )
+            limit = MessageLimit.CAPTION_LENGTH if as_caption else MessageLimit.MAX_TEXT_LENGTH
 
         fmt = Formatter(limit)
         for part in self._format_seg(fmt, seg, state):
@@ -607,9 +583,7 @@ class RenderContext:
         )
         return result, parse_mode, markup
 
-    def _format_seg(
-        self, fmt: Formatter, body: Segment, state: str | None
-    ) -> Iterable[Segment]:
+    def _format_seg(self, fmt: Formatter, body: Segment, state: str | None) -> Iterable[Segment]:
         # Reserve space for the overflow indicator.
         length = fmt.to_length(body)
         overflow_line = [str(length), OVERFLOWED_TEXT]
@@ -634,10 +608,7 @@ class RenderContext:
         sep = len(fmt.segments)
         footer_len = fmt.length
 
-        if fmt.try_append(body):
-            omitted = 0
-        else:
-            omitted = length + footer_len - fmt.length
+        omitted = 0 if fmt.try_append(body) else length + footer_len - fmt.length
 
         if footer_len == fmt.length:
             if not self._as_caption:
@@ -728,7 +699,7 @@ def handle_render(msg: Message, rs: Responder, arg: MessageArg):
 type AllowedMedia = PhotoPayload | DocumentPayload
 
 
-def _extract_media(val: Value, typ: Type[AllowedMedia]) -> AllowedMedia | None:
+def _extract_media(val: Value, typ: type[AllowedMedia]) -> AllowedMedia | None:
     if isinstance(val, LocalPath):
         content = typ(Path(val.path))
     elif isinstance(val, bytes):
@@ -757,9 +728,7 @@ def has_media(data: Mapping[str, Value]) -> bool:
 
 def create_reply_callback(rs: Responder, data: Mapping[str, Value]) -> UpdateCallback:
     def do_reply(spec: MessageSpec):
-        return rs.reply_cached(
-            *spec, media=extract_media(data), allow_not_modified=True
-        )
+        return rs.reply_cached(*spec, media=extract_media(data), allow_not_modified=True)
 
     return do_reply
 
@@ -787,9 +756,7 @@ def get_doc(name: str, trusted: bool | None = None) -> tuple[int | None, str] | 
     if not trusted:
         return db.get_doc(name)
 
-    if DOC_OVERRIDE_DIR and os.path.isfile(
-        file := os.path.join(DOC_OVERRIDE_DIR, name + '.m')
-    ):
+    if DOC_OVERRIDE_DIR and os.path.isfile(file := os.path.join(DOC_OVERRIDE_DIR, name + '.m')):
         with open(file, encoding='utf-8') as fp:
             text = fp.read()
         log.info('get_doc: loaded doc %s from override dir', name)
@@ -798,12 +765,7 @@ def get_doc(name: str, trusted: bool | None = None) -> tuple[int | None, str] | 
     row = db.get_doc(name)
 
     if row is None and DOC_SEARCH_PATH:
-        log.info(
-            'get_doc: searching doc %s, trusted=%s in %r',
-            name,
-            trusted,
-            DOC_SEARCH_PATH,
-        )
+        log.info('get_doc: searching doc %s, trusted=%s in %r', name, trusted, DOC_SEARCH_PATH)
         for d in DOC_SEARCH_PATH:
             for ext in ('.m', '.txt'):
                 if os.path.isfile(file := os.path.join(d, name + ext)):
@@ -813,9 +775,7 @@ def get_doc(name: str, trusted: bool | None = None) -> tuple[int | None, str] | 
     return row
 
 
-def is_doc_ref(
-    text: str,
-) -> tuple[str, tuple[int | None, str]] | tuple[None, str] | None:
+def is_doc_ref(text: str) -> tuple[str, tuple[int | None, str]] | tuple[None, str] | None:
     '''Returns (path, (doc_id | None, text)), (None, doc_name), or None.'''
     if m := REG_DOC_REF.fullmatch(text):
         doc_name = m[1]
@@ -849,9 +809,7 @@ async def handle_render_inline_query(query: InlineQuery, text: str):
             assert isinstance(row, str)
             msg = 'No doc: ' + row
             r = InlineQueryResultArticle(
-                id='0',
-                title=msg,
-                input_message_content=InputTextMessageContent(msg),
+                id='0', title=msg, input_message_content=InputTextMessageContent(msg)
             )
             await query.answer((r,))
             return
@@ -959,18 +917,14 @@ def handle_render_callback(callback: CallbackQuery, data: CallbackData, rs: Resp
         as_caption=handle.as_caption if handle is not None else False,
         responder=rs,
         update_callback=(
-            create_callback_query_callback(handle, callback, inner)
-            if handle is not None
-            else None
+            create_callback_query_callback(handle, callback, inner) if handle is not None else None
         ),
     )
     return ctx.render(text)
 
 
 def create_callback_query_callback(
-    handle: EditHandle,
-    callback: CallbackQuery,
-    data: Mapping[str, Value],
+    handle: EditHandle, callback: CallbackQuery, data: Mapping[str, Value]
 ) -> UpdateCallback:
     answered = False
 
@@ -993,9 +947,7 @@ def create_callback_query_callback(
     return edit_callback_message
 
 
-def _report(
-    out: list[str], action: str, id: int | None, name: str | None, text: str | None
-):
+def _report(out: list[str], action: str, id: int | None, name: str | None, text: str | None):
     parts = []
     if id is not None:
         parts.append(f'{id}:')
@@ -1027,7 +979,7 @@ def cleanup_preview_cache(doc_id: int, val_id: int, name: str):
 
 async def handle_render_doc(msg: Message):
     if not (text := msg.text) or not (text := text.strip()):
-        return
+        return None
 
     id = msg.message_id
     ctx = RenderContext(doc_id=id)
@@ -1036,9 +988,7 @@ async def handle_render_doc(msg: Message):
     info = []
     if name := ctx.engine.doc_name:
         preview_cache[id] = t = (ctx, name, result)
-        asyncio.get_event_loop().call_later(
-            30, cleanup_preview_cache, id, builtins.id(t), name
-        )
+        asyncio.get_event_loop().call_later(30, cleanup_preview_cache, id, builtins.id(t), name)
 
         old_by_id, old_by_name = db.save_doc(id, name, text)
 
@@ -1067,7 +1017,7 @@ async def handle_render_doc(msg: Message):
         _report(info, 'deleted doc:', id, *old_row)
         set_reaction = msg.set_reaction()
     else:
-        return
+        return None
 
     res = truncate_text(('\n' if len(info) > 2 else ' ').join(info))
     await asyncio.gather(do_notify(res, 'MarkdownV2', quiet=True), set_reaction)
@@ -1117,10 +1067,7 @@ async def handle_submit(rs: Responder, arg: MessageArg):
     m = await bot.send_message(CHAN_ID, *pre_block(text))
     name = await handle_render_doc(m) or arg
 
-    if (r := db.get_doc(name)) is not None:
-        old_url = get_msg_url(r[0])
-    else:
-        old_url = None
+    old_url = get_msg_url(r[0]) if (r := db.get_doc(name)) is not None else None
 
     dst = file + '.old'
     if os.path.exists(dst):

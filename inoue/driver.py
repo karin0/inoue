@@ -1,21 +1,20 @@
 import asyncio
-from typing import Awaitable
 
-from telegram import Message, Update
+from typing import TYPE_CHECKING
+
 from telegram.error import NetworkError
 
-from bot import register, bot, Driver, Responder, MediaPayload
+from bot import Driver, MediaPayload, Responder, bot, register
 
-from .log import log, is_debug, notify, do_notify
 from .ctx import get_context
+from .env import ME, MEDIA_STAGING_CHAT_ID, MEDIA_STAGING_MESSAGE_THREAD_ID, USER_ID, encode_id
+from .log import do_notify, is_debug, log, notify
 from .store import DataStore
-from .env import (
-    ME,
-    USER_ID,
-    MEDIA_STAGING_CHAT_ID,
-    MEDIA_STAGING_MESSAGE_THREAD_ID,
-    encode_id,
-)
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
+    from telegram import Message, Update
 
 
 class DriverImpl(DataStore, Driver):
@@ -28,9 +27,7 @@ class DriverImpl(DataStore, Driver):
         log.info('%s initiated: %s', ME, bot.bot)
         if is_debug:
             return set_commands(bot)
-        return asyncio.gather(
-            set_commands(bot), do_notify(*stats(bot.bot, f'{ME} initiated'))
-        )
+        return asyncio.gather(set_commands(bot), do_notify(*stats(bot.bot, f'{ME} initiated')))
 
     def post_stop(self):
         self.close()
@@ -53,16 +50,12 @@ class DriverImpl(DataStore, Driver):
     @staticmethod
     def get_update(rs: Responder | None, /, *, public: bool) -> Update:
         update = get_context().update
-        if not (
-            public or ((u := update.effective_user) is not None and u.id == USER_ID)
-        ):
+        if not (public or ((u := update.effective_user) is not None and u.id == USER_ID)):
             raise PermissionError('Unauthorized')
         return update
 
     @staticmethod
-    def stage_media(
-        payload: MediaPayload, /, *, caption: str | None
-    ) -> Awaitable[Message]:
+    def stage_media(payload: MediaPayload, /, *, caption: str | None) -> Awaitable[Message]:
         return payload.send(
             MEDIA_STAGING_CHAT_ID,
             message_thread_id=MEDIA_STAGING_MESSAGE_THREAD_ID,

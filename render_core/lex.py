@@ -1,5 +1,9 @@
-from typing import Callable, Iterable, Iterator, Literal
-from .context import trace, is_not_quiet
+from typing import TYPE_CHECKING, Literal
+
+from .context import is_not_quiet, trace
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable, Iterator
 
 if not is_not_quiet:
 
@@ -11,7 +15,7 @@ type Chunk = tuple[bool, str] | tuple[Literal[False], str | None]
 
 
 class Chunker:
-    r'''
+    r"""
     Chunks the input `text` into code blocks and text fragments.
 
     A code block (technically treated as `block_inner` in the grammar) is either:
@@ -38,34 +42,23 @@ class Chunker:
 
     Note that we do not check if code blocks contain '\n', so a collapsed line
     here may span multiple physical lines.
-    '''
+    """
 
-    __slots__ = (
-        '_text',
-        '_error',
-        '_block',
-        '_escaping_indices',
-    )
+    __slots__ = ('_text', '_error', '_block', '_escaping_indices')
 
     @staticmethod
     def _default_on_error(msg: str):
         raise ValueError(msg)
 
     def __init__(
-        self,
-        text: str,
-        on_error: Callable[[str]] = _default_on_error,
-        *,
-        block: bool = False,
+        self, text: str, on_error: Callable[[str]] = _default_on_error, *, block: bool = False
     ):
         self._text = text
         self._error = on_error
         self._block = block
         self._escaping_indices: list[int] = []
 
-    def _text_fragments(
-        self, start: int, end: int
-    ) -> Iterable[tuple[Literal[False], str]]:
+    def _text_fragments(self, start: int, end: int) -> Iterable[tuple[Literal[False], str]]:
         # Remove escaping `\` chars in text fragments.
         trace('text_fragments: %s to %s, %s', start, end, self._escaping_indices)
         self._escaping_indices.append(end)
@@ -162,9 +155,9 @@ class Chunker:
                 raw = False
                 chunk = text[cursor + 1 : p]
                 trace('Raw literal: %s', chunk)
-                buf.append('\'')
-                buf.append(chunk.replace('\\', '\\\\').replace("'", r"\'"))
-                buf.append('\'')
+                buf.append("'")
+                buf.append(chunk.replace('\\', '\\\\').replace("'", r'\''))
+                buf.append("'")
                 cursor = p
 
             if c == '{':
@@ -236,9 +229,7 @@ class Chunker:
                 escape = True
                 self._escaping_indices.append(p)
             elif c == '\n':
-                if (
-                    stem := self._test_naked(_naked_start, text[_naked_start:p])
-                ) is not None:
+                if (stem := self._test_naked(_naked_start, text[_naked_start:p])) is not None:
                     # We're about to bypass `_text_fragments` for this region.
                     # Clear `_escaping_indices` to maintain its invariant for
                     # the next text fragment.
@@ -276,11 +267,7 @@ class Chunker:
                     _naked_buf.clear()
 
         # Flush final line buffer, pretending a EOF.
-        if (
-            not block
-            and (stem := self._test_naked(_naked_start, text[_naked_start:]))
-            is not None
-        ):
+        if not block and (stem := self._test_naked(_naked_start, text[_naked_start:])) is not None:
             yield False, text[cursor:_naked_start]
             yield from Chunker(stem, on_error, block=True)
             return
@@ -347,7 +334,7 @@ _ALL_SYMBOL = _NEWLINE_JOIN_BEFORE | _NEWLINE_JOIN_AFTER | frozenset(':!)]\'"')
 
 
 def normalize_block(text: str) -> str:
-    '''Replace structurally-significant newlines in `text` with `;`,
+    """Replace structurally-significant newlines in `text` with `;`,
     and drop non-significant whitespaces.
 
     This means naked_lit can no longer contain line breaks.
@@ -355,7 +342,7 @@ def normalize_block(text: str) -> str:
     Paren and bracket depth is tracked *per brace level*: each `{...}`
     opens a fresh `block_inner`, so its inner newlines stay separators
     even inside an outer call's argument list (`f({a="1"\\nb})`).
-    '''
+    """
     out: list[str] = []
 
     # One [paren, bracket] frame per enclosing brace level; `{` pushes,
@@ -391,9 +378,7 @@ def normalize_block(text: str) -> str:
                 stack_p[-1] == stack_b[-1] == 0
                 and last_nonws
                 and last_nonws not in _NEWLINE_JOIN_AFTER
-                and not (
-                    (d := next_nonws.get(i)) is not None and d in _NEWLINE_JOIN_BEFORE
-                )
+                and not ((d := next_nonws.get(i)) is not None and d in _NEWLINE_JOIN_BEFORE)
             ):
                 out.append(';')
                 last_nonws = ';'

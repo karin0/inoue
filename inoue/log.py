@@ -1,17 +1,19 @@
-import os
 import asyncio
-import logging
 import functools
+import logging
+import os
 
-from datetime import datetime
 from collections import deque
 from contextlib import contextmanager
+from datetime import datetime
+from typing import override
 
-from bot import bot, log as bot_log, truncate_text, escape, create_task, Responder
+from bot import Responder, bot, create_task, escape, truncate_text
+from bot import log as bot_log
 
 from .ctx import get_ctx_rs
+from .env import GROUP_ID, LOG_THREAD_ID, MAX_TEXT_LENGTH, ME_LOWER, USER_ID
 from .text import escape_pre
-from .env import ME_LOWER, MAX_TEXT_LENGTH, USER_ID, GROUP_ID, LOG_THREAD_ID
 
 
 class NotifyHandler(logging.Handler):
@@ -48,11 +50,7 @@ class NotifyHandler(logging.Handler):
             return
 
         # Fetch the context before yielding to async.
-        create_task(
-            do_notify(
-                *self._format2(record), rs=get_ctx_rs(), revocable=self._revocable
-            )
-        )
+        create_task(do_notify(*self._format2(record), rs=get_ctx_rs(), revocable=self._revocable))
 
     @contextmanager
     def revocable(self):
@@ -76,6 +74,7 @@ class NotifyHandler(logging.Handler):
 
 
 class MicrosecondFormatter(logging.Formatter):
+    @override
     def formatTime(self, record, datefmt=None):
         return datetime.fromtimestamp(record.created).strftime('%m-%d %H:%M:%S.%f')
 
@@ -199,16 +198,13 @@ async def do_notify(
             with notify.suppress():
                 log.warning('do_notify: rate limited, flushing in %.3f secs', dt)
             loop.call_later(dt, flush_notify_buf)
-            return
+            return None
         notify_moments.append(now)
 
         if not quiet and (rs := rs or get_ctx_rs()) is not None:
             try:
                 return await rs.reply(
-                    text,
-                    parse_mode,
-                    cached=revocable,
-                    disable_web_page_preview=True,
+                    text, parse_mode, cached=revocable, disable_web_page_preview=True
                 )
             except Exception as e:
                 with notify.suppress():
@@ -219,11 +215,7 @@ async def do_notify(
 
         if quiet:
             await bot.send_message(
-                GROUP_ID,
-                text,
-                parse_mode,
-                disable_notification=True,
-                disable_web_page_preview=True,
+                GROUP_ID, text, parse_mode, disable_notification=True, disable_web_page_preview=True
             )
         else:
             await bot.send_message(

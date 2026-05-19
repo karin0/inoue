@@ -1,19 +1,20 @@
-import os
 import asyncio
+import os
+
+from collections.abc import Awaitable
 from io import BytesIO
 from pathlib import Path
-from typing import Awaitable, cast
+from typing import cast
 
-from PIL import Image
 from pathvalidate import sanitize_filename
-
-from telegram import Animation, Document, Message, PhotoSize, Sticker
+from PIL import Image
+from telegram import Animation, Document, Message, PhotoSize, Sticker  # noqa: TC002
 from telegram.constants import ChatAction
 
-from bot import bot, Responder, DocumentPayload, command
+from bot import DocumentPayload, Responder, bot, command
 
-from .log import log
 from .ffmpeg import run_ffmpeg
+from .log import log
 
 STICKER_SIDE = 512
 MAX_FILE_SIZE = 10 << 20
@@ -54,9 +55,7 @@ def to_webp(src: str, rs: Responder) -> bytes:
 
 async def to_webm(src: str) -> bytes:
     base = ('-t', '3', '-i', src)
-    data = await run_ffmpeg(
-        *base, '-lossless', '1', *WEBM_ARGS, desc='webm/lossless', capture=True
-    )
+    data = await run_ffmpeg(*base, '-lossless', '1', *WEBM_ARGS, desc='webm/lossless', capture=True)
     if len(data) <= MAX_WEBM_SIZE:
         return data
     log.info('Lossless webm too large (%d B), retrying lossy', len(data))
@@ -132,10 +131,7 @@ async def send(
         log.info('sticker: send: %s (%d B)', name, len(content))
 
     return await rs.reply(
-        caption,
-        media=DocumentPayload(
-            content, filename=name, disable_content_type_detection=raw
-        ),
+        caption, media=DocumentPayload(content, filename=name, disable_content_type_detection=raw)
     )
 
 
@@ -161,8 +157,7 @@ async def _handle_sticker(rs: Responder, src: Message) -> bool:
 
     if photos := src.photo:
         ph = next(
-            (p for p in photos if p.width >= STICKER_SIDE or p.height >= STICKER_SIDE),
-            photos[-1],
+            (p for p in photos if p.width >= STICKER_SIDE or p.height >= STICKER_SIDE), photos[-1]
         )
         with rs.keep_chat_action(ChatAction.UPLOAD_PHOTO):
             path = await download(ph, '.jpg')
@@ -204,7 +199,5 @@ async def handle_sticker(msg: Message, rs: Responder, as_command: bool = True) -
         await rs.reply_cached('File is too large.')
         return True
     if not r and as_command:
-        await rs.reply_cached(
-            'Send or reply to a photo/animation to convert it into a sticker.'
-        )
+        await rs.reply_cached('Send or reply to a photo/animation to convert it into a sticker.')
     return r

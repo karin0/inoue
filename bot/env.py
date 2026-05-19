@@ -1,8 +1,10 @@
-# ruff: noqa: F401, F403
 import logging
-from typing import Any, Awaitable, Protocol, TYPE_CHECKING
+
+from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
     from telegram import Message, Update
 
     from .payload import MediaPayload
@@ -34,9 +36,7 @@ class Driver(Protocol):
     def get_update(rs: Responder | None, /, *, public: bool) -> Update: ...
 
     @staticmethod
-    def stage_media(
-        payload: MediaPayload, /, *, caption: str | None
-    ) -> Awaitable[Message]: ...
+    def stage_media(payload: MediaPayload, /, *, caption: str | None) -> Awaitable[Message]: ...
 
     @staticmethod
     def stage_message(chat_id: int, message_id: int) -> Awaitable[Message]: ...

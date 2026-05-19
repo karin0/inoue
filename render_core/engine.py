@@ -1,51 +1,44 @@
+import functools
+import operator
 import os
 import sys
-import operator
-import functools
 import traceback
-from contextlib import contextmanager
+
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
-from typing import (
-    Any,
-    Callable,
-    Iterable,
-    Sequence,
-    Type,
-    TypeVar,
-    Literal,
-    TYPE_CHECKING,
-    overload,
-    override,
-)
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, overload, override
 
 try:
     import regex as re
 except ImportError:
     import warnings
 
-    warnings.warn('regex module not found. Regex replacements will be disabled.')
+    warnings.warn('regex module not found. Regex replacements will be disabled.', stacklevel=2)
     re = None
 
 from lark import Lark, Token, Tree
-from lark.visitors import Interpreter, Transformer
 from lark.exceptions import LarkError
+from lark.visitors import Interpreter, Transformer
 
-from .lex import chunk_text
 from .context import (
-    is_tracing,
-    is_not_quiet,
-    trace,
-    log,
-    Value,
-    Fragment,
     Box,
-    to_str,
-    try_to_value,
-    trim_output,
     Context,
+    Fragment,
     ScopedContext,
+    Value,
+    is_not_quiet,
+    is_tracing,
+    log,
+    to_str,
+    trace,
+    trim_output,
+    try_to_value,
 )
+from .lex import chunk_text
 from .tco import TCO, MaybeTCO, Tco, TCOContext
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable, Sequence
 
 MAX_DEPTH = 20
 MAX_GAS = 2000
@@ -68,7 +61,7 @@ REPL_REGEX_FLAG_MAP = (
 def stack_size2a(size=2):
     from itertools import count
 
-    """Get stack size for caller's frame."""
+    '''Get stack size for caller's frame.'''
     frame = sys._getframe(size)
 
     for size in count(size):
@@ -147,10 +140,8 @@ def parse_fragment(text: str) -> Tree:
             tree.children.clear()
             tree.children = out
             trace('Python final tree: %s', out)
-        try:
+        with suppress(AttributeError):
             delattr(tree, '_meta')
-        except AttributeError:
-            pass
     return root
 
 
@@ -159,16 +150,16 @@ T = TypeVar('T', bound=Tree | Token)
 
 if is_tracing:
 
-    def narrow(  # pyright: ignore[reportRedeclaration]
-        x: Tree | Token, target_type: Type[T]
+    def narrow[T: Tree | Token](  # pyright: ignore[reportRedeclaration]
+        x: Tree | Token, target_type: type[T]
     ) -> T:
         assert isinstance(x, target_type), x
         return x
 
 else:
 
-    def narrow(  # pyright: ignore[reportRedeclaration]
-        x: Tree | Token, target_type: Type[T]
+    def narrow[T: Tree | Token](  # pyright: ignore[reportRedeclaration]
+        x: Tree | Token, target_type: type[T]
     ) -> T:
         return x  # type: ignore[return-value]
 
@@ -323,7 +314,7 @@ class Engine(Interpreter):
     def _consume_gas(self):
         if self._gas >= MAX_GAS:
             self._error('out of gas')
-            raise Abort()
+            raise Abort
         self._gas += 1
 
     def gas_used(self) -> int:
@@ -435,11 +426,7 @@ class Engine(Interpreter):
                 except Exit:
                     # "exit()" called, skipping the current document.
                     if is_tracing:
-                        trace(
-                            'Exited at block: %s\nResult: %r',
-                            shorten(fragment),
-                            self._output,
-                        )
+                        trace('Exited at block: %s\nResult: %r', shorten(fragment), self._output)
                     return
 
             elif not clause.falses:
@@ -462,12 +449,7 @@ class Engine(Interpreter):
     # Conditional clauses are also parsed here.
     def _render_block(self, fragment: str, root: bool, clause: ClauseState):
         if is_not_quiet:
-            trace(
-                '[%s %s] Rendering block: %r',
-                clause.depth,
-                clause.falses,
-                fragment,
-            )
+            trace('[%s %s] Rendering block: %r', clause.depth, clause.falses, fragment)
 
         fragment = fragment.strip()
         if clause.depth:
@@ -535,8 +517,7 @@ class Engine(Interpreter):
                 (len(br_chs := br.children) == 2)
                 if not if_kind
                 else (
-                    len(br_chs := br.children) == 3
-                    and self._is_empty_stmt(narrow(br_chs[2], Tree))
+                    len(br_chs := br.children) == 3 and self._is_empty_stmt(narrow(br_chs[2], Tree))
                 )
             )
             and self._is_empty_stmt(narrow(br_chs[1], Tree))
@@ -544,11 +525,7 @@ class Engine(Interpreter):
             expr = narrow(br_chs[0], Tree)
             test = self._condition(expr) ^ if_kind
             if is_tracing:
-                trace(
-                    'If clause evaluated: %s %s',
-                    self.debug_node(expr),
-                    test,
-                )
+                trace('If clause evaluated: %s %s', self.debug_node(expr), test)
             if not test:
                 clause.falses = 1
         else:
@@ -623,9 +600,7 @@ class Engine(Interpreter):
             case 'expr':
                 return self.expr(tree, direct_branch=direct_branch, allow_tco=allow_tco)
             case 'stmt_list':
-                return self.stmt_list(
-                    tree, direct_branch=direct_branch, allow_tco=allow_tco
-                )
+                return self.stmt_list(tree, direct_branch=direct_branch, allow_tco=allow_tco)
             case 'branch':
                 return self.branch(tree, allow_tco=allow_tco)
             case _:
@@ -651,7 +626,7 @@ class Engine(Interpreter):
 
         if len(self.errors) > 5:
             self.errors.append('too many errors, aborting')
-            raise Abort()
+            raise Abort
 
     @contextmanager
     def _push(self):
@@ -666,17 +641,13 @@ class Engine(Interpreter):
         if is_tracing:
             sys_depth = stack_size2a()
             trace(
-                '[%s] Push @ %s: %s (%s)',
-                self._depth,
-                self._scope.current(),
-                old_output,
-                sys_depth,
+                '[%s] Push @ %s: %s (%s)', self._depth, self._scope.current(), old_output, sys_depth
             )
 
         # Recursion is allowed up to a limit.
         if self._depth >= MAX_DEPTH:
             self._error('stack overflow')
-            raise Abort()
+            raise Abort
 
         self._depth += 1
         self._output = []
@@ -690,11 +661,7 @@ class Engine(Interpreter):
         finally:
             self._depth -= 1
             trace(
-                '[%s] Pop @ %s: %s %s',
-                self._depth,
-                self._scope.current(),
-                old_output,
-                self._output,
+                '[%s] Pop @ %s: %s %s', self._depth, self._scope.current(), old_output, self._output
             )
             assert self._depth >= 0
             if err:
@@ -714,7 +681,7 @@ class Engine(Interpreter):
         out.append('\n')
 
     def _exit_func(self):
-        raise Exit()
+        raise Exit
 
     def _prefix_func(self):
         return self._scope.current()
@@ -759,11 +726,7 @@ class Engine(Interpreter):
     # With the `⇒` marker, the current scope is captured onto the SubDoc so it
     # can later be invoked with its defining scope restored.
     def _sub_doc(
-        self,
-        tree: Tree,
-        sub_doc_token: tuple[str, bool],
-        *,
-        captured: bool = False,
+        self, tree: Tree, sub_doc_token: tuple[str, bool], *, captured: bool = False
     ) -> SubDoc:
         name, capture_scope = sub_doc_token
         scope = self._scope.current() if capture_scope else None
@@ -793,9 +756,7 @@ class Engine(Interpreter):
         # Find any doc_def before entering statements to enable sub-docs.
         for i, ch in enumerate(tree.children):
             # Skip the modifier at 0 and the already processed doc_defs.
-            if not (
-                i and ch is not None and (ch := narrow(ch, Tree)).data == 'doc_def'
-            ):
+            if not (i and ch is not None and (ch := narrow(ch, Tree)).data == 'doc_def'):
                 continue
 
             op = narrow(ch.children[1], Token).value
@@ -819,7 +780,7 @@ class Engine(Interpreter):
             key = ch.children[0]
             if key is None:
                 self._error('empty doc definition')
-                return
+                return None
 
             key = self._iden(key)
 
@@ -834,13 +795,10 @@ class Engine(Interpreter):
             else:
                 trace('doc_def: ignored: %s', key)
 
-            return
+            return None
 
     def _set_tco(
-        self,
-        tree: Tree,
-        env: dict[str, Any] | None = None,
-        scope: str | None = None,
+        self, tree: Tree, env: dict[str, Any] | None = None, scope: str | None = None
     ) -> TCO:
         assert self._tco is None
         self._tco = (tree, self._scope.current() if scope is None else scope, env)
@@ -888,12 +846,7 @@ class Engine(Interpreter):
             self._tco = None
 
             if is_tracing:
-                trace(
-                    'TCO @ %s -> %s: %s',
-                    self._scope.current(),
-                    ref_scope,
-                    self.debug_node(tree),
-                )
+                trace('TCO @ %s -> %s: %s', self._scope.current(), ref_scope, self.debug_node(tree))
 
             if ref_scope == self._scope.current():
                 ref_scope = None
@@ -941,16 +894,15 @@ class Engine(Interpreter):
         self, tree: Tree, *, direct_branch: bool = False, allow_tco: bool = False
     ) -> MaybeTCO:
         if not tree.children:
-            return
+            return None
 
         if allow_tco:
             for stmt in tree.children[:-1]:
                 self.visit(narrow(stmt, Tree), direct_branch=direct_branch)
             last = narrow(tree.children[-1], Tree)
             return self.visit(last, direct_branch=direct_branch, allow_tco=True)
-        else:
-            for stmt in tree.children:
-                self.visit(narrow(stmt, Tree), direct_branch=direct_branch)
+        for stmt in tree.children:
+            self.visit(narrow(stmt, Tree), direct_branch=direct_branch)
 
     @staticmethod
     def _is_empty_stmt(tree: Tree) -> bool:
@@ -991,9 +943,7 @@ class Engine(Interpreter):
         if (to := left if test else right) is not None:
             return self.visit(narrow(to, Tree), direct_branch=True, allow_tco=allow_tco)
 
-    def _trace(
-        self, tree: Tree, *, direct_branch: bool = False, allow_tco: bool = False
-    ):
+    def _trace(self, tree: Tree, *, direct_branch: bool = False, allow_tco: bool = False):
         if is_tracing:
             st = [str(self._depth), str(self._gas)]
             if direct_branch:
@@ -1013,19 +963,11 @@ class Engine(Interpreter):
 
     @overload
     def expr(
-        self,
-        tree: Tree[Tree | Token],
-        *,
-        direct_branch: bool = False,
-        allow_tco: Literal[True],
+        self, tree: Tree[Tree | Token], *, direct_branch: bool = False, allow_tco: Literal[True]
     ) -> MaybeTCO: ...
 
     def expr(
-        self,
-        tree: Tree[Tree | Token],
-        *,
-        direct_branch: bool = False,
-        allow_tco: bool = False,
+        self, tree: Tree[Tree | Token], *, direct_branch: bool = False, allow_tco: bool = False
     ) -> MaybeTCO:
         # Expression statement: {<expr>}
         # The value is directly appended to output.
@@ -1141,10 +1083,7 @@ class Engine(Interpreter):
                 # Treated as var only if `permissive` is True and contains no whitespace.
                 case 'NAKED_LIT':
                     return self._naked_lit(
-                        ch,
-                        as_str=as_str,
-                        permissive=permissive,
-                        allow_undef=allow_undef,
+                        ch, as_str=as_str, permissive=permissive, allow_undef=allow_undef
                     )
 
         match ch.data:
@@ -1153,9 +1092,7 @@ class Engine(Interpreter):
                 assert tree.children, tree
                 out = []
                 for ch in tree.children:
-                    val = self._unary(
-                        narrow(ch, Tree), captured=True, allow_undef=allow_undef
-                    )
+                    val = self._unary(narrow(ch, Tree), captured=True, allow_undef=allow_undef)
                     trace('unary_chain (captured): %r', val)
                     if val != '':
                         out.append(val)
@@ -1216,11 +1153,7 @@ class Engine(Interpreter):
 
     @overload
     def _python(
-        self,
-        tree: Tree,
-        *,
-        as_str: Literal[False] = False,
-        allow_tco: Literal[False] = False,
+        self, tree: Tree, *, as_str: Literal[False] = False, allow_tco: Literal[False] = False
     ) -> Value: ...
 
     @overload
@@ -1228,9 +1161,7 @@ class Engine(Interpreter):
         self, tree: Tree, *, as_str: Literal[False] = False, allow_tco: Literal[True]
     ) -> Value | TCO: ...
 
-    def _python(
-        self, tree: Tree, *, as_str: bool = False, allow_tco: bool = False
-    ) -> Value | TCO:
+    def _python(self, tree: Tree, *, as_str: bool = False, allow_tco: bool = False) -> Value | TCO:
         if is_tracing:
             trace('_python: %s', self.debug_node(tree))
 
@@ -1274,9 +1205,7 @@ class Engine(Interpreter):
         self, expr: str, *, as_str: bool = False, allow_tco: Literal[True]
     ) -> Value | TCO: ...
 
-    def _eval_py(
-        self, expr: str, *, as_str: bool = False, allow_tco: bool = False
-    ) -> Value | TCO:
+    def _eval_py(self, expr: str, *, as_str: bool = False, allow_tco: bool = False) -> Value | TCO:
         try:
             val = self._scope.eval(expr, allow_tco=allow_tco)
         except Abort as e:
@@ -1296,17 +1225,13 @@ class Engine(Interpreter):
                 self._error('bad tail-call')
                 return ''
             return self._set_tco(
-                sub_doc.tree,
-                env=self._create_block_env(*val),
-                scope=sub_doc.scope,
+                sub_doc.tree, env=self._create_block_env(*val), scope=sub_doc.scope
             )
 
         # Not necessarily str!
         return to_str(val) if as_str else val
 
-    def _check_iden(
-        self, key: str, error: bool = True, allow_decimal: bool = False
-    ) -> bool:
+    def _check_iden(self, key: str, error: bool = True, allow_decimal: bool = False) -> bool:
         if not key:
             if error:
                 self._error('empty identifier')
@@ -1445,9 +1370,7 @@ class Engine(Interpreter):
                 if last_scope is None:
                     self._error('no last scope for ::' + key)
                     return ''
-                return self._get_by_raw_key(
-                    last_scope + key, as_str=as_str, allow_undef=True
-                )
+                return self._get_by_raw_key(last_scope + key, as_str=as_str, allow_undef=True)
 
             # Increment: {++name}
             case '++':
@@ -1476,12 +1399,7 @@ class Engine(Interpreter):
         return s and f'[{s}]'
 
     def _doc_ref(
-        self,
-        key: str,
-        *,
-        allow_tco: bool = False,
-        allow_subdoc: bool = True,
-        inplace: bool = False,
+        self, key: str, *, allow_tco: bool = False, allow_subdoc: bool = True, inplace: bool = False
     ) -> Value | TCO:
         val = self._scope.get(key, allow_undef=True) if allow_subdoc else None
         if is_tracing:
@@ -1491,11 +1409,7 @@ class Engine(Interpreter):
         if isinstance(val, SubDoc):
             tree = val.tree
             if is_tracing:
-                trace(
-                    '_doc_ref: Rendering sub-doc: %s %s',
-                    key,
-                    self.debug_node(tree),
-                )
+                trace('_doc_ref: Rendering sub-doc: %s %s', key, self.debug_node(tree))
             if inplace:
                 self._error('cannot expand sub-doc in-place: ' + key)
             if allow_tco:
@@ -1534,14 +1448,12 @@ class Engine(Interpreter):
     ) -> dict[str, Any]:
         params = sub_doc.params
         if params:
-            for param, arg in zip(params, args):
+            for param, arg in zip(params, args, strict=False):
                 kwargs.setdefault(param, arg)
             for i in range(len(args), len(params)):
                 kwargs.setdefault(params[i], '')
             if len(args) > len(params):
-                self._error(
-                    f'box takes at most {len(params)} args {params}, got {len(args)}'
-                )
+                self._error(f'box takes at most {len(params)} args {params}, got {len(args)}')
         else:
             for i, arg in enumerate(args):
                 kwargs.setdefault(str(i), arg)
@@ -1575,7 +1487,8 @@ class Engine(Interpreter):
 
     # Due to LALR limitations, AOE chains have very different semantics:
     # - In expression statements, they set context vars and return ''.
-    # - Otherwise, they check whether all the assigned vars equal the final value, and return '1' or '0'.
+    # - Otherwise, they check whether all the assigned vars equal the final value,
+    # and return '1' or '0'.
     # But in both cases, the ASSIGN_OP besides the first one must be '='.
     def _resolve_aoe_chain(self, tree: Tree) -> tuple[Sequence[str], str, Tree | None]:
         keys = [self._lvalue(tree.children[0])]
@@ -1630,13 +1543,7 @@ class Engine(Interpreter):
                 else:
                     new = old
 
-                trace(
-                    'Assigning: "?=": key: %s = %r (%s was %r)',
-                    key,
-                    new,
-                    raw_key,
-                    old,
-                )
+                trace('Assigning: "?=": key: %s = %r (%s was %r)', key, new, raw_key, old)
 
                 # Write back even if unchanged. This has two effects:
                 # 1. Ensures the var in the inner scope with the outer value.
@@ -1719,11 +1626,7 @@ class Engine(Interpreter):
                         self._error('regex replacement disabled')
                         continue
 
-                    flags = (
-                        self._regex_flags(narrow(chs[2], Token).value)
-                        if len(chs) > 2
-                        else 0
-                    )
+                    flags = self._regex_flags(narrow(chs[2], Token).value) if len(chs) > 2 else 0
 
                     try:
                         val = re.sub(pat, sub, val, flags=flags, timeout=0.1)
@@ -1772,11 +1675,7 @@ class BranchNormalizer(Transformer):
         return Tree('stmt_list', flattened)
 
     def branch(self, children: list[Tree | Token]) -> Tree:
-        if (
-            children
-            and isinstance(children[-1], Token)
-            and children[-1].type == 'BRANCH_END'
-        ):
+        if children and isinstance(children[-1], Token) and children[-1].type == 'BRANCH_END':
             children.pop()
         else:
             cond = children[0]
@@ -1788,10 +1687,7 @@ class BranchNormalizer(Transformer):
             chs = self._extract_stmt_list(to_split)
             if chs is not None and len(chs) > 1:
                 first = chs[0]
-                if split_left:
-                    new_children = [cond, first]
-                else:
-                    new_children = [cond, left, first]
+                new_children = [cond, first] if split_left else [cond, left, first]
 
                 chs[0] = Tree('branch', new_children)
                 return Tree('stmt_list', chs)

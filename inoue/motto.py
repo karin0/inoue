@@ -1,12 +1,17 @@
-import os
-import re
+# ruff: noqa: RUF001, N806
 import json
+import os
 import random
-from typing import Iterable
+import re
+
+from typing import TYPE_CHECKING
 
 from bot import truncate_text
 
-from .log import log, is_debug
+from .log import is_debug, log
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 
 def sentences() -> Iterable[str]:
@@ -14,7 +19,7 @@ def sentences() -> Iterable[str]:
         yield __name__
         return
 
-    with open(file, 'r', encoding='utf-8') as fp:
+    with open(file, encoding='utf-8') as fp:
         s = fp.read()
 
     for para in s.split():
@@ -23,18 +28,22 @@ def sentences() -> Iterable[str]:
             s = splits[i - 1].strip('「」').strip()
             if s:
                 yield s + splits[i]
-        if len(splits) % 2 == 1 and (s := splits[-1].strip()):
-            if s[-1] == '」' and (s := s.strip('「」').strip()):
-                if s[-1] == '，' and len(s) > 1:
-                    yield s[:-1] + '。'
-                elif s[-1] == '…':
-                    yield s
-                else:
-                    yield s + '。'
+        if (
+            len(splits) % 2 == 1
+            and (s := splits[-1].strip())
+            and s[-1] == '」'
+            and (s := s.strip('「」').strip())
+        ):
+            if s[-1] == '，' and len(s) > 1:
+                yield s[:-1] + '。'
+            elif s[-1] == '…':
+                yield s
+            else:
+                yield s + '。'
 
 
 def greeting() -> str:
-    s = random.choice(SENTENCES)
+    s = random.choice(SENTENCES)  # noqa: S311
     log.info('motto: %s', s)
     return s
 
@@ -59,9 +68,7 @@ def hitokoto_sentences():
     HITOKOTO_TYPES = os.environ.get('HITOKOTO_TYPES', '').strip()
     HITOKOTO_BANNED = os.environ.get('HITOKOTO_BANNED', '').strip()
     if HITOKOTO_BANNED:
-        HITOKOTO_BANNED = tuple(
-            s for w in HITOKOTO_BANNED.split(',') if (s := w.strip())
-        )
+        HITOKOTO_BANNED = tuple(s for w in HITOKOTO_BANNED.split(',') if (s := w.strip()))
     else:
         HITOKOTO_BANNED = ()
 
@@ -81,11 +88,7 @@ def hitokoto_sentences():
                     continue
                 if t:
                     s += '—— ' + t
-                s = (
-                    s.replace('······', '……')
-                    .replace('......', '……')
-                    .replace('...', '…')
-                )
+                s = s.replace('······', '……').replace('......', '……').replace('...', '…')
                 if '。' in s:
                     s = (
                         s.replace(',', '，')
@@ -102,15 +105,11 @@ if is_debug:
 else:
     HITOKOTO_SENTENCES = tuple(hitokoto_sentences())
 
-    SENTENCES = tuple(
-        truncate_text(s) for s in set(s for s in sentences() if len(s) > 5)
-    )
-    log.info(
-        'Loaded %d sentences, %d hitokotos', len(SENTENCES), len(HITOKOTO_SENTENCES)
-    )
+    SENTENCES = tuple(truncate_text(s) for s in {s for s in sentences() if len(s) > 5})
+    log.info('Loaded %d sentences, %d hitokotos', len(SENTENCES), len(HITOKOTO_SENTENCES))
 
 
 def hitokoto() -> str:
-    s = random.choice(HITOKOTO_SENTENCES)
+    s = random.choice(HITOKOTO_SENTENCES)  # noqa: S311
     log.info('hitokoto: %s', s)
     return s

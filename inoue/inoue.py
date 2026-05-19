@@ -1,16 +1,19 @@
-from math import floor
-from typing import Hashable
 from collections import defaultdict
+from math import floor
+from typing import TYPE_CHECKING
 
-from simpleeval import simple_eval
 from prettytable import PrettyTable
+from simpleeval import simple_eval
+
+if TYPE_CHECKING:
+    from collections.abc import Hashable
 
 
 def calc(s: str) -> float:
     return simple_eval(s, names={'x': 1.1})
 
 
-def render_sign(v: float | int) -> str:
+def render_sign(v: float) -> str:
     if isinstance(v, int):
         return f'{v:+}'
     return f'{v:+.3}'
@@ -138,7 +141,7 @@ def render_receipt(text: str):
     table = PrettyTable(
         fields, header=False, border=False, preserve_internal_border=True, align=aligns
     )
-    for i, row in enumerate(zip(*dss)):
+    for i, row in enumerate(zip(*dss, strict=False)):
         comment = row[0].comment
         if i == ext_idx:
             comment += '🚨'

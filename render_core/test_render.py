@@ -1,14 +1,14 @@
 # ruff: noqa: E402
+import logging
+import math
 import os
 import sys
-import math
-import logging
-import warnings
 import unittest
-from typing import Callable, Mapping
+import warnings
+
 from unittest.mock import Mock
 
-from . import Value, Engine
+from . import Engine, Value
 from .context import log, trace
 from .lex import Chunker
 
@@ -26,13 +26,18 @@ mock_db.db = None
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from typing import TYPE_CHECKING
+
 import inoue.render_context as render_ctx
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping
 
 render_ctx.persisted = persisted = {}
 OverriddenDict = render_ctx.OverriddenDict
 
 
-test_text = """
+test_text = '''
 Hello World
 { user_name = user_nickname = 'Alice' }
 { user_name_o := user_nickname_o = 'Alice' }
@@ -71,7 +76,7 @@ count_2; raw_text }
 { :doc2 }
 { price=100; tax="0.08";}
 {price * (1 + tax) > 105?Expensive: Cheap}
-"""
+'''
 
 db_instance = Mock()
 
@@ -105,60 +110,46 @@ class TestRender(unittest.TestCase):
         engine = self.start(ctx)
         ctx = engine._ctx
         r = engine.render(text)
-        dump = (
-            f'Render: {text}\nResult:{r}\nerrors: {engine.errors}\nctx: {ctx.items()}'
-        )
+        dump = f'Render: {text}\nResult:{r}\nerrors: {engine.errors}\nctx: {ctx.items()}'
         trace('Gas used: %s', engine.gas_used())
 
         if e:
             if isinstance(e, str):
                 e = (e,)
             for e in e:
-                self.assertTrue(
-                    any(e in str(err) for err in engine.errors),
-                    f'{dump}\nexpected error: {e}',
-                )
+                assert any(e in str(err) for err in engine.errors), f'{dump}\nexpected error: {e}'
         else:
-            self.assertFalse(
-                engine.errors,
-                f'{dump}\nexpected no errors',
-            )
+            assert not engine.errors, f'{dump}\nexpected no errors'
         if eq is not None:
-            self.assertEqual(r, eq, dump)
+            assert r == eq, dump
         return r
 
     def render_it_all(
-        self,
-        text: str,
-        ctx: Engine | Mapping[str, Value] | None = None,
+        self, text: str, ctx: Engine | Mapping[str, Value] | None = None
     ) -> tuple[str, Mapping[str, Value]]:
         engine = self.start(ctx)
         r = engine.render(text)
-        self.assertFalse(engine.errors, f'Render: {text} errors: {engine.errors}')
+        assert not engine.errors, f'Render: {text} errors: {engine.errors}'
         return r, engine._ctx
 
     def test_variable_substitution(self):
         ctx = {'name': 'Alice', 'role': 'Robot'}
-        text = "I am {name}, a {role}."
+        text = 'I am {name}, a {role}.'
         result = self.render_it(text, ctx)
-        self.assertEqual(result, 'I am Alice, a Robot.')
+        assert result == 'I am Alice, a Robot.'
 
     def test_flags(self):
-        result, ctx_on = self.render_it_all(
-            "{is_visible?Show:Hide}", {'is_visible': '1'}
-        )
-        self.assertEqual(result, "Show")
+        result, ctx_on = self.render_it_all('{is_visible?Show:Hide}', {'is_visible': '1'})
+        assert result == 'Show'
 
-        result, ctx_off = self.render_it_all(
-            "{is_visible?Show:Hide}", {'is_visible': '0'}
-        )
-        self.assertEqual(result, "Hide")
-        self.assertEqual(ctx_off.get('is_visible'), '0')
-        self.assertEqual(ctx_on.get('is_visible'), '1')
+        result, ctx_off = self.render_it_all('{is_visible?Show:Hide}', {'is_visible': '0'})
+        assert result == 'Hide'
+        assert ctx_off.get('is_visible') == '0'
+        assert ctx_on.get('is_visible') == '1'
 
     def test_unary(self):
-        self.assertEqual(self.render_it('+a-b+c$a; b; c;'), '101')
-        self.assertEqual(self.render_it('k=a; +a-b+c$(k); b; c;'), '101')
+        assert self.render_it('+a-b+c$a; b; c;') == '101'
+        assert self.render_it('k=a; +a-b+c$(k); b; c;') == '101'
 
         @mock_db
         def side_effect(name):
@@ -166,13 +157,11 @@ class TestRender(unittest.TestCase):
                 return 'd?=2; a; b; c; d;'
             return None
 
-        self.assertEqual(self.render_it('-a-b+c*doc;'), '0012')
-        self.assertEqual(self.render_it('+a+b+c; *doc;'), '1112')
-        self.assertEqual(self.render_it('+a+b+c;\n:doc;'), '1112')
-        self.assertEqual(self.render_it('d=10; +a+b+c*doc*doc*doc;'), '11110' * 3)
-        self.assertEqual(
-            self.render_it('d=10; +a+b+c;\n:doc; :doc; :doc; *doc;'), '11110' * 4
-        )
+        assert self.render_it('-a-b+c*doc;') == '0012'
+        assert self.render_it('+a+b+c; *doc;') == '1112'
+        assert self.render_it('+a+b+c;\n:doc;') == '1112'
+        assert self.render_it('d=10; +a+b+c*doc*doc*doc;') == '11110' * 3
+        assert self.render_it('d=10; +a+b+c;\n:doc; :doc; :doc; *doc;') == '11110' * 4
 
         self.render_it(
             'a=1; a; @{a; a=7; $a; a=::a; a; c=@q {a; a=3; a; $a; ::a; }; c; a; }; a;',
@@ -203,103 +192,81 @@ class TestRender(unittest.TestCase):
     def test_compare(self):
         ctx = {'status': '200'}
 
-        self.assertEqual(self.render_it("{status=200?OK:ERR}", ctx), "OK")
-        self.assertEqual(self.render_it("{status==200?OK:ERR}", ctx), "OK")
-        self.assertEqual(self.render_it("{status=404?OK:ERR}", ctx), "ERR")
-        self.assertEqual(self.render_it("{status==404?OK:ERR}", ctx), "ERR")
-        self.assertEqual(self.render_it("{status={ b=200; b } ? OK : ERR}", ctx), "OK")
-        self.assertEqual(
-            self.render_it("{b={ b=200; b }; status==b ? OK : ERR}", ctx), "OK"
-        )
+        assert self.render_it('{status=200?OK:ERR}', ctx) == 'OK'
+        assert self.render_it('{status==200?OK:ERR}', ctx) == 'OK'
+        assert self.render_it('{status=404?OK:ERR}', ctx) == 'ERR'
+        assert self.render_it('{status==404?OK:ERR}', ctx) == 'ERR'
+        assert self.render_it('{status={ b=200; b } ? OK : ERR}', ctx) == 'OK'
+        assert self.render_it('{b={ b=200; b }; status==b ? OK : ERR}', ctx) == 'OK'
 
     def test_assign_or_equal(self):
         ctx = {'status': '200'}
-        self.assertEqual(self.render_it("{s=OK}\ns;", ctx), "OK")
-        self.assertEqual(
-            self.render_it("{s={{ b=200; b } ? OK : ERR}}a\nb;s;", ctx), "a\n200OK"
-        )
-        self.assertEqual(
-            self.render_it("status={; c=\"100+100\"; c} ? OK : ERR;", ctx), "OK"
-        )
-        self.assertEqual(
-            self.render_it("status={; c=\"100+100\"; `200} ? OK : ERR;", ctx), "OK"
-        )
+        assert self.render_it('{s=OK}\ns;', ctx) == 'OK'
+        assert self.render_it('{s={{ b=200; b } ? OK : ERR}}a\nb;s;', ctx) == 'a\n200OK'
+        assert self.render_it('status={; c="100+100"; c} ? OK : ERR;', ctx) == 'OK'
+        assert self.render_it('status={; c="100+100"; `200} ? OK : ERR;', ctx) == 'OK'
 
-        self.assertEqual(
-            self.render_it("{c?=d=e=100; c=d=200; status=c=d=200?OK:ERR}", ctx), "OK"
-        )
-        self.assertEqual(
-            self.render_it("{c:=d=e=200; c=d=100; status=c=d=200?OK:ERR}", ctx), "OK"
-        )
-        self.assertEqual(
+        assert self.render_it('{c?=d=e=100; c=d=200; status=c=d=200?OK:ERR}', ctx) == 'OK'
+        assert self.render_it('{c:=d=e=200; c=d=100; status=c=d=200?OK:ERR}', ctx) == 'OK'
+        assert (
             self.render_it(
-                "{c:=d=e=200; c=d=f=g=100; s=xyxzyqx; s|y/c=e=200|x/c=$f|z/g=$f|q/g=f; d=c=d=200? $s :ERR; }",
+                '{c:=d=e=200; c=d=f=g=100; s=xyxzyqx; s|y/c=e=200|x/c=$f|z/g=$f|q/g=f; '
+                'd=c=d=200? $s :ERR; }',
                 ctx,
-            ),
-            "0101100",
+            )
+            == '0101100'
         )
-        self.assertEqual(
+        assert (
             self.render_it(
-                '{c=d=e=\'200\'; f=\'100\'; x=(c=d=f); y=(c=d=e); z=(c?=d=e); w=(c:=d=$e); x+y+z+w }',
+                "{c=d=e='200'; f='100'; x=(c=d=f); y=(c=d=e); z=(c?=d=e); w=(c:=d=$e); x+y+z+w }",
                 ctx,
-            ),
-            "00200200",
+            )
+            == '00200200'
         )
-        self.assertEqual(
-            self.render_it('a=1; a; x=(a:=2); x; a; y=(a?=3); y; a;'), '12222'
-        )
-        self.assertEqual(self.render_it('a?=1 ? OK : ERR;', ctx), 'OK')
+        assert self.render_it('a=1; a; x=(a:=2); x; a; y=(a?=3); y; a;') == '12222'
+        assert self.render_it('a?=1 ? OK : ERR;', ctx) == 'OK'
 
         # Lazy evaluation is only for `?=`.
-        self.assertEqual(self.render_it('a=1; b=1; a={b=2; \'3\'}; a; b;'), '32')
-        self.assertEqual(self.render_it('a=1; b=1; a?={b=2; \'3\'}; $a; b;'), '11')
-        self.assertEqual(self.render_it('b=1; a?={b=2; \'3\'}; a; $b;'), '32')
-        self.assertEqual(self.render_it('a=; b=1; a?={b=2; \'3\'}; a; b;'), '32')
-        self.assertEqual(self.render_it('b=1; a?={b=2; \'3\'}; a; b;'), '32')
-        self.assertEqual(self.render_it('doc:; a=1; b=1; a?=b=*doc; a; b;'), '11')
+        assert self.render_it("a=1; b=1; a={b=2; '3'}; a; b;") == '32'
+        assert self.render_it("a=1; b=1; a?={b=2; '3'}; $a; b;") == '11'
+        assert self.render_it("b=1; a?={b=2; '3'}; a; $b;") == '32'
+        assert self.render_it("a=; b=1; a?={b=2; '3'}; a; b;") == '32'
+        assert self.render_it("b=1; a?={b=2; '3'}; a; b;") == '32'
+        assert self.render_it('doc:; a=1; b=1; a?=b=*doc; a; b;') == '11'
 
         # Dynamic variable names.
-        self.assertEqual(self.render_it('a=b; (a)=a=1; $a; $b; '), '11')
-        self.assertEqual(self.render_it('a=b; (a)=a=1; c=1; d=b; ((d)=a=$c)?A:B;'), 'A')
+        assert self.render_it('a=b; (a)=a=1; $a; $b; ') == '11'
+        assert self.render_it('a=b; (a)=a=1; c=1; d=b; ((d)=a=$c)?A:B;') == 'A'
 
     def test_eval(self):
         ctx = {'price': '100', 'tax': '0.08'}
         expr = '{float(price) * (1 + float(tax)) > 105?Expensive:Cheap}'
-        self.assertEqual(self.render_it(expr, ctx), "Expensive")
+        assert self.render_it(expr, ctx) == 'Expensive'
 
-        self.assertEqual(self.render_it('"True";'), '1')
-        self.assertEqual(self.render_it('"False";'), '0')
-        self.assertEqual(self.render_it('"None";'), '')
-        self.assertEqual(self.render_it('\'s\'.encode();'), 's')
-        self.assertEqual(self.render_it('"\'s\'.encode";'), '')
-        self.assertEqual(self.render_it('aa=bbbb; cc=aa; "len(aa)"; "len(cc)";'), '42')
+        assert self.render_it('"True";') == '1'
+        assert self.render_it('"False";') == '0'
+        assert self.render_it('"None";') == ''
+        assert self.render_it("'s'.encode();") == 's'
+        assert self.render_it('"\'s\'.encode";') == ''
+        assert self.render_it('aa=bbbb; cc=aa; "len(aa)"; "len(cc)";') == '42'
 
         self.render_it('100 ** 100 ** 100 ** 100;', e='Sorry')
-        self.render_it('\'qwq\' * int(1e9);', e='Sorry')
+        self.render_it("'qwq' * int(1e9);", e='Sorry')
         self.render_it('a="1 << 100000"; a;', e='Sorry')
         self.render_it('a=2; b="(a:=\'1\')"; a;', e='Sorry')
 
         # Assignments are not allowed.
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            self.assertEqual(
-                self.render_it(
-                    'a=2; b="a=\'1\'"; a;',
-                ),
-                "2",
-            )
+            assert self.render_it('a=2; b="a=\'1\'"; a;') == '2'
 
         self.render_it('s=qwq; a="(x for x in s)";', e='Sorry')
         self.render_it('s=qwq; a="[x for x in s]";', e='Sorry')
         self.render_it('s=qwq; a="{x:x for x in s}";', e='Sorry')
 
         # Lists are internally allowed.
-        self.assertEqual(
-            self.render_it('s=qwqwqwq; a=s.split(\'w\'); a;'), "['q', 'q', 'q', 'q']"
-        )
-        self.assertEqual(
-            self.render_it('s=qwqwqwq; a=\'z\'.join(s.split(\'w\')); a;'), 'qzqzqzq'
-        )
+        assert self.render_it("s=qwqwqwq; a=s.split('w'); a;") == "['q', 'q', 'q', 'q']"
+        assert self.render_it("s=qwqwqwq; a='z'.join(s.split('w')); a;") == 'qzqzqzq'
 
         for s in ('lambda x: x', '[]', '()', '(1,)', '{}'):
             self.render_it(f'"{s}";', e='Sorry')
@@ -390,8 +357,7 @@ class TestRender(unittest.TestCase):
         self.render_it('{a.k = 7; a[k] + 1}', {'k': 'k'}, eq='8')
 
         self.render_it(
-            "{price=100; tax='0.08';"
-            ' float(price) * (1 + float(tax)) > 105 ? Expensive : Cheap}',
+            "{price=100; tax='0.08'; float(price) * (1 + float(tax)) > 105 ? Expensive : Cheap}",
             eq='Expensive',
         )
         self.render_it('{1 + 1 == 2 ? yes : no}', eq='yes')
@@ -411,33 +377,31 @@ class TestRender(unittest.TestCase):
         self.render_it('{f ⇒ `qwq}\n{g ⇒ $0}; g(*f*f*f);', eq='qwq' * 3)
         self.render_it('g = {f ⇒ f()\nf(1); }; g({h ⇒ `qwq});', eq='qwq' * 2)
         self.render_it('g = {f ⇒ f}; g({a=qwq\na});', eq='qwq')
-        self.render_it(
-            'g = {f ⇒ int(f)<<1; f}; g({g({g({a="1"\na})})});', eq='84424221'
-        )
+        self.render_it('g = {f ⇒ int(f)<<1; f}; g({g({g({a="1"\na})})});', eq='84424221')
 
     def test_context_assignment(self):
-        text = "{target=World}Hello {target}!"
+        text = '{target=World}Hello {target}!'
         result, ctx = self.render_it_all(text)
-        self.assertEqual(result, "Hello World!")
-        self.assertEqual(ctx.get('target'), 'World')
-        self.assertEqual(self.render_it("{a=b=c=3;a;b;c}"), "333")
-        self.assertEqual(self.render_it("{a=b=c=3;d=e=;a;d;b;e;c}"), "333")
+        assert result == 'Hello World!'
+        assert ctx.get('target') == 'World'
+        assert self.render_it('{a=b=c=3;a;b;c}') == '333'
+        assert self.render_it('{a=b=c=3;d=e=;a;d;b;e;c}') == '333'
 
     def test_context_override(self):
-        text = "{mode:=write}{mode=read}Current: {mode}"
+        text = '{mode:=write}{mode=read}Current: {mode}'
         result, ctx = self.render_it_all(text)
-        self.assertEqual(result, "Current: write")
-        self.assertEqual(ctx.get('mode'), 'write')
+        assert result == 'Current: write'
+        assert ctx.get('mode') == 'write'
 
     def test_doc_recursion(self):
         @mock_db
         def side_effect(name):
             if name == 'header':
-                return "Title: {title}"
+                return 'Title: {title}'
             return None
 
-        result = self.render_it("{:header}\nBody", {'title': 'My Log'})
-        self.assertEqual(result, "Title: My Log\nBody")
+        result = self.render_it('{:header}\nBody', {'title': 'My Log'})
+        assert result == 'Title: My Log\nBody'
 
     def test_self_recursion(self):
         text = r'''
@@ -448,65 +412,63 @@ n ? *bomb : Boom!;
         result = ctx.render(text)
         a = [str(x) for x in range(10, 0, -1)]
         a.append('Boom')
-        self.assertEqual(result, '\n'.join(a))
+        assert result == '\n'.join(a)
 
     def test_circular_dependency(self):
         @mock_db
         def side_effect(name):
             if name == 'A':
-                return "StartA {:B}"
+                return 'StartA {:B}'
             if name == 'B':
-                return "StartB {:A}"
+                return 'StartB {:A}'
             return None
 
-        text = "{:A}"
+        text = '{:A}'
         ctx = self.start()
         result = ctx.render(text)
-        self.assertIn("StartB StartA StartB StartA StartB StartA", result)
-        self.assertIn("stack overflow", str(ctx.errors))
+        assert 'StartB StartA StartB StartA StartB StartA' in result
+        assert 'stack overflow' in str(ctx.errors)
 
     def test_swap(self):
-        result, ctx = self.render_it_all("{x=1; y=2; x^y; x; y}")
-        self.assertEqual(result, "21")
-        self.assertEqual(ctx.get('x'), 2)
-        self.assertEqual(ctx.get('y'), 1)
+        result, ctx = self.render_it_all('{x=1; y=2; x^y; x; y}')
+        assert result == '21'
+        assert ctx.get('x') == 2
+        assert ctx.get('y') == 1
 
-        result = self.render_it("{a=hello; a^b; a}", e='undefined')
-        self.assertEqual(result, '')
+        result = self.render_it('{a=hello; a^b; a}', e='undefined')
+        assert result == ''
 
-        result = self.render_it("{a=hello; a^b; $b}")
-        self.assertEqual(result, 'hello')
+        result = self.render_it('{a=hello; a^b; $b}')
+        assert result == 'hello'
 
     def test_quine(self):
         q = r'''s='s=%r; "s %% s";'; "s % s";'''
-        self.assertEqual(self.render_it(q), q)
+        assert self.render_it(q) == q
         q = r'''s=`"'s=`' + s + '; ' + s + ';'"; "'s=`' + s + '; ' + s + ';'";'''
-        self.assertEqual(self.render_it(q), q)
+        assert self.render_it(q) == q
         q = r'''
 Write the following sentence twice, the second time within quotes.
 "Write the following sentence twice, the second time within quotes."
 '''.strip()
-        self.assertEqual(self.render_it(q), q)
+        assert self.render_it(q) == q
         q = r'#/bin/cat'
-        self.assertEqual(self.render_it(q), q)
+        assert self.render_it(q) == q
         q = r'''"__file__";'''
-        self.assertEqual(self.render_it(q), q)
-        self.assertEqual(self.render_it(q * 2), q * 4)
-        self.assertEqual(self.render_it(q * 3), q * 9)
+        assert self.render_it(q) == q
+        assert self.render_it(q * 2) == q * 4
+        assert self.render_it(q * 3) == q * 9
 
     def test_replace(self):
-        self.assertEqual(self.render_it('s=114514; s|4/9; s;'), '119519')
-        self.assertEqual(self.render_it('s=hello world; s|world/; s;'), 'hello')
-        self.assertEqual(self.render_it('s=hello; s|/1; s;'), '1h1e1l1l1o1')
-        self.assertEqual(self.render_it('s=hello; s|h/|l/|o/|e/; s;'), '')
-        self.assertEqual(
-            self.render_it(
-                's=hello; s|h/{a=$s;}|l/{b=$s;}|{({`o})}/{c=$s;}|e/{d=$s}; s;a;b;c;d;'
-            ),
-            'helloelloeoe',
+        assert self.render_it('s=114514; s|4/9; s;') == '119519'
+        assert self.render_it('s=hello world; s|world/; s;') == 'hello'
+        assert self.render_it('s=hello; s|/1; s;') == '1h1e1l1l1o1'
+        assert self.render_it('s=hello; s|h/|l/|o/|e/; s;') == ''
+        assert (
+            self.render_it('s=hello; s|h/{a=$s;}|l/{b=$s;}|{({`o})}/{c=$s;}|e/{d=$s}; s;a;b;c;d;')
+            == 'helloelloeoe'
         )
-        self.assertEqual(self.render_it("s=abc123def; s|'[0-9]+'\\X; s;"), 'abcXdef')
-        self.assertEqual(self.render_it("s=AbC abc; s|'abc'\\x\\i; s;"), 'x x')
+        assert self.render_it("s=abc123def; s|'[0-9]+'\\X; s;") == 'abcXdef'
+        assert self.render_it("s=AbC abc; s|'abc'\\x\\i; s;") == 'x x'
 
         self.render_it("s=abc; s|'a'\\x\\q; s;", e='bad regex flag')
         self.render_it("s=abc; s|'([a'\\x; s;", e='regex replace')
@@ -514,47 +476,41 @@ Write the following sentence twice, the second time within quotes.
     def test_empty_values(self):
         text = '{;a=} {;b:=;} {c=; d=2345;} {d|4/} {a+b+c+d}'
         result = self.render_it(text)
-        self.assertEqual(result, '235')
+        assert result == '235'
 
     def test_nested_blocks(self):
-        text = '{ a=\'1\'; { b=\'2\'; { c=\'3\'; a + b + c }; a + b }; a }'
+        text = "{ a='1'; { b='2'; { c='3'; a + b + c }; a + b }; a }"
         result = self.render_it(text)
-        self.assertEqual(result, '123121')
+        assert result == '123121'
 
     def test_nested_branches(self):
-        result = self.render_it(
-            '{ {x=10; x>5 ? y=20; y>15 ? High : Medium : Low} ;` rest }'
-        )
-        self.assertEqual(result, 'High rest')
-        result = self.render_it(
-            '{ x=0; x>5 ? y=20; y>15 ? High : Medium : Low ; `rest }'
-        )
-        self.assertEqual(result, 'Lowrest')
+        result = self.render_it('{ {x=10; x>5 ? y=20; y>15 ? High : Medium : Low} ;` rest }')
+        assert result == 'High rest'
+        result = self.render_it('{ x=0; x>5 ? y=20; y>15 ? High : Medium : Low ; `rest }')
+        assert result == 'Lowrest'
 
-        result = self.render_it(
-            '{ x=100; x>5 ? y=20; y>15 ? High : Medium : Low ; `rest }'
-        )
-        self.assertEqual(result, 'Highrest')
+        result = self.render_it('{ x=100; x>5 ? y=20; y>15 ? High : Medium : Low ; `rest }')
+        assert result == 'Highrest'
 
-        result = self.render_it('{ x=100 ? \'\' }\na')
-        self.assertEqual(result, 'a')
+        result = self.render_it("{ x=100 ? '' }\na")
+        assert result == 'a'
 
-        result = self.render_it('{ x=100 ?: \'\' }\na')
-        self.assertEqual(result, 'a')
+        result = self.render_it("{ x=100 ?: '' }\na")
+        assert result == 'a'
 
-        self.render_it('a=1; a=2 ? ERR; \'OK\';', eq='OK')
-        self.render_it('a=b=1; a=2 ? b=2 ? \'ERR\'; \'OK\';', eq='OK')
+        self.render_it("a=1; a=2 ? ERR; 'OK';", eq='OK')
+        self.render_it("a=b=1; a=2 ? b=2 ? 'ERR'; 'OK';", eq='OK')
 
     def test_nested_blocks_and_branches(self):
         text = '{ a=1; a==1? { b=2; a+b==3? { c=3; a+b+c } : Wrong } : Wrong }'
         result = self.render_it(text)
-        self.assertEqual(result, '6')
+        assert result == '6'
 
     def test_nested_expressions(self):
         text = '{ a = "30"; b = 12; c = ( ( "a + b" ) ) ; c }'
         result = self.render_it(text)
-        self.assertEqual(result, '42')
-        self.assertEqual(self.render_it('a=42; { ( ( ( a ) ) ) };'), '42')
+        assert result == '42'
+        assert self.render_it('a=42; { ( ( ( a ) ) ) };') == '42'
 
     def test_doc_name_definition(self):
         def f(text):
@@ -563,154 +519,162 @@ Write the following sentence twice, the second time within quotes.
             return ctx.doc_name
 
         text = '{ doc_test: } This is doc.'
-        self.assertEqual(f(text), 'doc_test')
+        assert f(text) == 'doc_test'
 
         text = '{ doc_test:; } This is doc.'
-        self.assertEqual(f(text), 'doc_test')
+        assert f(text) == 'doc_test'
 
         text = '{ doc_test:; qwqw } {:doc_test} '
-        self.assertEqual(f(text), 'doc_test')
+        assert f(text) == 'doc_test'
 
         text = 'hello!\ndoc_test:; qwqw;\n{:doc_test}'
-        self.assertEqual(f(text), 'doc_test')
+        assert f(text) == 'doc_test'
 
     def test_scope(self):
-        self.assertEqual(self.render_it('{ a=1; @s { a=2; a }; a; s.a; }'), '212')
-        self.assertEqual(
+        assert self.render_it('{ a=1; @s { a=2; a }; a; s.a; }') == '212'
+        assert (
             self.render_it(
-                '{ a=1; a; @s { a; b=::a; a=2; a; @s { a; a=3; a }; s.a; a; b; }; s.s.a; s.a; s.b; a; @{ a; a=7; a; }; a; .a; }'
-            ),
-            '1122332132111717',
+                '{ a=1; a; @s { a; b=::a; a=2; a; @s { a; a=3; a }; s.a; a; b; };'
+                ' s.s.a; s.a; s.b;a; @{ a; a=7; a; }; a; .a; }'
+            )
+            == '1122332132111717'
         )
 
         # Mutating outer scope using replacement.
-        self.assertEqual(
-            self.render_it(
-                '{ a=124524; a; @s { a; a|2/1; a; b=::a; }; a; s.b; "s.b" }'
-            ),
-            '124524' * 2 + '114514' * 4,
+        assert (
+            self.render_it('{ a=124524; a; @s { a; a|2/1; a; b=::a; }; a; s.b; "s.b" }')
+            == '124524' * 2 + '114514' * 4
         )
 
         # Mutating outer scope using swapping.
-        self.assertEqual(
-            self.render_it('{ a=810; a; @s { a; b=893; b; a^b; a; b; }; s.b; a; }'),
-            '810' * 2 + '893' * 2 + '810810893',
+        assert (
+            self.render_it('{ a=810; a; @s { a; b=893; b; a^b; a; b; }; s.b; a; }')
+            == '810' * 2 + '893' * 2 + '810810893'
         )
 
         # Paren as scope name.
-        text = '{ a=1; s="\'p\'"; a; s; @("s+\'m\'") { a; x?=::a; x=int(x)+1; x; a=3; a }; a; pm.a; }'
-        self.assertEqual(self.render_it(text), '1p12313')
+        text = (
+            '{ a=1; s="\'p\'"; a; s; @("s+\'m\'") { a; x?=::a; x=int(x)+1; x; a=3; a }; a; pm.a; }'
+        )
+        assert self.render_it(text) == '1p12313'
 
-        text = '{ a=1; t=m; s="\'p\'+t"; a; s; @($s) { a; x?=$a; x="int(x)+1"; x; a=2; a }; a; pm.a; }'
-        self.assertEqual(self.render_it(text), '1pm33212')
+        text = (
+            '{ a=1; t=m; s="\'p\'+t"; a; s; @($s) { a; x?=$a; x="int(x)+1"; x; a=2; a }; a; pm.a; }'
+        )
+        assert self.render_it(text) == '1pm33212'
 
         # Scope with empty name is not global.
-        text = '{ a=1; a; @ {a; b=2; a; b; a=3; a; b; a^b; a; b; b=::a; b; @{c={b}} }; a; .a; .b; ..c; pm.a; }'
-        self.assertEqual(self.render_it(text), '11123223112112')
+        text = (
+            '{ a=1; a; @ {a; b=2; a; b; a=3; a; b; a^b; a; b; b=::a; b; @{c={b}} };'
+            ' a; .a; .b; ..c; pm.a; }'
+        )
+        assert self.render_it(text) == '11123223112112'
 
         # Scope declaration inside block.
         text = '{ @s; a=1; a; {@r; b=1; b; }; b?=3; b; r.b; }'
-        self.assertEqual(self.render_it(text), '1131')
+        assert self.render_it(text) == '1131'
 
         # Scope declaration inside block.
         text = '{ @s; a=1; a; x=r; {@(x); b=1; b; }; b?=3; b; r.b; }'
-        self.assertEqual(self.render_it(text), '1131')
+        assert self.render_it(text) == '1131'
 
         text = '{ x=1; @s {@(x); b=1; b; }; }'
         self.render_it(text, e='double scope')
 
     def test_static(self):
         text = r't=0; @pm { a?="0"; a+=1; a^t; }; t; pm.a=$t;'
-        self.assertEqual(self.render_it(text), '1')
+        assert self.render_it(text) == '1'
 
         text = r'c=$pm.a; d="1"; @pm {c=::c; a="c+d"; a;} ;'
-        self.assertEqual(self.render_it(text), '2')
+        assert self.render_it(text) == '2'
 
         text = r'pm.a?="0"; c=$pm.a; d="1"; @pm {c=::c; a="c+d";}; pm.a;'
-        self.assertEqual(self.render_it(text), '3')
+        assert self.render_it(text) == '3'
 
         text = r'pm.a?="0"; c=$pm.a; d="1"; @pm {c=::c; a="c+d";}; "pm.a";'
-        self.assertEqual(self.render_it(text), '4')
+        assert self.render_it(text) == '4'
 
         # PM keys can be overridden, but that makes them local and doesn't affect
         # persisted ones.
         text2 = r'@pm {t=$a; a:=11451; a; t; }; a?=810; a;'
-        self.assertEqual(self.render_it(text2), '114514810')
-        self.assertEqual(self.render_it(text2), '114514810')
-        self.assertEqual(self.render_it(text), '5')
+        assert self.render_it(text2) == '114514810'
+        assert self.render_it(text2) == '114514810'
+        assert self.render_it(text) == '5'
 
         text = r't=@pm {a+=1;a}; t;'
-        self.assertEqual(self.render_it(text), '6')
+        assert self.render_it(text) == '6'
 
         text = r'@pm{}; ++pm.a; pm.a;'
-        self.assertEqual(self.render_it(text), '7')
+        assert self.render_it(text) == '7'
 
         text = r'@pm {a+=1;a};'
-        self.assertEqual(self.render_it(text), '8')
+        assert self.render_it(text) == '8'
 
     def test_return_value(self):
         # The type of the return value must be preserved if only one value is
         # yielded from a `code_block` or `unary_chain`.
-        self.assertEqual(self.render_it('{ a={b=1; b}; a+1 }'), '2')
-        self.assertEqual(self.render_it('{ a={d={{"1"}}; +b-c$d}; a+1 }'), '2')
-        self.assertEqual(
-            self.render_it(r'''{ a={d={{"1"}}; {d==1?q}; +b-c$d}; a+1 }'''),
-            'q11',
-        )
+        assert self.render_it('{ a={b=1; b}; a+1 }') == '2'
+        assert self.render_it('{ a={d={{"1"}}; +b-c$d}; a+1 }') == '2'
+        assert self.render_it(r'''{ a={d={{"1"}}; {d==1?q}; +b-c$d}; a+1 }''') == 'q11'
 
     def test_raw_text(self):
         text = '{ a =` This is naked`?=i:n$cluded!the!b`ac`kti`c\nks! ; "1"; a; \'2\' }'
         result = self.render_it(text)
-        self.assertEqual(result, '1 This is naked`?=i:n$cluded!the!b`ac`kti`c\nks! 2')
+        assert result == '1 This is naked`?=i:n$cluded!the!b`ac`kti`c\nks! 2'
 
     def test_common(self):
         @mock_db
         def side_effect(name):
-            if name == 'qwq':
-                return "Default: {default} {$default}"
-            elif name == 'doc1':
-                return "This is doc1:\na;b;\nc;\n"
-            elif name == 'doc2':
-                return "This is doc2:\nthis;\n"
+            match name:
+                case 'qwq':
+                    return 'Default: {default} {$default}'
+                case 'doc1':
+                    return 'This is doc1:\na;b;\nc;\n'
+                case 'doc2':
+                    return 'This is doc2:\nthis;\n'
             return None
 
         engine = self.start()
         result = self.render_it(test_text, engine)
-        answer = 'Hello World\nDefault: N/A N/A\nUser: Alice\nAlice\nAlice\nAlice\nN/AAlice\nThis is naked`included!the!b`ac`kti`cks! \nb\nthatthisisnaked\nhello\n  the\n    wonderful\n     美丽新   world.\nthat\nis alsonaked\nis alsoddDEF1xThis is naked`included!the!b`ac`kti`cks! \nThis is doc1:\nis alsod\nd\n\nThis is doc2:\nthat\n\nExpensive'
-        self.assertEqual(result, answer)
-        self.assertEqual(engine.doc_name, 'doc3')
+        answer = (
+            'Hello World\nDefault: N/A N/A\nUser: Alice\nAlice\nAlice\nAlice\n'
+            'N/AAlice\nThis is naked`included!the!b`ac`kti`cks! \nb\nthatthisisnaked\n'
+            'hello\n  the\n    wonderful\n     美丽新   world.\nthat\nis alsonaked\n'
+            'is alsoddDEF1xThis is naked`included!the!b`ac`kti`cks! \n'
+            'This is doc1:\nis alsod\nd\n\nThis is doc2:\nthat\n\nExpensive'
+        )
+        assert result == answer
+        assert engine.doc_name == 'doc3'
 
     def test_plain(self):
-        text = "This is a plain text without any variables."
+        text = 'This is a plain text without any variables.'
         result = self.render_it(text)
-        self.assertEqual(result, text)
+        assert result == text
 
     def test_escape(self):
-        text = r"""{ text = 'He said: \'Hello, World!\'New line.'; text }"""
+        text = r'''{ text = 'He said: \'Hello, World!\'New line.'; text }'''
         result = self.render_it(text)
-        self.assertEqual(result, "He said: 'Hello, World!'New line.")
+        assert result == "He said: 'Hello, World!'New line."
 
-        text = r"""{ text = "'She replied: \"Hi there!\"Another line.'"; text }"""
+        text = r'''{ text = "'She replied: \"Hi there!\"Another line.'"; text }'''
         result = self.render_it(text)
-        self.assertEqual(result, 'She replied: "Hi there!"Another line.')
+        assert result == 'She replied: "Hi there!"Another line.'
 
-        text = r"""{ text = `Raw string with 'single;' and "}double{" quotes.; text }"""
+        text = r'''{ text = `Raw string with 'single;' and "}double{" quotes.; text }'''
         result = self.render_it(text)
-        self.assertEqual(
-            result, r'''Raw string with 'single;' and "}double{" quotes.'''
-        )
+        assert result == r'''Raw string with 'single;' and "}double{" quotes.'''
 
-        text = r"""{ text = 'Mixing \'escaped;\' and `raw` quotes.'; text }"""
+        text = r'''{ text = 'Mixing \'escaped;\' and `raw` quotes.'; text }'''
         result = self.render_it(text)
-        self.assertEqual(result, "Mixing 'escaped;' and `raw` quotes.")
+        assert result == "Mixing 'escaped;' and `raw` quotes."
 
-        text = r"""{ text = `Mixing 'raw;' and \"unescaped\" quotes.; text }"""
+        text = r'''{ text = `Mixing 'raw;' and \"unescaped\" quotes.; text }'''
         result = self.render_it(text)
-        self.assertEqual(result, r'''Mixing 'raw;' and \"unescaped\" quotes.''')
+        assert result == r'''Mixing 'raw;' and \"unescaped\" quotes.'''
 
-        text = r"""{ text = 'Escaped backslash: \\ and quote: \''; text }"""
+        text = r'''{ text = 'Escaped backslash: \\ and quote: \''; text }'''
         result = self.render_it(text)
-        self.assertEqual(result, "Escaped backslash: \\ and quote: '")
+        assert result == "Escaped backslash: \\ and quote: '"
 
         text = r'\{ not a block ! \}'
         self.render_it(text, eq='{ not a block ! }')
@@ -723,10 +687,10 @@ Write the following sentence twice, the second time within quotes.
         text = r'backslash as text \\  \;'
         self.render_it(text, eq=r'backslash as text \  ;')
 
-        self.render_it(r"""'a\nb\rc';""", eq='a\nb\rc')
-        self.render_it(r"""a=`a\nb\rc'\n';a;""", eq=r"a\nb\rc'\n'")
+        self.render_it(r''''a\nb\rc';''', eq='a\nb\rc')
+        self.render_it(r'''a=`a\nb\rc'\n';a;''', eq=r"a\nb\rc'\n'")
 
-        text = 'Line1\nLine2 with \"quote\" and \u2665 and 🥮🥮月饼🥮🥮 and \\t tab.\rLine3'
+        text = 'Line1\nLine2 with "quote" and \u2665 and 🥮🥮月饼🥮🥮 and \\t tab.\rLine3'
         self.render_it(repr(text) + ';', eq=text)
 
     def test_text_escape_only_for_special_chars(self):
@@ -747,31 +711,35 @@ Write the following sentence twice, the second time within quotes.
         # escaping_indices; test_naked accepts the line ('\\;' ends in a
         # real ';'); after the recursive lex of the naked block, 'foo'
         # still has to flush as a text fragment.
-        self.assertEqual(
-            list(Chunker('\\\\;\nfoo')),
-            [(False, ''), (True, '\\\\;'), (False, None), (False, 'foo')],
-        )
+        assert list(Chunker('\\\\;\nfoo')) == [
+            (False, ''),
+            (True, '\\\\;'),
+            (False, None),
+            (False, 'foo'),
+        ]
 
         # Same shape, with escaped braces in the text region.
-        self.assertEqual(
-            list(Chunker('\\{a\\};\nrest')),
-            [(False, ''), (True, '\\{a\\};'), (False, None), (False, 'rest')],
-        )
+        assert list(Chunker('\\{a\\};\nrest')) == [
+            (False, ''),
+            (True, '\\{a\\};'),
+            (False, None),
+            (False, 'rest'),
+        ]
 
     def test_unclosed(self):
-        text = r"""{ text = `Raw backslash: \ and quote: '`; text }"""
+        text = r'''{ text = `Raw backslash: \ and quote: '`; text }'''
         result = self.render_it(text, e='Unclosed')
         # The lone '\' here is followed by ' ', which is not one of the
         # outer-level escape targets ('{', '}', ';', '\'), so it survives.
-        self.assertEqual(result, text)
+        assert result == text
 
         text = r''' { another = unclosed = block = 123 '''
         result = self.render_it(text, e='Unclosed')
-        self.assertEqual(result, text.strip())
+        assert result == text.strip()
 
         text = r'''a=1; a;'''
         result = self.render_it(text)
-        self.assertEqual(result, '1')
+        assert result == '1'
 
         # Naked block across multiple lines.
         text = r'''a=1; a = {
@@ -793,23 +761,23 @@ a
 ns.b;
 '''
         result = self.render_it(text)
-        self.assertEqual(result + '\n', '114514\n' * 3)
+        assert result + '\n' == '114514\n' * 3
 
         text = r''' {1 {'2'} {3{4 {"'partly'"}; 'closed' '''
         result = self.render_it(text, e='Unclosed')
-        self.assertEqual(result, "{1 2 {3{4 partly; 'closed'")
+        assert result == "{1 2 {3{4 partly; 'closed'"
 
         text = r'''Not block \{ 'is here!' \}'''
         result = self.render_it(text)
-        self.assertEqual(result, text.replace('\\', ''))
+        assert result == text.replace('\\', '')
 
         text = r"'qwqwq'; } '123';"
         result = self.render_it(text, e='Unexpected token')
-        self.assertEqual(result, '')
+        assert result == ''
 
         text = r"'1'; { '2'; { '3'; } {{{{{ '4'; };"
         result = self.render_it(text, e=('Unbalanced', 'Unexpected token'))
-        self.assertEqual(result, '')
+        assert result == ''
 
     def test_prime(self):
         text = r'''prime:;
@@ -819,7 +787,7 @@ n ?= m = "2";
 :prime;
 '''
         result = self.render_it(text, e='stack overflow')
-        self.assertTrue(result.startswith('2\n3\n5\n7\n11\n13'), result)
+        assert result.startswith('2\n3\n5\n7\n11\n13'), result
 
     def test_prime_2(self):
         text = r'''prime:;
@@ -830,7 +798,7 @@ n ?= m = "2";
 '''
         result = self.render_it(text, e='stack overflow')
         result = '\n'.join(result.split())
-        self.assertTrue(result.startswith('2\n3\n5\n7\n11\n13'), result)
+        assert result.startswith('2\n3\n5\n7\n11\n13'), result
 
     def test_prime_3(self):
         text = r'''prime2:;
@@ -841,7 +809,7 @@ n ?= m = "2";
 *prime2;
 '''
         result = self.render_it(text, e='stack overflow')
-        self.assertTrue(result.startswith('2\n3\n5\n7\n11\n13'), result)
+        assert result.startswith('2\n3\n5\n7\n11\n13'), result
 
     def test_prime_vectorized(self):
         db = {}
@@ -858,13 +826,17 @@ m * m > n ? $n; n+=2;  m=2 :;
 
         mock_db(db.get)
 
-        text = r'''
+        text = (
+            r'''
         prime2: ; n ?= m = 2;
 m * m > n ? $n; n=n > 2 && n+2 or 3; m=2 :;
-''' + '*iter4;' * 100 + '*prime2;'
+'''
+            + '*iter4;' * 100
+            + '*prime2;'
+        )
         result = self.render_it(text, e='out of gas')
         ans = '\n'.join(str(v) for v in self.iter_prime(53))
-        self.assertTrue(result.startswith(ans), result)
+        assert result.startswith(ans), result
 
     @staticmethod
     def iter_prime(limit: int):
@@ -887,7 +859,7 @@ n ?= m = "2";
 }; a?"a-1+1":*prime_pm;}
 '''
         for v in self.iter_prime(89):
-            self.assertEqual(self.render_it(text), str(v))
+            assert self.render_it(text) == str(v)
         self.render_it(text, e='stack overflow')
 
     def test_prime_pm2(self):
@@ -899,7 +871,7 @@ n ?= m = "2";
 }; a?$a;:*p;}
 '''
         for v in self.iter_prime(283):
-            self.assertEqual(self.render_it(text), str(v))
+            assert self.render_it(text) == str(v)
 
     def test_prime_pm3(self):
         text = r'''p:;
@@ -912,7 +884,7 @@ n ?= m = "2";
 }; x ? 'Result: '; $x : *p;}
 '''
         for v in self.iter_prime(100):
-            self.assertEqual(self.render_it(text).lstrip('@'), 'Result: ' + str(v))
+            assert self.render_it(text).lstrip('@') == 'Result: ' + str(v)
 
     def test_prime_pm4(self):
         text1 = r'''
@@ -946,9 +918,7 @@ x ? rest;
         for text in (text1, text2, text3):
             persisted.clear()
             for v in self.iter_prime(100):
-                self.assertEqual(
-                    self.render_it(text).lstrip('@'), 'Result: ' + str(v) + '\nrest'
-                )
+                assert self.render_it(text).lstrip('@') == 'Result: ' + str(v) + '\nrest'
 
     def test_fib_wrong(self):
         # Use scopes as "stack frames" to achieve non-tail recursion!
@@ -983,7 +953,7 @@ n ?= "7";      # Default argument. But, the legacy value in the *current* scope
   "a + b"   !
 }'''
         # A wrong implementation that doesn't rebind `n` yields wrong results.
-        self.assertEqual(self.render_it(text), '7')
+        assert self.render_it(text) == '7'
 
     def test_fib(self):
         text = r'''{fib:;
@@ -997,7 +967,7 @@ n ?= "7";
     b = *fib  ;
     "a + b"   !
 }}'''
-        self.assertEqual(self.render_it(text), '13')
+        assert self.render_it(text) == '13'
         self.render_it(text.replace('7', '10'), e='out of gas')
 
     def test_fib_single_scope(self):
@@ -1011,7 +981,7 @@ n ?= "7";
   b = *fib   ;
   "a + b"    !
 }'''.strip()
-        self.assertEqual(self.render_it(text), '13')
+        assert self.render_it(text) == '13'
         self.render_it(text.replace('7', '10'), e='out of gas')
 
     def test_fib_rebind(self):
@@ -1027,7 +997,7 @@ n ?= "9";
   b = *fib  ;
   "a + b"   !
 }'''
-        self.assertEqual(self.render_it(text), '34')
+        assert self.render_it(text) == '34'
         self.render_it(text.replace('9', '10'), e='out of gas')
 
     def test_sub_doc(self):
@@ -1043,7 +1013,7 @@ n = $a0;
 }
 .a0="9"; *fib;
 '''
-        self.assertEqual(self.render_it(text), '34')
+        assert self.render_it(text) == '34'
         self.render_it(text.replace('9', '10'), e='out of gas')
 
     def test_sub_doc_2(self):
@@ -1060,7 +1030,7 @@ n = $a0;
 n="9"; *fib;
 }
 '''
-        self.assertEqual(self.render_it(text), '34')
+        assert self.render_it(text) == '34'
         self.render_it(text.replace('9', '10'), e='out of gas')
 
     def test_sub_doc_3(self):
@@ -1075,8 +1045,8 @@ n = ::n;
 }
 n="9"; *fib;
 '''
-        self.assertEqual(self.render_it(text.replace('9', '7')), '13')
-        self.assertEqual(self.render_it(text), '34')
+        assert self.render_it(text.replace('9', '7')) == '13'
+        assert self.render_it(text) == '34'
         self.render_it(text.replace('9', '10'), e='out of gas')
 
     def test_lambda(self):
@@ -1091,7 +1061,7 @@ n = ::n;
 }}
 n="9"; *foo;
 '''
-        self.assertEqual(self.render_it(text), '34')
+        assert self.render_it(text) == '34'
 
     def test_lambda_2(self):
         text = r'''
@@ -1099,7 +1069,7 @@ fib = {@; x ↦ x > 1 && (fib(x-1) + fib(x-2)) || x };
 fib(9);
 .x=7; *fib;
 '''
-        self.assertEqual(self.render_it(text), '34\n13')
+        assert self.render_it(text) == '34\n13'
 
     def test_lambda_3(self):
         text = r'''
@@ -1121,7 +1091,7 @@ g^h; b="g(n=5)"; b;
 f = @ { ↦ a=$0; b=$1; "a + b" };
 "f(a, b)";
 '''
-        self.assertEqual(self.render_it(text), '1\n2\n3 2 1\n42\n42\n42\n1\n\n120\n162')
+        assert self.render_it(text) == '1\n2\n3 2 1\n42\n42\n42\n1\n\n120\n162'
 
     STD = r'''
 wile = while = {cond, body ↦
@@ -1252,7 +1222,7 @@ a[k] = '11';
         ctx = OverriddenDict({}, {})
 
         def foo(a: int, b: str):
-            return f'{a} {b} {' '.join(ctx)} {' '.join(str(s) for s in ctx.values())}'
+            return f'{a} {b} {" ".join(ctx)} {" ".join(str(s) for s in ctx.values())}'
 
         engine = Engine(ctx, funcs=lambda name: foo if name == 'foo' else None)
         text = r'''
@@ -1354,12 +1324,12 @@ safe = 1;
 { x = "5"; cb = {arg ⇒ "arg * int(x)"}; }
 '''
         engine.render(text)
-        self.assertFalse(engine.errors)
+        assert not engine.errors
 
         cb = engine._ctx['cb']
         assert callable(cb)
-        self.assertEqual(cb(3), 15)
-        self.assertEqual(cb(arg=4), 20)
+        assert cb(3) == 15
+        assert cb(arg=4) == 20
 
     def test_subdoc_callable(self):
         engine = self.start()
@@ -1369,7 +1339,7 @@ safe = 1;
         engine.render(text)
         cb = engine._ctx['cb']
         assert callable(cb)
-        self.assertEqual(cb(3), 15)
+        assert cb(3) == 15
 
     def test_newline_as_separator(self):
         from render_core.lex import normalize_block
@@ -1385,12 +1355,12 @@ safe = 1;
         # Trailing continuation chars suppress `;`.
         for tail in '?:=^|+-*/<>~,.([{↦⇒\\':
             out = normalize_block(f'a {tail}\nb\n')
-            self.assertNotIn(';\nb', out, f'tail={tail!r}: {out!r}')
+            assert ';\nb' not in out, f'tail={tail!r}: {out!r}'
 
         # Leading continuation chars suppress `;`.
         for head in '|?:!':
             out = normalize_block(f'a\n{head} b\n')
-            self.assertNotIn(f'a;\n{head}', out, f'head={head!r}: {out!r}')
+            assert f'a;\n{head}' not in out, f'head={head!r}: {out!r}'
 
         # `!` standalone is BRANCH_END, NOT continuation: `;` is inserted.
         eq(normalize_block('a !\nb\n'), 'a!;b;')
@@ -1400,7 +1370,7 @@ safe = 1;
         eq(normalize_block('(1 +\n 2)\n'), '(1+2);')
         eq(normalize_block('a[\n k\n]\n'), 'a[k];')
         eq(normalize_block("'foo\nbar'\n"), "'foo\nbar';")
-        eq(normalize_block("foo\nbar\n"), "foo;bar;")
+        eq(normalize_block('foo\nbar\n'), 'foo;bar;')
         eq(normalize_block("'a\\'\nb'\n"), "'a\\'\nb';")
 
         # Per-brace-level paren tracking: a nested `{...}` resets paren
@@ -1419,16 +1389,11 @@ safe = 1;
         # Branch arms across lines: `?`/`:` are trailing continuation
         # markers, `!` is a terminator that requires a following `;`.
         self.render_it("{ flag = '1'\n flag ?\n   'yes'\n :\n   'no' }", eq='yes')
-        self.render_it(
-            "{ flag = '1'\n flag ? 'yes' : 'no'\n !\n 'tail' }", eq='yestail'
-        )
+        self.render_it("{ flag = '1'\n flag ? 'yes' : 'no'\n !\n 'tail' }", eq='yestail')
 
         # Multi-line python attribute access works inside `(...)` because
         # both Python and our normalize preserve the newline there.
-        self.render_it(
-            "{ s = \"'hi'\"\n  print(s.\n        upper())\n  '' }",
-            eq='HI',
-        )
+        self.render_it("{ s = \"'hi'\"\n  print(s.\n        upper())\n  '' }", eq='HI')
 
         # Multi-line subscript and chained AOE — bracket and `=`
         # continuations respectively.

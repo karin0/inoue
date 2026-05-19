@@ -1,26 +1,27 @@
-import os
-import math
 import asyncio
+import math
+import os
+
 from datetime import timedelta
 
-from telegram import Message, Document, Audio, Video
+from telegram import Audio, Document, Message, Video
 from telegram.constants import ChatAction
 
 from bot import (
-    create_task,
-    escape,
-    Responder,
     EditHandle,
-    VoicePayload,
     MessageArg,
     RequireDefer,
+    Responder,
+    VoicePayload,
     command,
+    create_task,
+    escape,
 )
 
-from .log import log
 from .ctx import get_context
 from .ffmpeg import encode_voice
-from .ytdlp import run_ytdlp, extract_url, Output
+from .log import log
+from .ytdlp import Output, extract_url, run_ytdlp
 
 VOICE_ASSETS_DIR = 'assets/voice'
 
@@ -40,10 +41,7 @@ async def convert_voice(
 ) -> None:
     log.info('Attachment: %s', attachment)
 
-    if isinstance(raw_duration, timedelta):
-        duration = raw_duration.total_seconds()
-    else:
-        duration = raw_duration
+    duration = raw_duration.total_seconds() if isinstance(raw_duration, timedelta) else raw_duration
 
     if isinstance(attachment, Output):
         # Path to an external file.
@@ -85,10 +83,7 @@ async def convert_voice(
         async def _refresh():
             nonlocal status
 
-            if settings:
-                text = '\n'.join(s for s in settings if s)
-            else:
-                text = info
+            text = '\n'.join(s for s in settings if s) if settings else info
 
             # This needs to be serialized with a queue.
             if status is None:
@@ -146,24 +141,18 @@ async def convert_voice(
             file_path = str(src)
 
     log.info('Encoding voice from %s', file_path)
-    duration, data, bitrate_k = await encode_voice(
-        file_path, report, duration, bitrate_k, quality
-    )
+    duration, data, bitrate_k = await encode_voice(file_path, report, duration, bitrate_k, quality)
     if queue is not None:
         queue.put_nowait(None)
     report(2, f'Encoded into {len(data)} bytes at {bitrate_k} kbps')
-    await rs.reply(
-        media=VoicePayload(data, math.ceil(duration) if duration >= 0 else None)
-    )
+    await rs.reply(media=VoicePayload(data, math.ceil(duration) if duration >= 0 else None))
 
 
-def extract_media(
-    msg: Message,
-) -> tuple[Media, int | timedelta] | None:
+def extract_media(msg: Message) -> tuple[Media, int | timedelta] | None:
     if (media := msg.document) is not None:
         mime = media.mime_type
         log.debug('voice: document mime: %s', mime)
-        if mime and (mime.startswith('audio') or mime.startswith('video')):
+        if mime and (mime.startswith(('audio', 'video'))):
             return media, 0
     elif (media := msg.audio or msg.video) is not None:
         return media, media.duration
@@ -195,10 +184,7 @@ async def _handle_voice(
 
         quiet = 's' in arg
 
-        if (p := arg.find('k')) > 0 and arg[:p].isdigit():
-            bitrate_k = int(arg[:p])
-        else:
-            bitrate_k = 0
+        bitrate_k = int(arg[:p]) if (p := arg.find('k')) > 0 and arg[:p].isdigit() else 0
 
         await convert_voice(rs, *info, bitrate_k, quality, quiet)
 
@@ -210,15 +196,9 @@ async def _handle_voice(
 # Otherwise, the inline message would be sent before the voice is ready.
 @command(public=True)
 async def handle_voice(
-    rs: Responder,
-    msg: Message,
-    arg: MessageArg,
-    flush: RequireDefer,
-    as_command: bool = True,
+    rs: Responder, msg: Message, arg: MessageArg, flush: RequireDefer, as_command: bool = True
 ) -> bool:
-    info = extract_media(msg) or (
-        msg.reply_to_message and extract_media(msg.reply_to_message)
-    )
+    info = extract_media(msg) or (msg.reply_to_message and extract_media(msg.reply_to_message))
     parsed = None
     if info or (as_command and (parsed := extract_url(arg)) is not None):
         # An inline message cannot contain two media, so we have to skip sending

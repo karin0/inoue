@@ -1,14 +1,18 @@
-from typing import Awaitable
+from typing import TYPE_CHECKING
 
-from telegram import Message, InlineKeyboardMarkup
-from telegram.constants import ChatAction
 from telegram.error import BadRequest
 
 from . import env
-from .env import log
 from .app import bot
+from .env import log
 from .payload import MediaPayload, MediaPayloadWithInput, payload_has_input
-from .responder import Responder, EditHandle
+from .responder import EditHandle, Responder
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
+    from telegram import InlineKeyboardMarkup, Message
+    from telegram.constants import ChatAction
 
 
 async def edit_message(
@@ -43,7 +47,7 @@ async def edit_message(
                 parse_mode=parse_mode,
                 reply_markup=reply_markup,
             )
-        elif text:
+        if text:
             return await bot.edit_message_text(
                 text,
                 chat_id=chat_id,
@@ -53,16 +57,14 @@ async def edit_message(
                 reply_markup=reply_markup,
                 disable_web_page_preview=disable_web_page_preview,
             )
-        elif reply_markup is not None:
+        if reply_markup is not None:
             return await bot.edit_message_reply_markup(
                 chat_id=chat_id,
                 message_id=message_id,
                 inline_message_id=inline_message_id,
                 reply_markup=reply_markup,
             )
-        raise TypeError(
-            'Any of text, media, as_caption, or reply_markup must be provided'
-        )
+        raise TypeError('Any of text, media, as_caption, or reply_markup must be provided')
     except BadRequest as e:
         if allow_not_modified and 'Message is not modified' in str(e):
             log.info('Message not modified: %s', e)
@@ -74,10 +76,7 @@ class MessageEditHandle(EditHandle):
     __slots__ = ('chat_id', 'message_id', 'as_caption', 'inline_message_id', '_msg')
 
     def __init__(
-        self,
-        id: tuple[int, int] | str,
-        as_caption: bool = False,
-        message: Message | None = None,
+        self, id: tuple[int, int] | str, as_caption: bool = False, message: Message | None = None
     ):
         if isinstance(id, str):
             self.inline_message_id = id
@@ -150,8 +149,7 @@ class MessageEditHandle(EditHandle):
             )
 
     def edit_reply_markup(
-        self,
-        reply_markup: InlineKeyboardMarkup | None = None,
+        self, reply_markup: InlineKeyboardMarkup | None = None
     ) -> Awaitable[Message | bool]:
         return bot.edit_message_reply_markup(
             self.chat_id,
@@ -166,7 +164,7 @@ class MessageEditHandle(EditHandle):
 
 
 class MessageResponder(Responder):
-    __slots__ = 'msg'
+    __slots__ = ('msg',)
 
     def __init__(self, msg: Message):
         super().__init__()
@@ -203,9 +201,7 @@ class MessageResponder(Responder):
                     resp = await media.reply(m, text, parse_mode, reply_markup)
                 except BadRequest as e:
                     if 'too long' in str(e):
-                        log.info(
-                            '_do_reply: too long for caption, fallback to text: %s', e
-                        )
+                        log.info('_do_reply: too long for caption, fallback to text: %s', e)
                         resp = await media.reply(m, None, None, None)
                         if text:
                             resp = await _reply_text(text)
@@ -255,7 +251,6 @@ class MessageResponder(Responder):
                     disable_web_page_preview=disable_web_page_preview,
                     allow_not_modified=allow_not_modified,
                 )
-                return r
             except BadRequest as e:
                 if 'too long' in str(e):
                     if media is not None:
@@ -273,6 +268,8 @@ class MessageResponder(Responder):
                         env.driver[key] = str(resp.message_id)
                         return MessageEditHandle.from_message(resp)
                 raise
+            else:
+                return r
         except Exception as e:
             if isinstance(e, TypeError):
                 raise
@@ -290,13 +287,7 @@ class MessageResponder(Responder):
                 return r
 
             env.driver.discard(key)
-            log.warning(
-                'Failed to edit response: %s -> %s: %s: %s',
-                key,
-                val,
-                type(e).__name__,
-                e,
-            )
+            log.warning('Failed to edit response: %s -> %s: %s: %s', key, val, type(e).__name__, e)
             return await _do_reply()
 
     def reply_chat_action(self, action: ChatAction) -> Awaitable[bool]:
@@ -304,23 +295,13 @@ class MessageResponder(Responder):
 
     async def reply_copy(self, from_chat_id: int, message_id: int) -> MessageEditHandle:
         copied = await self.msg.reply_copy(
-            from_chat_id,
-            message_id,
-            do_quote=True,
-            allow_sending_without_reply=True,
+            from_chat_id, message_id, do_quote=True, allow_sending_without_reply=True
         )
-        return MessageEditHandle(
-            (self.msg.chat_id, copied.message_id), as_caption=False
-        )
+        return MessageEditHandle((self.msg.chat_id, copied.message_id), as_caption=False)
 
-    async def reply_forward(
-        self, from_chat_id: int, message_id: int
-    ) -> MessageEditHandle:
+    async def reply_forward(self, from_chat_id: int, message_id: int) -> MessageEditHandle:
         msg = await self.msg.get_bot().forward_message(
-            self.msg.chat_id,
-            from_chat_id,
-            message_id,
-            message_thread_id=self.msg.message_thread_id,
+            self.msg.chat_id, from_chat_id, message_id, message_thread_id=self.msg.message_thread_id
         )
         return MessageEditHandle.from_message(msg)
 

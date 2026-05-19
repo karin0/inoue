@@ -1,12 +1,12 @@
-import os
-import sys
-import time
-import atexit
 import asyncio
+import atexit
+import contextlib
+import os
+import time
 
-from telegram import Message, Update, User, MessageOriginChannel
-from telegram.ext import ContextTypes, BaseHandler
+from telegram import Message, MessageOriginChannel, Update, User
 from telegram.constants import ChatID
+from telegram.ext import BaseHandler, ContextTypes
 
 # aiohttp must be initialized after a event loop is set.
 try:
@@ -14,30 +14,22 @@ try:
 except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
-from bot import app, Responder, shorten
 
-from .ctx import use_context, Sender
-from .log import log, notify, trace
+from bot import Responder, app, shorten
+
+from . import media, misc, run  # noqa: F401
 from .commands import reply_usage
-from .env import (
-    ME,
-    USER_ID,
-    CHAN_ID,
-    GROUP_ID,
-    GUEST_USER_IDS,
-    IGNORE_CHAT_IDS,
-    LOCK_FILE,
-)
+from .ctx import Sender, use_context
+from .env import CHAN_ID, GROUP_ID, GUEST_USER_IDS, IGNORE_CHAT_IDS, LOCK_FILE, ME, USER_ID
 from .handlers import (
-    handle_msg,
-    handle_post,
     handle_callback_query,
-    handle_inline_query,
     handle_chosen_inline,
     handle_guest,
+    handle_inline_query,
+    handle_msg,
+    handle_post,
 )
-
-from . import misc, media, run  # noqa: F401, E401
+from .log import log, notify, trace
 
 
 async def handle_update(update: Update, _: ContextTypes.DEFAULT_TYPE):
@@ -89,10 +81,7 @@ async def handle_update(update: Update, _: ContextTypes.DEFAULT_TYPE):
         src = f'{src} (guest)'
         valid = True
 
-    if sender_id is not None:
-        sender = Sender(sender_id, sender_name or '', is_guest)
-    else:
-        sender = None
+    sender = Sender(sender_id, sender_name or '', is_guest) if sender_id is not None else None
 
     trace('Update from %s: %s', src, update)
 
@@ -137,11 +126,7 @@ async def handle_update(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
     if not valid:
         log.warning(
-            'Drop unauthorized update from %s: %s\nSender: %s\nChat: %s',
-            src,
-            update,
-            sender,
-            chat,
+            'Drop unauthorized update from %s: %s\nSender: %s\nChat: %s', src, update, sender, chat
         )
         return
 
@@ -160,9 +145,7 @@ async def handle_update(update: Update, _: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             with notify.revocable():
                 # Can be edited to successful responses later after user edits
-                log.exception(
-                    'handle_update: %s: %s\nFrom: %s', type(e).__name__, e, src
-                )
+                log.exception('handle_update: %s: %s\nFrom: %s', type(e).__name__, e, src)
 
     log.debug('Exiting after %.3f secs', time.perf_counter() - t0)
 
@@ -184,10 +167,8 @@ def get_lock():
 
 
 def drop_lock():
-    try:
+    with contextlib.suppress(OSError):
         os.remove(LOCK_FILE)
-    except OSError as e:
-        print(f'Failed to remove lock: {e}', file=sys.stderr)
     atexit.unregister(drop_lock)
 
 

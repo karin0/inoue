@@ -1,15 +1,17 @@
-import os
 import asyncio
+import os
 
-from telegram import Bot
-from telegram.ext import Application, ApplicationBuilder, ContextTypes
+from typing import TYPE_CHECKING
 
 from aiohttp import ClientTimeout
 from ptbcontrib.aiohttp_request import AiohttpRequest
-
+from telegram.ext import Application, ApplicationBuilder, ContextTypes
 
 from . import env
 from .env import log
+
+if TYPE_CHECKING:
+    from telegram import Bot
 
 
 async def _post_init(app: Application):
@@ -32,9 +34,7 @@ def _build_app() -> Application:
         ApplicationBuilder()
         .token(os.environ['TELEGRAM_BOT_TOKEN'])
         .request(AiohttpRequest(connection_pool_size=5, client_timeout=timeout))
-        .get_updates_request(
-            AiohttpRequest(connection_pool_size=5, client_timeout=timeout)
-        )
+        .get_updates_request(AiohttpRequest(connection_pool_size=5, client_timeout=timeout))
         .concurrent_updates(True)
         .post_init(_post_init)
         .post_stop(_post_stop)
@@ -43,11 +43,7 @@ def _build_app() -> Application:
     # Looks like http://127.0.0.1:8081/
     if url := os.environ.get('LOCAL_SERVER'):
         log.info('Using local server: %s', url)
-        builder = (
-            builder.base_url(url + 'bot')
-            .base_file_url(url + 'file/bot')
-            .local_mode(True)
-        )
+        builder = builder.base_url(url + 'bot').base_file_url(url + 'file/bot').local_mode(True)
 
     app = builder.build()
     app.add_error_handler(handle_error)

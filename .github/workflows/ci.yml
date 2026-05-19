@@ -7,7 +7,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
       - run: uv sync --all-extras --upgrade
-      - run: uv run black --check -S .
       - run: uv run ruff check .
+      - run: uv run ruff format --check .
       - run: uv run pyright .
       - run: uv run python -m render_core.test_render

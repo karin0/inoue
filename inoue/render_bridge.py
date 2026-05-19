@@ -1,43 +1,43 @@
-import os
-import gc
-import sys
-import time
-import base64
 import asyncio
+import base64
+import gc
 import inspect
-import tempfile
+import os
 import subprocess
+import sys
+import tempfile
+import time
 
+from collections.abc import Callable, Coroutine, MutableMapping
+from datetime import datetime
 from functools import wraps
 from types import MethodType
-from datetime import datetime
-from collections.abc import MutableMapping
+from typing import TYPE_CHECKING, Any, Concatenate, cast
 from weakref import WeakSet, WeakValueDictionary, ref
-from typing import Any, Callable, Concatenate, Coroutine, cast, TYPE_CHECKING
 
-from render_core import Box, Value, Fragment, to_str
-from bot import create_task, Responder, escape, html_escape
+from bot import Responder, create_task, escape, html_escape
+from render_core import Box, Fragment, Value, to_str
 
 from .log import log
-from .text import cleanup_text, cleanup_text_md
-from .utils import reroute_cmd
 from .motto import hitokoto
 from .segments import (
     BaseElement,
-    Segment,
+    BlockQuote,
+    Bold,
+    Code,
     Element,
-    Style,
+    Italic,
     Link,
     Pre,
-    BlockQuote,
     Raw,
-    Code,
-    Bold,
-    Italic,
-    Underline,
-    Strikethrough,
+    Segment,
     Spoiler,
+    Strikethrough,
+    Style,
+    Underline,
 )
+from .text import cleanup_text, cleanup_text_md
+from .utils import reroute_cmd
 
 if TYPE_CHECKING:
     from .render import RenderContext
@@ -148,12 +148,7 @@ class Promise[T: PromiseResult](Box):
             r = prev.result()
         except Exception as e:
             log.error(
-                'Promise: exception: %r, %r: %s: %s',
-                self,
-                prev,
-                type(e).__name__,
-                e,
-                exc_info=e,
+                'Promise: exception: %r, %r: %s: %s', self, prev, type(e).__name__, e, exc_info=e
             )
             self._resolve(None)
         else:
@@ -197,7 +192,10 @@ def _repr(obj, vis: set[int]) -> str:
         inner = obj._inner
         n = len(obj._next)
         if isinstance(inner, list):
-            return f'<Promise({len(inner)}/{n}): {_repr_list(inner, vis)} func={getattr(obj, '_func', '/')}>'
+            return (
+                f'<Promise({len(inner)}/{n}): {_repr_list(inner, vis)} '
+                f'func={getattr(obj, "_func", "/")}>'
+            )
         return f'<Promise(resolved/{n}): {_repr(inner[0], vis)}>'
     finally:
         vis.remove(x)
@@ -265,17 +263,15 @@ def public[**P, R](func: Callable[P, R], name: str | None = None) -> Callable[P,
 
 
 def trusted[**P, R](
-    func: Callable[Concatenate['Bridge', P], R] | Callable[P, R],
-    *,
-    name: str | None = None,
-) -> Callable[Concatenate['Bridge', P], R]:
+    func: Callable[Concatenate[Bridge, P], R] | Callable[P, R], *, name: str | None = None
+) -> Callable[Concatenate[Bridge, P], R]:
     name, is_method = _inspect(func, name=name)
 
     if is_method:
         func = cast(Callable[Concatenate['Bridge', P], R], func)
 
         @wraps(func)
-        def wrapper(self: 'Bridge', *args: P.args, **kwargs: P.kwargs) -> R:
+        def wrapper(self: Bridge, *args: P.args, **kwargs: P.kwargs) -> R:
             if self._trusted is None:
                 log.warning('Bridge: unauthorized access to %s', name)
                 raise PermissionError('unauthorized')
@@ -284,19 +280,18 @@ def trusted[**P, R](
 
         _methods[name] = None  # noqa: F821
         return wrapper
-    else:
-        func = cast(Callable[P, R], func)
+    func = cast(Callable[P, R], func)
 
-        @wraps(func)
-        def wrapper2(self: 'Bridge', *args: P.args, **kwargs: P.kwargs) -> R:
-            if self._trusted is None:
-                log.warning('Bridge: unauthorized access to %s', name)
-                raise PermissionError('unauthorized')
-            log.debug('Bridge: authorized %s for %s', self._trusted, name)
-            return func(*args, **kwargs)
+    @wraps(func)
+    def wrapper2(self: Bridge, *args: P.args, **kwargs: P.kwargs) -> R:
+        if self._trusted is None:
+            log.warning('Bridge: unauthorized access to %s', name)
+            raise PermissionError('unauthorized')
+        log.debug('Bridge: authorized %s for %s', self._trusted, name)
+        return func(*args, **kwargs)
 
-        _methods[name] = wrapper2  # noqa: F821
-        return wrapper2
+    _methods[name] = wrapper2  # noqa: F821
+    return wrapper2
 
 
 def _format_task(task: asyncio.Task) -> str:
@@ -308,17 +303,11 @@ def _format_task(task: asyncio.Task) -> str:
         except Exception as e:
             state = f'exception: {type(e).__name__}: {e}'
         else:
-            if (r := task.result()) is not None:
-                state = f'done: {r!r}'
-            else:
-                state = 'done'
+            state = f'done: {r!r}' if (r := task.result()) is not None else 'done'
     else:
         state = 'pending'
 
-    if (coro := task.get_coro()) is not None:
-        name = coro.__qualname__
-    else:
-        name = '<unknown>'
+    name = coro.__qualname__ if (coro := task.get_coro()) is not None else '<unknown>'
 
     return f'<{task.get_name()} ({name}): {state}>'
 
@@ -330,7 +319,7 @@ class Tasks:
         self._tasks: set[asyncio.Task] = set()
 
     def __repr__(self) -> str:
-        return f'Tasks[{', '.join(_format_task(t) for t in self._tasks)}]'
+        return f'Tasks[{", ".join(_format_task(t) for t in self._tasks)}]'
 
     def __bool__(self) -> bool:
         return bool(self._tasks)
@@ -425,7 +414,7 @@ class Bridge(Box):
             raise RuntimeError('Bridge: context gone')
         return r
 
-    def _finalize(self, ref):
+    def _finalize(self, _ref):
         # Break the reference cycle, since the Context can hold references to
         # `Bridge` and `SubDoc` (which holds `Engine`).
         self._ctx.clear()
@@ -437,10 +426,7 @@ class Bridge(Box):
                 os.remove(file)
             except OSError as e:
                 log.error(
-                    'Bridge: failed to remove temp file %r: %s: %s',
-                    file,
-                    type(e).__name__,
-                    e,
+                    'Bridge: failed to remove temp file %r: %s: %s', file, type(e).__name__, e
                 )
             else:
                 cnt += 1
@@ -478,7 +464,7 @@ class Bridge(Box):
         return self._promise(_communicate(to_str(cmd), to_str(input)))
 
     @trusted
-    def mkstemp(self, *args, **kwargs) -> 'LocalPath':
+    def mkstemp(self, *args, **kwargs) -> 'LocalPath':  # noqa: UP037
         if isinstance(self._tasks, str):
             raise RuntimeError(self._tasks)
         fd, path = tempfile.mkstemp(*args, **kwargs)
@@ -495,10 +481,10 @@ class Bridge(Box):
             def print(*args):
                 res.extend(repr(arg) for arg in args)
 
-            exec(code, globals={'print': print}, locals=self._ctx)
+            exec(code, globals={'print': print}, locals=self._ctx)  # noqa: S102
             return '\n'.join(res)
 
-        return eval(code, locals=self._ctx)
+        return eval(code, locals=self._ctx)  # noqa: S307
 
     @public
     def escalate(self) -> None:
@@ -516,9 +502,7 @@ class Bridge(Box):
             raise ValueError('sleep: too long')
         return self._promise(asyncio.sleep(seconds))
 
-    async def _reroute_cmd(
-        self, rs: Responder, cmd: str
-    ) -> Fragment[Raw | str] | Raw | str | None:
+    async def _reroute_cmd(self, rs: Responder, cmd: str) -> Fragment[Raw | str] | Raw | str | None:
         r = await reroute_cmd(rs, cmd)
         log.info('Bridge: exec %r: %r', cmd, r)
         if r is None:
@@ -530,10 +514,7 @@ class Bridge(Box):
             return Raw(text) if parse_mode == 'MarkdownV2' else text
         if r:
             return Fragment(
-                [
-                    Raw(text) if parse_mode == 'MarkdownV2' else text
-                    for text, parse_mode in r
-                ]
+                [Raw(text) if parse_mode == 'MarkdownV2' else text for text, parse_mode in r]
             )
 
     @public
@@ -586,7 +567,7 @@ trusted(repr)
 
 @trusted
 def system(cmd: str) -> str:
-    result = subprocess.check_output(
+    result = subprocess.check_output(  # noqa: S602
         cmd,
         shell=True,
         text=True,
@@ -609,10 +590,7 @@ def top(do_gc: bool = False) -> Fragment[str]:
         [
             info + '\n',
             *sorted(f'[{id(o)} {sys.getrefcount(o)}] {o!r}\n' for o in INSTANCES),
-            *(
-                f'[{id(o)} {sys.getrefcount(o)} {k}]: {o!r}\n'
-                for k, o in TASK_GROUPS.items()
-            ),
+            *(f'[{id(o)} {sys.getrefcount(o)} {k}]: {o!r}\n' for k, o in TASK_GROUPS.items()),
         ]
     )
 
@@ -631,11 +609,11 @@ async def _communicate(cmd: str, input: str | None) -> dict[str, Value]:
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(buf), timeout=10)
         returncode = proc.returncode
-    except asyncio.TimeoutError:
+    except TimeoutError:
         proc.terminate()
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=5)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             proc.kill()
             stdout, stderr = await proc.communicate()
             returncode = proc.returncode
@@ -649,11 +627,7 @@ async def _communicate(cmd: str, input: str | None) -> dict[str, Value]:
     elapsed = time.perf_counter() - t0
     stdout = stdout.decode(errors='replace').strip()
     stderr = stderr.decode(errors='replace').strip()
-    r = {
-        'stdout': stdout,
-        'stderr': stderr,
-        'elapsed': elapsed,
-    }
+    r = {'stdout': stdout, 'stderr': stderr, 'elapsed': elapsed}
     if returncode is not None:
         r['returncode'] = returncode
     return r
@@ -765,7 +739,7 @@ class Deferred(Box, BaseElement):
         self._func = func
 
     @property
-    def inner(self) -> Segment:  # type: ignore
+    def inner(self) -> Segment:  # pyright: ignore[reportIncompatibleVariableOverride]
         r = to_segment(self._func())
         log.debug('fc: got %r from %r', r, self._func)
         return r

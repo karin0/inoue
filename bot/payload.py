@@ -1,28 +1,13 @@
+from contextlib import AbstractContextManager, contextmanager
+from dataclasses import dataclass
 from io import FileIO
 from pathlib import Path
-from dataclasses import dataclass
-from contextlib import contextmanager
-from typing import (
-    Any,
-    Awaitable,
-    ClassVar,
-    ContextManager,
-    Iterator,
-    Protocol,
-    TypeGuard,
-    cast,
-)
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, TypeGuard, cast
 
 from telegram import (
-    Message,
-    InlineKeyboardMarkup,
-    ReplyParameters,
     Audio,
     Document,
-    PhotoSize,
-    Sticker,
-    Video,
-    Voice,
+    InlineKeyboardMarkup,
     InlineQueryResult,
     InlineQueryResultCachedAudio,
     InlineQueryResultCachedDocument,
@@ -35,11 +20,20 @@ from telegram import (
     InputMediaDocument,
     InputMediaPhoto,
     InputMediaVideo,
+    Message,
+    PhotoSize,
+    ReplyParameters,
+    Sticker,
+    Video,
+    Voice,
 )
 
 from . import env
-from .env import log
 from .app import bot
+from .env import log
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Iterator
 
 type Media = Audio | Document | PhotoSize | Sticker | Video | Voice
 CACHED_MEDIA_TYPES = (Audio, Document, PhotoSize, Sticker, Video, Voice, str)
@@ -125,12 +119,8 @@ class MediaPayload[T: Content](Protocol):
                 caption=caption,
                 parse_mode=parse_mode,
                 reply_markup=reply_markup,
-                message_thread_id=(
-                    msg.message_thread_id if msg.is_topic_message else None
-                ),
-                reply_parameters=ReplyParameters(
-                    msg.message_id, allow_sending_without_reply=True
-                ),
+                message_thread_id=(msg.message_thread_id if msg.is_topic_message else None),
+                reply_parameters=ReplyParameters(msg.message_id, allow_sending_without_reply=True),
                 direct_messages_topic_id=(
                     None
                     if msg.direct_messages_topic is None
@@ -147,10 +137,7 @@ class MediaPayload[T: Content](Protocol):
         id: str = 'noop',
         title: str = 'noop',
     ) -> InlineQueryResult:
-        if isinstance(content := self.content, str):
-            file_id = content
-        else:
-            file_id = content.file_id
+        file_id = content if isinstance((content := self.content), str) else content.file_id
         return self._as_inline_result(
             file_id, caption, parse_mode, reply_markup, id=id, title=title
         )
@@ -164,11 +151,10 @@ class MediaPayload[T: Content](Protocol):
     @staticmethod
     def extract(msg: Message, kind: str | None = None) -> MediaPayload[Media] | None:
         media: Media | tuple[PhotoSize, ...] | None
-        if kind is not None:
-            if media := getattr(msg, kind):
-                if isinstance(media, (tuple, list)):
-                    media = media[-1]
-                return ALL_PAYLOAD[kind](media)
+        if kind is not None and (media := getattr(msg, kind)):
+            if isinstance(media, (tuple, list)):
+                media = media[-1]
+            return ALL_PAYLOAD[kind](media)
 
         for k, typ in ALL_PAYLOAD.items():
             if media := getattr(msg, k, None):
@@ -187,7 +173,7 @@ class MediaPayload[T: Content](Protocol):
 
     def as_input(
         self, caption: str | None = None, parse_mode: str | None = None
-    ) -> ContextManager[InputMedia] | None:
+    ) -> AbstractContextManager[InputMedia] | None:
         return None
 
     def as_input_now(
@@ -199,7 +185,7 @@ class MediaPayload[T: Content](Protocol):
 
     def __repr__(self) -> str:
         c = self.content
-        return f'<{type(self).__name__}: {f'[{len(c)} bytes]' if isinstance(c, bytes) else c}>'
+        return f'<{type(self).__name__}: {f"[{len(c)} bytes]" if isinstance(c, bytes) else c}>'
 
 
 class MediaPayloadWithInput[T: Content](MediaPayload[T], Protocol):
@@ -270,10 +256,7 @@ class PhotoPayload[T: Content](MediaPayloadWithInput[T]):
         )
 
     def _as_input(
-        self,
-        c: ContentInput | PhotoSize,
-        caption: str | None = None,
-        parse_mode: str | None = None,
+        self, c: ContentInput | PhotoSize, caption: str | None = None, parse_mode: str | None = None
     ) -> InputMediaPhoto:
         return InputMediaPhoto(c, caption=caption, parse_mode=parse_mode)
 
@@ -334,10 +317,7 @@ class DocumentPayload[T: Content](MediaPayloadWithInput[T]):
         )
 
     def _as_input(
-        self,
-        c: ContentInput | Document,
-        caption: str | None = None,
-        parse_mode: str | None = None,
+        self, c: ContentInput | Document, caption: str | None = None, parse_mode: str | None = None
     ) -> InputMediaDocument:
         return InputMediaDocument(
             c,
@@ -409,10 +389,7 @@ class VideoPayload[T: Content](MediaPayloadWithInput[T]):
         )
 
     def _as_input(
-        self,
-        c: ContentInput | Video,
-        caption: str | None = None,
-        parse_mode: str | None = None,
+        self, c: ContentInput | Video, caption: str | None = None, parse_mode: str | None = None
     ) -> InputMediaVideo:
         return InputMediaVideo(
             c,
@@ -487,10 +464,7 @@ class AudioPayload[T: Content](MediaPayloadWithInput[T]):
         )
 
     def _as_input(
-        self,
-        c: ContentInput | Audio,
-        caption: str | None = None,
-        parse_mode: str | None = None,
+        self, c: ContentInput | Audio, caption: str | None = None, parse_mode: str | None = None
     ) -> InputMediaAudio:
         return InputMediaAudio(
             c,
@@ -624,7 +598,9 @@ class StickerPayload[T: Content](MediaPayload[T]):
         )
 
 
-type MediaPayloadType = VoicePayload | AudioPayload | VideoPayload | DocumentPayload | StickerPayload | PhotoPayload
+type MediaPayloadType = (
+    VoicePayload | AudioPayload | VideoPayload | DocumentPayload | StickerPayload | PhotoPayload
+)
 
 ALL_PAYLOAD: dict[str, type[MediaPayloadType]] = {
     typ.KIND: typ

@@ -1,8 +1,7 @@
-from typing import Iterator, Mapping
-from collections import UserDict, OrderedDict
-from collections.abc import ItemsView, MutableMapping
+from collections import OrderedDict, UserDict
+from collections.abc import ItemsView, Iterator, Mapping, MutableMapping
 
-from render_core import Context, Value, Box, is_value_type
+from render_core import Box, Context, Value, is_value_type
 
 from .db import db
 from .log import log

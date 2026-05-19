@@ -1,7 +1,7 @@
+import argparse
 import os
 import sys
 import time
-import argparse
 
 if 'TRACE' in os.environ:
     import logging
@@ -10,7 +10,7 @@ if 'TRACE' in os.environ:
     log.setLevel(logging.DEBUG)
     log.addHandler(logging.FileHandler('render_core_cli.log', 'w', 'utf-8'))
 
-from . import engine, Engine, Context
+from . import Context, Engine, engine
 
 engine.MAX_GAS = 1000000
 
@@ -33,12 +33,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('file')
     parser.add_argument('-p', '--profile', action='store_true', help='Enable cProfile')
-    parser.add_argument(
-        '-i',
-        '--instrument',
-        action='store_true',
-        help='Enable pyinstrument',
-    )
+    parser.add_argument('-i', '--instrument', action='store_true', help='Enable pyinstrument')
     parser.add_argument(
         '-c', '--dump-ctx', action='store_true', help='Dump context after rendering'
     )

@@ -1,5 +1,5 @@
+from collections.abc import Awaitable, Callable
 from contextlib import contextmanager
-from typing import Awaitable, Callable
 
 from telegram import (
     InlineKeyboardMarkup,
@@ -13,9 +13,9 @@ from telegram.error import BadRequest
 
 from . import env
 from .env import log
-from .payload import MediaPayload, MediaPayloadWithInput, payload_has_input
-from .responder import Responder, EditHandle
 from .message_responder import MessageEditHandle
+from .payload import MediaPayload, MediaPayloadWithInput, payload_has_input
+from .responder import EditHandle, Responder
 from .text import escape, html_escape, shorten, truncate_text
 
 type InlineMessageIdFactory = Callable[[Message, InlineQueryResult], Awaitable[str]]
@@ -42,9 +42,7 @@ class InlineResponder(Responder):
         '_message_key',
     )
 
-    def __init__(
-        self, msg: Message, inline_message_id: str | InlineMessageIdFactory
-    ) -> None:
+    def __init__(self, msg: Message, inline_message_id: str | InlineMessageIdFactory) -> None:
         super().__init__()
         self._msg = msg
         self._inline_message_id: str | InlineMessageIdFactory = inline_message_id
@@ -94,10 +92,7 @@ class InlineResponder(Responder):
         # When a pending voice is present, the caller (or dispatcher) must defer
         # our emission until the voice is ready.
         if isinstance(self._inline_message_id, str):
-            log.warning(
-                'InlineResponder: cannot defer with existing inline message: %s',
-                self,
-            )
+            log.warning('InlineResponder: cannot defer with existing inline message: %s', self)
             return None
 
         log.info('InlineResponder: deferred: %s', self)
@@ -167,10 +162,7 @@ class InlineResponder(Responder):
         frag = (text or '', parse_mode if text else None)
         if cached and (idx := self._cached_idx) is not None:
             log.debug(
-                'InlineResponder: editing fragment %d: %s -> %s',
-                idx,
-                self._fragments[idx],
-                frag,
+                'InlineResponder: editing fragment %d: %s -> %s', idx, self._fragments[idx], frag
             )
             self._fragments[idx] = frag
         else:
@@ -230,12 +222,8 @@ class InlineResponder(Responder):
                 disable_web_page_preview=self._disable_web_page_preview,
             )
 
-        if (media := self._media) is not None and (
-            media := await media.as_cached()
-        ) is not None:
-            result = media.as_inline_result(
-                text or None, parse_mode, self._reply_markup
-            )
+        if (media := self._media) is not None and (media := await media.as_cached()) is not None:
+            result = media.as_inline_result(text or None, parse_mode, self._reply_markup)
         else:
             result = InlineQueryResultArticle(
                 id='noop',
@@ -252,9 +240,7 @@ class InlineResponder(Responder):
         log.info('InlineResponder: emitted inline message: %s', r)
         return True
 
-    async def reply_copy(
-        self, from_chat_id: int, message_id: int
-    ) -> InlineFragmentHandle:
+    async def reply_copy(self, from_chat_id: int, message_id: int) -> InlineFragmentHandle:
         staged = await env.driver.stage_message(from_chat_id, message_id)
         text = staged.text or staged.caption or None
         if (cached := MediaPayload.extract(staged)) is not None:
@@ -262,17 +248,14 @@ class InlineResponder(Responder):
         # XXX: This drops the original entities.
         return await self.reply(text)
 
-    def reply_forward(
-        self, from_chat_id: int, message_id: int
-    ) -> Awaitable[InlineFragmentHandle]:
+    def reply_forward(self, from_chat_id: int, message_id: int) -> Awaitable[InlineFragmentHandle]:
         return self.reply_copy(from_chat_id, message_id)
 
 
 def _collapse_fragments(
-    fragments: list[tuple[str, str | None]],
-    is_text_only: bool,
+    fragments: list[tuple[str, str | None]], is_text_only: bool
 ) -> tuple[str, str | None]:
-    all_parse_modes = set(p for _, p in fragments)
+    all_parse_modes = {p for _, p in fragments}
     if len(all_parse_modes) == 1:
         parse_mode = all_parse_modes.pop()
         text = '\n\n'.join(t for t, _ in fragments if t)
@@ -287,9 +270,7 @@ def _collapse_fragments(
 
     # Markdown and HTML mixed: fallback to plain text.
     text = '\n\n'.join(t for t, _ in fragments if t)
-    limit = (
-        MessageLimit.MAX_TEXT_LENGTH if is_text_only else MessageLimit.CAPTION_LENGTH
-    )
+    limit = MessageLimit.MAX_TEXT_LENGTH if is_text_only else MessageLimit.CAPTION_LENGTH
     return truncate_text(text, limit), None
 
 
@@ -338,8 +319,7 @@ class InlineFragmentHandle(EditHandle):
         return r._emit()
 
     async def edit_reply_markup(
-        self,
-        reply_markup: InlineKeyboardMarkup | None = None,
+        self, reply_markup: InlineKeyboardMarkup | None = None
     ) -> Message | bool:
         r = self._rs
         if reply_markup is not None:

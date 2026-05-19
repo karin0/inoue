@@ -1,27 +1,24 @@
-import os
-import re
 import asyncio
 import codecs
+import os
+import re
 import subprocess
 
-from asyncio.subprocess import Process
-from typing import Awaitable, Callable, cast
+from typing import TYPE_CHECKING, cast
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction
 
-from bot import (
-    create_task,
-    Responder,
-    EditHandle,
-    command,
-    MessageArg,
-)
+from bot import EditHandle, MessageArg, Responder, command, create_task
 
+from .env import MAX_TEXT_LENGTH, ME
 from .log import log
-from .env import ME, MAX_TEXT_LENGTH
 from .misc import reply_file
 from .text import pre_block
+
+if TYPE_CHECKING:
+    from asyncio.subprocess import Process
+    from collections.abc import Awaitable, Callable
 
 UPDATE_CWD = os.environ.get('UPDATE_CWD')
 
@@ -61,10 +58,7 @@ async def _handle_cmd(rs: Responder, bin: str, *args, **kwargs):
             nonlocal evt
             await rs.reply_chat_action(ChatAction.TYPING)
             if evt:
-                futs = (
-                    asyncio.create_task(evt.wait()),
-                    asyncio.create_task(asyncio.sleep(3)),
-                )
+                futs = (asyncio.create_task(evt.wait()), asyncio.create_task(asyncio.sleep(3)))
                 await asyncio.wait(futs, return_when=asyncio.FIRST_COMPLETED)
                 if evt.is_set():
                     evt = None
@@ -87,7 +81,7 @@ async def producer(q: asyncio.Queue, pipe: asyncio.StreamReader):
         q.put_nowait(chunk)
 
 
-reg_file = re.compile(r'^' + re.escape(ME.upper()) + r'_SEND_FILE=(.+)$', re.M)
+reg_file = re.compile(r'^' + re.escape(ME.upper()) + r'_SEND_FILE=(.+)$', re.MULTILINE)
 
 SEND_LIMIT = 5
 
@@ -180,9 +174,7 @@ async def __handle_cmd(rs: Responder, child: Process, evt: asyncio.Event | None)
             try:
                 r = await reply_file(rs, text)
             except Exception as e:
-                r = await rs.reply(
-                    f'Failed to send file {text}: {type(e).__name__}: {e}',
-                )
+                r = await rs.reply(f'Failed to send file {text}: {type(e).__name__}: {e}')
         else:
             r = await rs.reply(text, parse_mode)
             final_msg = r
@@ -202,9 +194,7 @@ async def __handle_cmd(rs: Responder, child: Process, evt: asyncio.Event | None)
     text = rs.get_text()
     data = 'relay_' + text
     if len(data) <= InlineKeyboardButton.MAX_CALLBACK_DATA:
-        markup = InlineKeyboardMarkup.from_button(
-            InlineKeyboardButton(text, callback_data=data)
-        )
+        markup = InlineKeyboardMarkup.from_button(InlineKeyboardButton(text, callback_data=data))
     else:
         markup = None
 

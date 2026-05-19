@@ -1,31 +1,27 @@
 import inspect
-from itertools import islice
-from typing import Callable, Iterable, Awaitable, Protocol, cast, overload
 
-from telegram import CallbackQuery, Message, Bot
+from collections.abc import Awaitable, Callable, Iterable
+from itertools import islice
+from typing import Protocol, cast, overload
+
+from telegram import Bot, CallbackQuery, Message
 
 from . import env
-from .env import log
 from .app import bot
-from .responder import Responder
+from .env import log
 from .inline_responder import InlineResponder
+from .responder import Responder
 
 type MessageArg = str
 type CallbackData = str
 type RequireDefer = Callable[[], Awaitable[None]] | None
 
-type CallbackParam = Message | MessageArg | CallbackQuery | CallbackData | Bot | Responder | RequireDefer | str | int
+type CallbackParam = (
+    Message | MessageArg | CallbackQuery | CallbackData | Bot | Responder | RequireDefer | str | int
+)
 
 UNIQUE_PARAM_TYPES = frozenset(
-    (
-        Message,
-        MessageArg,
-        CallbackQuery,
-        CallbackData,
-        Bot,
-        Responder,
-        RequireDefer,
-    )
+    (Message, MessageArg, CallbackQuery, CallbackData, Bot, Responder, RequireDefer)
 )
 FREE_PARAM_TYPES = (str, int)
 
@@ -108,9 +104,7 @@ class Route[**P, T]:
 
             yield ty
 
-    def __call__(
-        self, rs: Responder | None, argv: Iterable[str] = (), **kwargs
-    ) -> Awaitable[T]:
+    def __call__(self, rs: Responder | None, argv: Iterable[str] = (), **kwargs) -> Awaitable[T]:
         log.debug('Calling route: %s: %r', self, argv)
         update = env.driver.get_update(rs, public=self.public)
 
@@ -165,11 +159,9 @@ class Route[**P, T]:
         return repr(self)
 
 
-def _wrap[**P, T](
-    func: Handler[P, T], public: bool
-) -> tuple[Route[P, T], Decorated[P, T]]:
+def _wrap[**P, T](func: Handler[P, T], public: bool) -> tuple[Route[P, T], Decorated[P, T]]:
     route = Route(func, public=public)
-    setattr(func, 'route', route)
+    func.route = route  # type: ignore[attr-defined]
     return route, cast(Decorated[P, T], func)
 
 
@@ -179,15 +171,11 @@ commands: dict[str, Route] = {}
 
 
 @overload
-def command[**P, T](
-    func: Handler[P, T], /, *, public: bool = False
-) -> Decorated[P, T]: ...
+def command[**P, T](func: Handler[P, T], /, *, public: bool = False) -> Decorated[P, T]: ...
 
 
 @overload
-def command[**P, T](
-    func: str | None = None, /, *, public: bool = False
-) -> Decorator[P, T]: ...
+def command[**P, T](func: str | None = None, /, *, public: bool = False) -> Decorator[P, T]: ...
 
 
 def command[**P, T](
@@ -236,9 +224,7 @@ def callback_query[**P, T](
     def decorator(func: Handler[P, T]) -> Decorated[P, T]:
         if filter is not None:
             if key is not None:
-                raise ValueError(
-                    'callback_query: key and filter cannot be used together'
-                )
+                raise ValueError('callback_query: key and filter cannot be used together')
             if not callable(filter):
                 raise TypeError('callback_query: filter must be callable')
             route, func = _wrap(func, public)
@@ -256,9 +242,7 @@ def callback_query[**P, T](
     return decorator
 
 
-def _dispatch_argv(
-    rs: Responder | None, data: str, map: dict[str, Route]
-) -> Awaitable | None:
+def _dispatch_argv(rs: Responder | None, data: str, map: dict[str, Route]) -> Awaitable | None:
     args = data.split('_')
     if (route := map.get(args[0])) is not None:
         return route(rs, islice(args, 1, None))

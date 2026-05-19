@@ -1,10 +1,10 @@
-from telegram import Message
+from telegram import Message  # noqa: TC002
 
-from bot import escape, Responder, MessageArg, command, start
+from bot import MessageArg, Responder, command, escape, start
 
 from .db import db
 from .log import log
-from .utils import get_msg_url, get_deep_link_url
+from .utils import get_deep_link_url, get_msg_url
 
 
 def extract_media(msg: Message) -> tuple[str, str] | None:
@@ -40,18 +40,14 @@ def handle_save(rs: Responder, msg: Message, arg: MessageArg):
         target = msg
     else:
         return rs.reply_cached(
-            r'Send or reply to a media message with `/save [title]` to save it\.',
-            'MarkdownV2',
+            r'Send or reply to a media message with `/save [title]` to save it\.', 'MarkdownV2'
         )
 
     file_name, file_id = info
     title = arg.strip() or file_name or ''
     is_new = db.save_media(target.chat_id, target.message_id, title, file_id)
     media_text = render_media(target.chat_id, target.message_id, title)
-    if is_new:
-        text = rf'Saved {media_text}'
-    else:
-        text = rf'Updated {media_text}'
+    text = rf'Saved {media_text}' if is_new else rf'Updated {media_text}'
     return rs.reply_cached(text, 'MarkdownV2')
 
 
@@ -87,7 +83,7 @@ def _format_item(row: tuple[int, int, int, str, int]) -> str:
     unsave_url = get_deep_link_url(f'unsave_{id}')
     title_text = render_title(title)
     return (
-        f'{escape(f'{id}.')} [{title_text}]({msg_url}) '
+        f'{escape(f"{id}.")} [{title_text}]({msg_url}) '
         f'\\| ![{unix}](tg://time?unix={unix}&format=DT) '
         f'\\| [play]({play_url}) \\| [remove]({unsave_url})'
     )

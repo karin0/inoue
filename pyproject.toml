@@ -24,7 +24,66 @@ ptbcontrib = { git = "https://github.com/python-telegram-bot/ptbcontrib.git", re
 dev = [
     "objgraph>=3.6.2",
     "ruff>=0.15.12",
-    "black>=26.3.1",
     "pyright>=1.1.409",
     "pyinstrument>=5.1.2",
 ]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "A",
+    "ANN",
+    "ARG",
+    "D",
+    "EM",
+    "ERA",
+    "FAST",
+    "FBT",
+    "PTH",
+    "COM812",
+
+    "B020",
+    "BLE001",
+    "DTZ005",
+    "DTZ006",
+    "FBT001",
+    "N818",
+    "PLC0415",
+    "PLW0603",
+    "PLW1508",
+    "PLW2901",
+    "RET503",
+    "RUF021",
+    "RUF022",
+    "RUF023",
+    "SLF001",
+    "TC006",
+    "TRY003",
+    "TRY004",
+
+    "TD",
+    "PLR",
+    "ASYNC230",
+    "ASYNC240",
+    "C901",
+    "FIX003",
+    "S101",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"*/cli.py" = ["T20"]
+"*/test*" = ["T20"]
+
+[tool.ruff.format]
+quote-style = "preserve"
+
+[tool.ruff.lint.flake8-quotes]
+docstring-quotes = "single"
+inline-quotes = "single"
+multiline-quotes = "single"
+
+[tool.ruff.lint.isort]
+lines-between-types = 1

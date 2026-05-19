@@ -1,9 +1,13 @@
 import atexit
 import logging
-from typing import Iterable, Sequence, cast
-from sqlite3 import connect, Connection
+
+from sqlite3 import Connection, connect
+from typing import TYPE_CHECKING, cast
 
 from .env import DB_FILE
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
 
 log = logging.getLogger(__name__)
 
@@ -115,7 +119,7 @@ class DataStore:
     def find_docs(self, kws: Sequence[str]) -> Iterable[tuple[int, str, int]]:
         if kws:
             cond = ' OR '.join('name LIKE ?' for _ in kws)
-            query = f'SELECT id, name, LENGTH(text) FROM Doc WHERE {cond} ORDER BY id;'
+            query = f'SELECT id, name, LENGTH(text) FROM Doc WHERE {cond} ORDER BY id;'  # noqa: S608
             args = tuple(f'%{kw}%' for kw in kws)
             yield from self.conn.execute(query, args)
         else:
@@ -166,9 +170,7 @@ class DataStore:
             yield row[0]
 
     def count_prefix(self, prefix: str) -> int:
-        cursor = self.conn.execute(
-            'SELECT COUNT(*) FROM KV WHERE key LIKE ?;', (prefix + '%',)
-        )
+        cursor = self.conn.execute('SELECT COUNT(*) FROM KV WHERE key LIKE ?;', (prefix + '%',))
         return cursor.fetchone()[0]
 
     def get_command(self, name: str) -> str | None:
@@ -195,13 +197,10 @@ class DataStore:
         for row in cursor:
             yield row[0]
 
-    def save_media(
-        self, chat_id: int, message_id: int, title: str, file_id: str
-    ) -> bool:
+    def save_media(self, chat_id: int, message_id: int, title: str, file_id: str) -> bool:
         with self.conn:
             existing = self.conn.execute(
-                'SELECT 1 FROM Media WHERE chat_id = ? AND message_id = ?;',
-                (chat_id, message_id),
+                'SELECT 1 FROM Media WHERE chat_id = ? AND message_id = ?;', (chat_id, message_id)
             ).fetchone()
             self.conn.execute(
                 '''INSERT INTO Media (chat_id, message_id, title, file_id)
@@ -213,9 +212,7 @@ class DataStore:
         return not existing
 
     def get_media(self, id: int) -> tuple[int, int] | None:
-        cursor = self.conn.execute(
-            'SELECT chat_id, message_id FROM Media WHERE id = ?;', (id,)
-        )
+        cursor = self.conn.execute('SELECT chat_id, message_id FROM Media WHERE id = ?;', (id,))
         if row := cursor.fetchone():
             return row[0], row[1]
 
@@ -228,17 +225,14 @@ class DataStore:
         return None
 
     def random_media_file_id(self) -> str | None:
-        cursor = self.conn.execute(
-            'SELECT file_id FROM Media ORDER BY RANDOM() LIMIT 1;'
-        )
+        cursor = self.conn.execute('SELECT file_id FROM Media ORDER BY RANDOM() LIMIT 1;')
         if row := cursor.fetchone():
             return row[0]
         return None
 
     def has_media(self, chat_id: int, message_id: int) -> bool:
         cursor = self.conn.execute(
-            'SELECT 1 FROM Media WHERE chat_id = ? AND message_id = ?;',
-            (chat_id, message_id),
+            'SELECT 1 FROM Media WHERE chat_id = ? AND message_id = ?;', (chat_id, message_id)
         )
         return cursor.fetchone() is not None
 
@@ -267,9 +261,7 @@ class DataStore:
         return None
 
     def get_todos(self) -> list[tuple[int, str]]:
-        return self.conn.execute(
-            'SELECT id, text FROM Todo ORDER BY id DESC;'
-        ).fetchall()
+        return self.conn.execute('SELECT id, text FROM Todo ORDER BY id DESC;').fetchall()
 
     def delete_todo(self, task_id: int):
         with self.conn:

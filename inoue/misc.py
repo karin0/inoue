@@ -1,10 +1,14 @@
 import os
-from typing import Iterable
-from pathlib import Path
 
-from bot import Responder, DocumentPayload, MessageArg, command
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from bot import DocumentPayload, MessageArg, Responder, command
 
 from .text import pre_block
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 
 def parse_sort(arg: str) -> Iterable[int]:

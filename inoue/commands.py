@@ -1,25 +1,29 @@
+import asyncio
 import re
 import shlex
-import asyncio
-from typing import Awaitable, TYPE_CHECKING
+
+from typing import TYPE_CHECKING
 
 from telegram import (
-    User,
     Bot,
-    BotCommandScopeDefault,
     BotCommandScopeChat,
     BotCommandScopeChatAdministrators,
+    BotCommandScopeDefault,
+    User,
 )
 
-from bot import escape, Responder, MessageArg, command, commands
+from bot import MessageArg, Responder, command, commands, escape
 
 from .ctx import get_context
-from .log import log
-from .env import ME, CHAN_ID, TRUSTED_IDS
 from .db import db
+from .env import CHAN_ID, ME, TRUSTED_IDS
+from .log import log
 from .motto import greeting, hitokoto
 from .run import handle_cmd
 from .text import pre_block, pre_block_raw
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable
 
 try:
     from conf import reply_usage  # pyright: ignore[reportMissingImports]
@@ -106,8 +110,7 @@ def set_commands(bot: Bot):
         if route.public or name == 'start':
             public_cmds.append((name, name))
 
-    for name in db.iter_commands():
-        cmds.append((name, name))
+    cmds.extend((name, name) for name in db.iter_commands())
 
     return asyncio.gather(
         bot.set_my_commands(public_cmds, BotCommandScopeDefault()),
@@ -115,9 +118,7 @@ def set_commands(bot: Bot):
             (
                 bot.set_my_commands(cmds, BotCommandScopeChat(chat_id))
                 if chat_id > 0
-                else bot.set_my_commands(
-                    cmds, BotCommandScopeChatAdministrators(chat_id)
-                )
+                else bot.set_my_commands(cmds, BotCommandScopeChatAdministrators(chat_id))
             )
             for chat_id in TRUSTED_IDS
             if chat_id != CHAN_ID
@@ -136,7 +137,10 @@ def stats(me: User, header: str = ME) -> tuple[str, str]:
     kv.append(f'tot: {tot}')
     kv = ', '.join(kv)
     log.info('%s (%s)', info, kv)
-    text = f'{escape(greeting())}\n{escape(hitokoto())}\n{pre_block_raw(f"{info}\n{kv}")}{pre_block_raw(str(me))}'
+    text = (
+        f'{escape(greeting())}\n{escape(hitokoto())}\n{pre_block_raw(f"{info}\n{kv}")}'
+        f'{pre_block_raw(str(me))}'
+    )
     return text, 'MarkdownV2'
 
 

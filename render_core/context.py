@@ -1,30 +1,15 @@
-import os
 import ast
-import weakref
-import logging
 import functools
+import logging
+import os
+import weakref
 
-from collections.abc import MutableMapping, Sequence
-from typing import (
-    Any,
-    Callable,
-    Iterator,
-    Literal,
-    TypeGuard,
-    Iterable,
-    Protocol,
-    cast,
-    overload,
-)
+from collections.abc import Callable, Iterable, Iterator, MutableMapping, Sequence
+from typing import Any, Literal, Protocol, TypeGuard, cast, overload
 
-from simpleeval import (
-    SimpleEval,
-    DEFAULT_FUNCTIONS,
-    DEFAULT_OPERATORS,
-    DISALLOW_FUNCTIONS,
-)
+from simpleeval import DEFAULT_FUNCTIONS, DEFAULT_OPERATORS, DISALLOW_FUNCTIONS, SimpleEval
 
-from .tco import Tco, TCO
+from .tco import TCO, Tco
 
 log = logging.getLogger(__package__)
 is_tracing = os.environ.get('TRACE') == '1'
@@ -215,7 +200,10 @@ class Fragment[T: Value](Box, Sequence[T]):
 
 
 def trim_output(s: str, keep_newline: bool = True) -> str:
-    '''Trim leading and trailing whitespace, but may keep a line break if the trailing whitespaces contain any.'''
+    '''
+    Trim leading and trailing whitespace, but may keep a line break if the trailing
+    whitespaces contain any.
+    '''
     if not keep_newline:
         return s.strip()
 
@@ -229,7 +217,7 @@ def trim_output(s: str, keep_newline: bool = True) -> str:
 class ScopeProxy:
     __slots__ = ('_ctx', '_prefix')
 
-    def __init__(self, ctx: 'ScopedContext', prefix: str):
+    def __init__(self, ctx: ScopedContext, prefix: str):
         self._ctx = ctx
         self._prefix = prefix
 
@@ -265,15 +253,7 @@ EMPTY = {}
 
 
 class ScopedContext[T]:
-    __slots__ = (
-        '_scopes',
-        '_prefixes',
-        '_data',
-        '_cb',
-        '_injected',
-        '_eval_str',
-        '_eval',
-    )
+    __slots__ = ('_scopes', '_prefixes', '_data', '_cb', '_injected', '_eval_str', '_eval')
 
     def __init__(self, ctx: Context, callbacks: ContextCallbacks[T]):
         self._scopes: list[str] = ['']
@@ -296,7 +276,7 @@ class ScopedContext[T]:
         nodes[ast.AugAssign] = self._eval_augassign
         nodes[ast.Yield] = self._eval_yield
 
-    def _finalize(self, ref):
+    def _finalize(self, _ref):
         # Break the reference cycle for instant GC.
         nodes = self._eval_str.__self__.nodes
         assert nodes
@@ -340,9 +320,7 @@ class ScopedContext[T]:
         trace('Got var: %s = %r', key, val)
         return key, to_str(val) if as_str else val
 
-    def get(
-        self, key: str, *, as_str: bool = False, allow_undef: bool = False
-    ) -> Value:
+    def get(self, key: str, *, as_str: bool = False, allow_undef: bool = False) -> Value:
         _, val = self.resolve_raw(key, as_str=as_str)
         if val is not None:
             return val
@@ -353,9 +331,7 @@ class ScopedContext[T]:
             if is_value_type(val := func()):
                 return val
             if val is not None:
-                log.error(
-                    'Unsafe function result: %s() -> %r (%r)', key, val, type(val)
-                )
+                log.error('Unsafe function result: %s() -> %r (%r)', key, val, type(val))
             return ''
 
         if not allow_undef:
@@ -463,9 +439,7 @@ class ScopedContext[T]:
             return tuple(try_to_value_or_none(v) for v in r)
 
         if isinstance(r, dict):
-            return {
-                try_to_value_or_none(k): try_to_value_or_none(v) for k, v in r.items()
-            }
+            return {try_to_value_or_none(k): try_to_value_or_none(v) for k, v in r.items()}
 
         return fix_to_str(r)
 
@@ -498,7 +472,7 @@ class ScopedContext[T]:
             trace('_eval_compare: %s', ast.dump(node))
         self._cb._consume_gas()
         right = self._eval(node.left)
-        for operation, comp in zip(node.ops, node.comparators):
+        for operation, comp in zip(node.ops, node.comparators, strict=False):
             left = right
             right = self._eval(comp)
 
@@ -526,12 +500,7 @@ class ScopedContext[T]:
         op = DEFAULT_OPERATORS[type(node.op)]
         self.do_augassign(node.target.id, op, right)
 
-    def do_augassign(
-        self,
-        key: str,
-        op: Callable[[Any, Any], Any],
-        right: Value,
-    ) -> Value:
+    def do_augassign(self, key: str, op: Callable[[Any, Any], Any], right: Value) -> Value:
         # Only modifying variables in the current scope is allowed.
         key = self.current_key(key)
         if (left := self._data.get(key)) is None:
@@ -576,16 +545,12 @@ class ScopedContext[T]:
         return f'(yield {idx})'
 
     @overload
-    def eval(
-        self, expr: str, *, allow_tco: Literal[True]
-    ) -> Value | tuple[Any, tuple, dict]: ...
+    def eval(self, expr: str, *, allow_tco: Literal[True]) -> Value | tuple[Any, tuple, dict]: ...
 
     @overload
     def eval(self, expr: str, *, allow_tco: Literal[False] = False) -> Value: ...
 
-    def eval(
-        self, expr: str, *, allow_tco: bool = False
-    ) -> Value | tuple[Box, tuple, dict]:
+    def eval(self, expr: str, *, allow_tco: bool = False) -> Value | tuple[Box, tuple, dict]:
         self._cb._consume_gas()
         tree = parse_ast(expr)
         if is_tracing:
@@ -601,13 +566,7 @@ class ScopedContext[T]:
                 key, val = self.resolve_raw(func)
                 if isinstance(val, Box):
                     if is_tracing:
-                        trace(
-                            'eval: TCO: %s -> %s\n  %s = %r',
-                            expr,
-                            ast.dump(node),
-                            key,
-                            val,
-                        )
+                        trace('eval: TCO: %s -> %s\n  %s = %r', expr, ast.dump(node), key, val)
                     args = tuple(self._eval(a) for a in node.args)
                     kwargs = dict(self._eval(k) for k in node.keywords)
                     return val, args, kwargs

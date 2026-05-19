@@ -1,5 +1,6 @@
 from enum import Enum, auto
 from typing import Any, Final, Literal
+
 from lark import Tree
 
 

@@ -1,12 +1,15 @@
-from typing import NamedTuple
-from contextvars import ContextVar
 from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import TYPE_CHECKING, NamedTuple
 
-from telegram import Message, Update
 from telegram.constants import ChatType
 
-from bot import Responder
 from .env import USER_ID
+
+if TYPE_CHECKING:
+    from telegram import Message, Update
+
+    from bot import Responder
 
 
 class Sender(NamedTuple):
@@ -66,11 +69,7 @@ def is_admin(update: Update, msg: Message) -> bool:
 
 
 @contextmanager
-def use_context(
-    update: Update,
-    rs: Responder | None,
-    sender: Sender | None,
-):
+def use_context(update: Update, rs: Responder | None, sender: Sender | None):
     # Only messages from USER_ID are allowed to be set in the context, since it's
     # used for `do_notify` to notify system events.
     if rs is not None and not is_admin(update, rs.get_message()):

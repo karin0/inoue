@@ -1,5 +1,6 @@
 from typing import TYPE_CHECKING
-from telegram import Message, Update, InlineQueryResult
+
+from telegram import InlineQueryResult, Message, Update
 
 from .env import log
 
@@ -33,9 +34,7 @@ class UpdateProxy:
             return m.from_user
 
         # XXX: PTB does not set `from_user` from channel posts.
-        if (
-            m := self._update.channel_post or self._update.edited_channel_post
-        ) is not None:
+        if (m := self._update.channel_post or self._update.edited_channel_post) is not None:
             log.debug('UpdateProxy: use from_user from channel post: %s', m)
             return m.from_user
 

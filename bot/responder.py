@@ -1,20 +1,23 @@
 import asyncio
-from datetime import datetime
-from contextlib import contextmanager
-from typing import Awaitable, Iterator, Protocol, TYPE_CHECKING
 
-from telegram import Message, Update, InlineKeyboardMarkup, User, Chat
-from telegram.constants import ChatType, ChatAction
+from contextlib import contextmanager
+from datetime import datetime
+from typing import TYPE_CHECKING, Protocol
+
+from telegram import Chat, InlineKeyboardMarkup, Message, Update, User
+from telegram.constants import ChatAction, ChatType
 
 from . import env
-from .env import log
 from .app import create_task
+from .env import log
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Iterator
+
     from .dispatch import Route
-    from .payload import MediaPayload, MediaPayloadWithInput
-    from .message_responder import MessageEditHandle
     from .future import UpdateExt
+    from .message_responder import MessageEditHandle
+    from .payload import MediaPayload, MediaPayloadWithInput
 
 # A responder is a wrapped `Message` that enforces an edit-after-reply pattern.
 # It takes care of default reply parameters, media payload, inline message adaptation,
@@ -60,13 +63,9 @@ class Responder(Protocol):
             allow_not_modified=allow_not_modified,
         )
 
-    def reply_copy(
-        self, from_chat_id: int, message_id: int
-    ) -> Awaitable[EditHandle]: ...
+    def reply_copy(self, from_chat_id: int, message_id: int) -> Awaitable[EditHandle]: ...
 
-    def reply_forward(
-        self, from_chat_id: int, message_id: int
-    ) -> Awaitable[EditHandle]:
+    def reply_forward(self, from_chat_id: int, message_id: int) -> Awaitable[EditHandle]:
         '''
         Actually a forwarded message cannot have reply_parameters, but we provide
         this for convenience.
@@ -186,9 +185,9 @@ class Responder(Protocol):
 
 @staticmethod
 def _create_rs(update: UpdateExt) -> Responder | None:
-    from .message_responder import MessageResponder
-    from .inline_responder import InlineResponder
     from .future import answer_guest_query
+    from .inline_responder import InlineResponder
+    from .message_responder import MessageResponder
 
     if (
         msg := update.message
@@ -205,11 +204,7 @@ def _create_rs(update: UpdateExt) -> Responder | None:
         if mid := callback.inline_message_id:
             if msg is not None:
                 stub = Message(
-                    msg.message_id,
-                    msg.date,
-                    msg.chat,
-                    from_user=callback.from_user,
-                    text='',
+                    msg.message_id, msg.date, msg.chat, from_user=callback.from_user, text=''
                 )
             else:
                 stub = _stub(callback.from_user)
@@ -227,9 +222,7 @@ def _create_rs(update: UpdateExt) -> Responder | None:
 
 
 def _stub(from_user: User) -> Message:
-    return Message(
-        0, datetime.now(), Chat(0, ChatType.SENDER), from_user=from_user, text=''
-    )
+    return Message(0, datetime.now(), Chat(0, ChatType.SENDER), from_user=from_user, text='')
 
 
 class EditHandle(Protocol):
@@ -255,8 +248,7 @@ class EditHandle(Protocol):
     ) -> Awaitable[Message | bool]: ...
 
     def edit_reply_markup(
-        self,
-        reply_markup: InlineKeyboardMarkup | None = None,
+        self, reply_markup: InlineKeyboardMarkup | None = None
     ) -> Awaitable[Message | bool]: ...
 
     def get_message_key(self) -> str | None:
@@ -270,7 +262,5 @@ class EditHandle(Protocol):
         from .message_responder import MessageEditHandle
 
         return MessageEditHandle(
-            (message.chat_id, message.message_id),
-            as_caption=message.text is None,
-            message=message,
+            (message.chat_id, message.message_id), as_caption=message.text is None, message=message
         )

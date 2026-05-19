@@ -1,19 +1,15 @@
+import contextlib
+
 from typing import Any
 
-from telegram import (
-    Bot,
-    Message,
-    CallbackQuery,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-)
+from telegram import Bot, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.error import BadRequest
 
 from bot import callback_query
 
 from .db import db
-from .log import log
 from .env import TODO_ID
+from .log import log
 
 
 def get_panel_id() -> int | None:
@@ -23,10 +19,8 @@ def get_panel_id() -> int | None:
 
 def set_panel_id(msg_id: int | None):
     if msg_id is None:
-        try:
+        with contextlib.suppress(KeyError):
             del db['todo_panel_id']
-        except KeyError:
-            pass
     else:
         db['todo_panel_id'] = str(msg_id)
 
@@ -46,7 +40,7 @@ def _build_panel() -> dict[str, Any] | None:
     n = len(tasks)
     log.info('_build_panel: %d tasks', n)
     if not n:
-        return
+        return None
 
     text = f'{n} tasks:'
     rows = tuple(

@@ -1,12 +1,13 @@
 import functools
-from typing import Callable, Sequence
+
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 
-from render_core import Box
 from bot import escape, html_escape
+from render_core import Box
 
-from .log import log
 from .env import MAX_TEXT_LENGTH
+from .log import log
 from .text import escape_pre
 
 type Segment = Sequence[Segment] | str | BaseElement
@@ -134,12 +135,10 @@ class BlockQuote(Element):
         if self.expandable:
             out.append('**')
             last = lines.pop()
-            for line in lines:
-                out.append(f'>{line}\n')
+            out.extend(f'>{line}\n' for line in lines)
             out.append(f'>{last}||\n')
         else:
-            for line in lines:
-                out.append(f'>{line}\n')
+            out.extend(f'>{line}\n' for line in lines)
 
 
 @dataclass(frozen=True, slots=True, repr=False, eq=False, match_args=False)
@@ -208,15 +207,12 @@ def to_plain(seg: Segment, out: list[str]) -> None:
 def get_renderer(parse_mode: str | None) -> Callable[[Segment, list[str]], None]:
     if parse_mode == 'MarkdownV2':
         return to_md
-    elif parse_mode == 'HTML':
+    if parse_mode == 'HTML':
         return to_html
-    else:
-        return to_plain
+    return to_plain
 
 
-def render_segment(
-    seg: Segment, func: Callable[[Segment, list[str]], None] = to_plain
-) -> str:
+def render_segment(seg: Segment, func: Callable[[Segment, list[str]], None] = to_plain) -> str:
     out = []
     func(seg, out)
     return ''.join(out)
@@ -235,10 +231,7 @@ def _to_length(cache: dict[int, int], s: BaseElement | Sequence[Segment]) -> int
         # so we can always keep the outer style even truncated.
         r = _to_length(cache, s.inner)
     else:
-        r = sum(
-            len(item) if isinstance(item, str) else _to_length(cache, item)
-            for item in s
-        )
+        r = sum(len(item) if isinstance(item, str) else _to_length(cache, item) for item in s)
 
     cache[id_s] = r
     return r
@@ -247,12 +240,7 @@ def _to_length(cache: dict[int, int], s: BaseElement | Sequence[Segment]) -> int
 class Formatter:
     __slots__ = ('limit', 'segments', 'length', 'full', '_best_effort', '_lengths')
 
-    def __init__(
-        self,
-        limit: int = MAX_TEXT_LENGTH,
-        *,
-        strict: bool = False,
-    ) -> None:
+    def __init__(self, limit: int = MAX_TEXT_LENGTH, *, strict: bool = False) -> None:
         self.limit = limit
         self.segments: list[Segment] = []
         self.length = 0
@@ -270,7 +258,7 @@ class Formatter:
             log.debug('_append_best_effort: %r (%d)', item, budget)
             out.append(item)
             self.length += len(item)
-            return
+            return None
 
         if isinstance(seg, BaseElement):
             # Replace the inner into the outer `BaseElement`.
@@ -286,7 +274,7 @@ class Formatter:
 
                 log.debug('_append_best_effort: %r (%d)', seg, budget)
                 out.append(seg)
-            return
+            return None
 
         for item in seg:
             if (inc_len := self.to_length(item)) > budget:
@@ -320,9 +308,7 @@ class Formatter:
         desc = repr(seg)
         if len(desc) > 100:
             desc = desc[:50] + '...' + desc[-47:]
-        log.info(
-            'segment truncated: %s (%d + %d = %d)', desc, self.length, inc_len, new_len
-        )
+        log.info('segment truncated: %s (%d + %d = %d)', desc, self.length, inc_len, new_len)
 
         if self._best_effort and (budget := self.limit - self.length) > 0:
             self._append_best_effort(seg, budget, self.segments)
@@ -330,10 +316,7 @@ class Formatter:
         return False
 
     def try_extend(self, segs: Sequence[Segment]) -> bool:
-        for seg in segs:
-            if not self.try_append(seg):
-                return False
-        return True
+        return all(self.try_append(seg) for seg in segs)
 
     def try_push(self, *segs: Segment) -> bool:
         return self.try_extend(segs)

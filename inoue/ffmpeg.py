@@ -1,28 +1,26 @@
+import asyncio
 import os
 import sys
-import asyncio
-from typing import Literal, Callable, overload
+
+from typing import TYPE_CHECKING, Literal, overload
 
 from bot import escape
 
-from .log import log, is_debug
+from .log import is_debug, log
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 @overload
 async def run_ffmpeg(
-    *args: str,
-    desc: str = '',
-    prog: str = 'ffmpeg',
-    capture: Literal[False] = False,
+    *args: str, desc: str = '', prog: str = 'ffmpeg', capture: Literal[False] = False
 ) -> None: ...
 
 
 @overload
 async def run_ffmpeg(
-    *args: str,
-    desc: str = '',
-    prog: str = 'ffmpeg',
-    capture: Literal[True] = True,
+    *args: str, desc: str = '', prog: str = 'ffmpeg', capture: Literal[True] = True
 ) -> bytes: ...
 
 
@@ -68,10 +66,7 @@ MAX_BITRATE_K = 192
 QUALITY_THRESHOLD_K = 32
 
 
-async def encode_opus(
-    src: str,
-    bitrate_k: int,
-) -> tuple[bytes, str]:
+async def encode_opus(src: str, bitrate_k: int) -> tuple[bytes, str]:
     args = ['-b:a', f'{bitrate_k}k']
     quality = bitrate_k > QUALITY_THRESHOLD_K
 
@@ -218,9 +213,7 @@ async def encode_voice(
     # Final fallback: return the latest output.
     assert raw_result is not None
     log.warning(
-        'Voice still exceeds 1 MiB at bitrate=%sk, output=%s bytes',
-        raw_result[2],
-        curr_len,
+        'Voice still exceeds 1 MiB at bitrate=%sk, output=%s bytes', raw_result[2], curr_len
     )
     return raw_result
 

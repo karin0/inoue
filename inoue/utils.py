@@ -1,9 +1,12 @@
-from typing import Sequence
+from typing import TYPE_CHECKING
 
-from bot import bot, Responder
+from bot import Responder, bot
 
-from .log import log
 from .env import CHAN_ID
+from .log import log
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 def get_msg_url(msg_id, chat_id=None) -> str:
@@ -17,9 +20,7 @@ def get_deep_link_url(arg: str) -> str:
     return f'https://t.me/{bot.username}?start={arg}'
 
 
-async def reroute_cmd(
-    rs: Responder, text: str
-) -> Sequence[tuple[str, str | None]] | None:
+async def reroute_cmd(rs: Responder, text: str) -> Sequence[tuple[str, str | None]] | None:
     if rs.is_captured():
         log.warning('reroute: already in reroute_cmd: %s', rs)
         return None

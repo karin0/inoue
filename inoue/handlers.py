@@ -1,39 +1,34 @@
-import sys
 import asyncio
-from pathlib import Path
+import sys
+
 from datetime import datetime
+from pathlib import Path
 
 from telegram import (
-    Message,
-    User,
+    CallbackQuery,
     Chat,
-    MessageOriginChannel,
     ChosenInlineResult,
     InlineQuery,
-    CallbackQuery,
+    Message,
+    MessageOriginChannel,
+    User,
 )
 from telegram.constants import ChatType, MessageEntityType
 
-from bot import (
-    bot,
-    Responder,
-    VoicePayload,
-    callback_query,
-    CallbackData,
-)
+from bot import CallbackData, Responder, VoicePayload, bot, callback_query
 
-from .log import log
-from .ctx import get_context, is_admin, Sender
-from .env import USER_ID, CHAN_ID, GROUP_ID, TODO_ID
-from .text import pre_block
-from .inoue import render_receipt
-from .rg import handle_rg
-from .voice import handle_voice
-from .sticker import handle_sticker
-from .todo import handle_todo_msg
-from .ytdlp import extract_url, handle_yt_inline_query, handle_yt_chosen_result
-from .render import handle_render_doc, handle_render_group, handle_render_inline_query
 from .commands import dispatch_cmd, reply_usage
+from .ctx import Sender, get_context, is_admin
+from .env import CHAN_ID, GROUP_ID, TODO_ID, USER_ID
+from .inoue import render_receipt
+from .log import log
+from .render import handle_render_doc, handle_render_group, handle_render_inline_query
+from .rg import handle_rg
+from .sticker import handle_sticker
+from .text import pre_block
+from .todo import handle_todo_msg
+from .voice import handle_voice
+from .ytdlp import extract_url, handle_yt_chosen_result, handle_yt_inline_query
 
 '''
 Responders are only present when handling the following events, and shall not be
@@ -94,16 +89,16 @@ async def handle_msg(rs: Responder, direct: bool = True):
         # is matched or we are mentioned, or we will get flooded when we are added
         # as admins.
         log.debug('Not mentioned: %s', msg)
-        return
+        return None
 
     if msg.via_bot is not None:
         log.debug('Via bot: %s', msg)
-        return
+        return None
 
     if await handle_voice.route(rs, as_command=False) or await handle_sticker(
         msg, rs, as_command=False
     ):
-        return
+        return None
 
     # ID Bot
     if origin is not None:
@@ -117,7 +112,7 @@ async def handle_msg(rs: Responder, direct: bool = True):
             or msg.forum_topic_reopened
         ):
             log.debug('Ignoring forum_topic: %s', msg)
-            return
+            return None
 
         return await rs.reply(media=VoicePayload(Path('out.ogg')))
 
@@ -130,7 +125,7 @@ async def handle_msg(rs: Responder, direct: bool = True):
     # Administration is only allowed for the host in their own private chat.
     if not (context.sender_is_host() and is_admin(context.update, msg)):
         log.error('handle_msg: unauthorized update: %s', context)
-        return
+        return None
 
     if text == '/Please log out now/':
         # Be careful, since you won't be able to log in again within 10 minutes.
@@ -140,7 +135,7 @@ async def handle_msg(rs: Responder, direct: bool = True):
             sys.exit(1)
         else:
             log.error('log_out: failed')
-        return
+        return None
 
     if text.startswith('/'):
         return await dispatch_cmd(rs)
@@ -213,15 +208,13 @@ async def handle_callback_query(rs: Responder | None, query: CallbackQuery):
         if rs is not None and (coro := rs.dispatch_callback_query(data)) is not None:
             return await coro
         log.warning('Bad callback query: %s, %s', data, rs)
-    except Exception as e:
+    except Exception:
         await query.answer('Error', show_alert=True)
-        raise e
+        raise
 
 
 def message_stub(from_user: User) -> Message:
-    return Message(
-        0, datetime.now(), Chat(0, ChatType.SENDER), from_user=from_user, text=''
-    )
+    return Message(0, datetime.now(), Chat(0, ChatType.SENDER), from_user=from_user, text='')
 
 
 @callback_query('relay')

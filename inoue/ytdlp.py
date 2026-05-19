@@ -1,53 +1,51 @@
+import asyncio
+import json
+import math
 import os
 import re
-import math
-import json
 import string
-import asyncio
+
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Awaitable, cast, TYPE_CHECKING
-from concurrent.futures import ThreadPoolExecutor
+from typing import TYPE_CHECKING, Any, cast
 
 from telegram import (
-    Video,
     Audio,
     Document,
-    Message,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InlineQuery,
     InlineQueryResultArticle,
     InputTextMessageContent,
+    Message,
     SwitchInlineQueryChosenChat,
+    Video,
 )
 from telegram.constants import ChatAction
 
 from bot import (
-    MessageArg,
-    command,
-    create_task,
-    MediaPayload,
-    CachedPayload,
     AudioPayload,
+    CachedPayload,
+    DocumentPayload,
+    EditHandle,
+    MediaPayload,
+    MessageArg,
+    Responder,
     VideoPayload,
     VoicePayload,
-    DocumentPayload,
-    Responder,
-    EditHandle,
+    command,
+    create_task,
 )
 
 from .ctx import get_context
-from .log import log, is_debug
+from .ffmpeg import VIDEO_NOTE_MAX_DURATION, VIDEO_NOTE_SIDE, encode_video_note, encode_voice
+from .log import is_debug, log
 from .render_context import LRUDict
-from .ffmpeg import (
-    encode_voice,
-    encode_video_note,
-    VIDEO_NOTE_MAX_DURATION,
-    VIDEO_NOTE_SIDE,
-)
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
     from yt_dlp import YoutubeDL
 
 REG_URL = re.compile(
@@ -58,18 +56,14 @@ CANONICAL_KEEP_QUERY = frozenset(('v', 'list', 't', 'index', 'p'))
 
 
 def canonicalize_url(url: str) -> str:
-    from urllib.parse import urlparse, urlencode, parse_qsl, urlunparse
+    from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
     u = urlparse(url)
     qs = [
-        (k, v)
-        for k, v in parse_qsl(u.query)
-        if k in CANONICAL_KEEP_QUERY and (k, v) != ('p', '1')
+        (k, v) for k, v in parse_qsl(u.query) if k in CANONICAL_KEEP_QUERY and (k, v) != ('p', '1')
     ]
     qs.sort()
-    return urlunparse(
-        u._replace(query=urlencode(qs), fragment='', scheme='https')
-    ).rstrip('#/?')
+    return urlunparse(u._replace(query=urlencode(qs), fragment='', scheme='https')).rstrip('#/?')
 
 
 def matched_url(m: re.Match) -> str:
@@ -91,9 +85,8 @@ def restore_url(s: str) -> str | None:
     if len(s) > 2 and s.startswith('av') and s[2] != '0' and s[2:].isdigit():
         return 'https://www.bilibili.com/video/' + s
 
-    if len(s) == 12 and s.startswith('BV1'):
-        if all(c in BASE58_CHARS for c in s[3:]):
-            return 'https://www.bilibili.com/video/' + s
+    if len(s) == 12 and s.startswith('BV1') and all(c in BASE58_CHARS for c in s[3:]):
+        return 'https://www.bilibili.com/video/' + s
 
     if len(s := s.rstrip('=')) == 11 and all(c in YT_CHARS for c in s):
         return 'https://www.youtube.com/watch?v=' + s
@@ -136,7 +129,7 @@ THUMB_SCALE_STEPS = (1.0, 0.85, 0.7, 0.55, 0.4)
 
 # max_workers=1 to serialize yt-dlp invocations.
 _executor = ThreadPoolExecutor(max_workers=1)
-_instances: list['YoutubeDL | None'] = [None, None]
+_instances: list[YoutubeDL | None] = [None, None]
 
 # For passing inline query results.
 _media_cache: LRUDict[str, CachedPayload] = LRUDict()
@@ -162,10 +155,7 @@ def _prepare_thumbnail(data: bytes) -> bytes | None:
     for scale in THUMB_SCALE_STEPS:
         img = base.copy()
         if scale < 1:
-            new_size = (
-                max(1, int(img.width * scale)),
-                max(1, int(img.height * scale)),
-            )
+            new_size = (max(1, int(img.width * scale)), max(1, int(img.height * scale)))
             img = img.resize(new_size, resample=resample)
 
         for quality in THUMB_QUALITY_STEPS:
@@ -173,12 +163,7 @@ def _prepare_thumbnail(data: bytes) -> bytes | None:
             img.save(out, format='JPEG', optimize=True, quality=quality)
 
             if len(candidate := out.getvalue()) <= THUMB_MAX_BYTES:
-                log.info(
-                    'Thumbnailed into %d bytes (s=%.2f, q=%d)',
-                    len(candidate),
-                    scale,
-                    quality,
-                )
+                log.info('Thumbnailed into %d bytes (s=%.2f, q=%d)', len(candidate), scale, quality)
                 return candidate
 
     log.warning('Thumbnail too large: %d bytes', len(data))
@@ -197,9 +182,8 @@ def _get_download_path(info: dict[str, Any]) -> str:
 def _get_thumbnail_path(info: dict[str, Any]) -> str | None:
     for thumb in reversed(info.get('thumbnails') or ()):
         log.debug('try thumb: %s', thumb)
-        if path := thumb.get('filepath'):
-            if os.path.isfile(path):
-                return path
+        if (path := thumb.get('filepath')) and os.path.isfile(path):
+            return path
 
 
 def media_duration(duration: float) -> int | None:
@@ -220,11 +204,7 @@ class Output:
         self.duration = float(info.get('duration', 0))
         self.thumbnail_path = _get_thumbnail_path(info)
         log.info(
-            'ytdlp: %s / %s bytes / %s secs / %s',
-            path,
-            size,
-            self.duration,
-            self.thumbnail_path,
+            'ytdlp: %s / %s bytes / %s secs / %s', path, size, self.duration, self.thumbnail_path
         )
 
     def __repr__(self) -> str:
@@ -277,10 +257,7 @@ class Output:
 
         if title:
             ext = path.suffix.lower()
-            if performer:
-                name = f'{title} - {performer}{ext}'
-            else:
-                name = f'{title}{ext}'
+            name = f'{title} - {performer}{ext}' if performer else f'{title}{ext}'
         else:
             name = path.name
 
@@ -307,19 +284,11 @@ class Output:
                 thumbnail=thumbnail,
             )
         return VideoPayload(
-            path,
-            duration=duration,
-            filename=name,
-            thumbnail=thumbnail,
-            cover=raw_thumbnail,
+            path, duration=duration, filename=name, thumbnail=thumbnail, cover=raw_thumbnail
         )
 
     def finish(
-        self,
-        rs: Responder,
-        *,
-        audio_only: bool = False,
-        caption: str | None = None,
+        self, rs: Responder, *, audio_only: bool = False, caption: str | None = None
     ) -> Awaitable[EditHandle | None]:
         return rs.reply(caption, media=self._payload(audio_only))
 
@@ -345,7 +314,7 @@ class Output:
             )
 
 
-def get_ytdlp(audio_only: bool) -> 'YoutubeDL':
+def get_ytdlp(audio_only: bool) -> YoutubeDL:
     from yt_dlp import YoutubeDL
 
     if (ydl := _instances[audio_only]) is not None:
@@ -452,12 +421,7 @@ def handle_ytn(rs: Responder, arg: MessageArg):
     return _handle_yt(rs, arg, '/ytn', ChatAction.RECORD_VIDEO_NOTE, video_note=True)
 
 
-LABEL = {
-    'video': '📹 Video',
-    'audio': '🎵 Audio',
-    'voice': '🎤 Voice',
-    'document': '📄 File',
-}
+LABEL = {'video': '📹 Video', 'audio': '🎵 Audio', 'voice': '🎤 Voice', 'document': '📄 File'}
 
 
 def _article(kind: str, url: str, text: str) -> InlineQueryResultArticle:
@@ -482,9 +446,7 @@ def handle_yt_inline_query(query: InlineQuery, parsed: tuple[str, str]):
     if (voice := _voice_cache.get(url)) is not None:
         payload, title = voice
         results.append(
-            payload.as_inline_result(
-                caption, id='noop_voice', title='🎤 Voice: ' + title
-            )
+            payload.as_inline_result(caption, id='noop_voice', title='🎤 Voice: ' + title)
         )
         if 'voice' in arg:
             return query.answer(results)
@@ -515,9 +477,7 @@ def handle_yt_inline_query(query: InlineQuery, parsed: tuple[str, str]):
 
 
 async def _finish_voice(
-    output: Output,
-    result: tuple[float, bytes, int],
-    url: str,
+    output: Output, result: tuple[float, bytes, int], url: str
 ) -> InlineKeyboardMarkup | None:
     duration, data, bitrate = result
     duration = media_duration(duration)
@@ -551,9 +511,7 @@ async def _finish_voice(
     return InlineKeyboardMarkup.from_row(row)
 
 
-async def handle_yt_chosen_result(
-    result_id: str, parsed: tuple[str, str], rs: Responder
-):
+async def handle_yt_chosen_result(result_id: str, parsed: tuple[str, str], rs: Responder):
     url, arg = parsed
     log.info('handle_yt_chosen_result: %s: %s / %s', result_id, url, arg)
 
@@ -569,9 +527,7 @@ async def handle_yt_chosen_result(
 
             async def worker():
                 nonlocal caption
-                result = await encode_voice(
-                    output.path, lambda *_: None, output.duration
-                )
+                result = await encode_voice(output.path, lambda *_: None, output.duration)
                 markup = await _finish_voice(output, result, url)
                 c, caption = caption, None
                 await rs.reply(c, reply_markup=markup)
