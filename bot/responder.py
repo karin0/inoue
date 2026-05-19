@@ -8,7 +8,7 @@ from telegram import Chat, InlineKeyboardMarkup, Message, Update, User
 from telegram.constants import ChatAction, ChatType
 
 from . import env
-from .app import create_task
+from .app import bot, create_task
 from .env import log
 
 if TYPE_CHECKING:
@@ -112,7 +112,11 @@ class Responder(Protocol):
         if not s.startswith('/'):
             return ''
         p = next((i for i, c in enumerate(s) if c.isspace() or c == '@'), len(s))
-        return s[1:p]
+        cmd = s[1:p]
+        if p < len(s) and s[p] == '@' and s[p + 1 :] != bot.username:
+            # Omit commands for other bots.
+            return ''
+        return cmd
 
     def get_arg(self) -> str:
         s = self.get_text()
