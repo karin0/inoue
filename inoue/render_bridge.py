@@ -15,7 +15,7 @@ from types import MethodType
 from typing import TYPE_CHECKING, Any, Concatenate, cast
 from weakref import WeakSet, WeakValueDictionary, ref
 
-from bot import Responder, create_task, escape, html_escape
+from bot import Responder, escape, html_escape
 from render_core import Box, Fragment, Value, to_str
 
 from .log import log
@@ -350,15 +350,13 @@ class Tasks:
         if tasks := self._tasks:
             for task in tasks:
                 task.cancel()
-            create_task(self._wait())
+            asyncio.gather(*tasks, return_exceptions=True).add_done_callback(self._cancel_done)
 
-    async def _wait(self):
-        log.debug('Tasks.wait: %r', self)
-        tasks = self._tasks
-        r = await asyncio.gather(*tasks, return_exceptions=True)
-        log.debug('Tasks.wait: done: %r', r)
-        if tasks:
-            log.debug('Tasks.wait: still pending: %r', self)
+    def _cancel_done(self, fut: asyncio.Future):
+        log.debug('Tasks._cancel_done: %r: %r', self, fut.result())
+        for task in self._tasks:
+            if not task.done():
+                log.warning('Tasks._cancel_done: task not done: %r', _format_task(task))
 
 
 INSTANCES = WeakSet()
