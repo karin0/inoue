@@ -522,22 +522,34 @@ class RenderContext:
             create_task(self._report_errors())
 
     async def _report_errors(self):
-        assert self._update_callback is not None
-        _func, lock = self._update_callback
-
-        # Wait until any ongoing update that provides the handle is done.
-        async with lock:
-            handle = self._edit_handle
-
-        # We do not just use `self._responder`, which might override our original reply when
-        # handling a callback from an inline message.
-        # This ensures we only reply to our rendered message with a new one.
-        if handle is not None and (rs := handle.as_responder()) is not None:
+        if (rs := await self._reply_to_rs()) is not None:
             errors = self.engine.errors
             new_errors = errors[self._error_idx :]
             self._error_idx = len(errors)
             log.info('_task_done: flushing %d errors: %r', len(new_errors), new_errors)
             await rs.reply('\n'.join(new_errors))
+
+    async def _reply_to_rs(self) -> Responder | None:
+        # We do not just use `self._responder`, which might override our original reply when
+        # handling a callback from an inline message.
+        # This ensures we only reply to our rendered message with a new one.
+        assert self._update_callback is not None
+        _, lock = self._update_callback
+
+        # Wait until any ongoing update that provides the handle is done.
+        async with lock:
+            h = self._edit_handle
+            if h is not None and (h := h.as_responder()) is not None:
+                return h
+
+    async def _reply(self, val: Value | None) -> str | None:
+        assert self._responder
+        seg = to_segment(val) if val is not None else ''
+        spec = self._format_response(seg, has_markup=False)
+        rs = (await self._reply_to_rs()) or self._responder
+        h = await rs.reply(*spec)
+        log.debug('_reply: replied: %r, %r', rs, h)
+        return h.get_message_key() if h is not None else None
 
     def render(self, text: str) -> Awaitable[MessageSpec]:
         return self.to_response(self.render_text(text))
@@ -550,7 +562,7 @@ class RenderContext:
             await self._invoke_update_callback(spec)
         return spec
 
-    def _format_response(self, seg: FlattenSegment) -> MessageSpec:
+    def _format_response(self, seg: FlattenSegment, *, has_markup: bool = True) -> MessageSpec:
         log.debug('_format_response: %r', seg)
         ctx = self.data
         do_cleanup = get_env_flag(ctx, 'cleanup', True)
@@ -578,7 +590,7 @@ class RenderContext:
             # styled (contains `Element`).
             seg = Pre(seg)
 
-        if self._path is None:
+        if self._path is None or not has_markup:
             markup = state = None
         else:
             rs = self._responder

@@ -496,6 +496,11 @@ class Bridge(Box):
 
         return eval(code, locals=self._ctx)  # noqa: S307
 
+    @trusted
+    def debug(self, *vals) -> Promise:
+        text = '\n'.join(repr(val) for val in vals)
+        return self._promise(self._cb._reply(text))
+
     @public
     def escalate(self) -> None:
         if (token := self._cb._escalate()) is not None:
