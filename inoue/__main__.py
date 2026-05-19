@@ -113,7 +113,7 @@ async def handle_update(update: Update, _: ContextTypes.DEFAULT_TYPE):
         func = lambda: handle_inline_query(query)
     elif (chosen := update.chosen_inline_result) is not None:
         log.info('%s: chosen %s %s', src, chosen.result_id, chosen.query)
-        func = lambda: handle_chosen_inline(_rs(), chosen)
+        func = lambda: handle_chosen_inline(rs, chosen)
     elif (post := update.guest_message) is not None:
         log.info('%s: guest message %s', src, shorten(post.text))
         func = lambda: handle_guest(_rs())

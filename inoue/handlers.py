@@ -154,11 +154,10 @@ async def handle_inline_query(query: InlineQuery):
             await handle_render_inline_query(query, data)
 
 
-async def handle_chosen_inline(rs: Responder, result: ChosenInlineResult):
+async def handle_chosen_inline(rs: Responder | None, result: ChosenInlineResult):
     result_id = result.result_id
     if result_id.startswith('yt_'):
-        query = result.query.strip()
-        if (parsed := extract_url(query)) is not None:
+        if rs is not None and (parsed := extract_url(result.query.strip())) is not None:
             await handle_yt_chosen_result(result_id, parsed, rs)
         else:
             log.warning('Invalid chosen inline result: %s', result)
