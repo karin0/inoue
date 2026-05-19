@@ -83,10 +83,18 @@ async def handle_msg(rs: Responder, direct: bool = True):
     if (coro := rs.dispatch_command()) is not None:
         return await coro
 
-    chat = msg.chat
-    if chat.type != ChatType.PRIVATE and direct and not strip_mention(rs):
-        # For a message update in an ordinary group, we only handle it if a command
-        # is matched or we are mentioned, or we will get flooded when we are added
+    if (
+        msg.chat.type != ChatType.PRIVATE
+        and direct
+        and not (
+            strip_mention(rs)
+            or (m := msg.reply_to_message) is not None
+            and (u := m.from_user) is not None
+            and u.id == bot.bot.id
+        )
+    ):
+        # For a message update in an ordinary group, we only handle it if a command is matched,
+        # we are mentioned, or we are replied to. Otherwise we will get flooded when we are added
         # as admins.
         log.debug('Not mentioned: %s', msg)
         return None
@@ -193,9 +201,9 @@ def strip_mention(rs: Responder) -> bool:
 
 def handle_guest(rs: Responder):
     log.debug('handle_guest: %s', rs)
-    if strip_mention(rs):
-        return handle_msg(rs, direct=False)
-    raise ValueError(f'missing MENTION entity in guest message: {rs}')
+    # Guest messages may mention or reply to us.
+    strip_mention(rs)
+    return handle_msg(rs, direct=False)
 
 
 async def handle_callback_query(rs: Responder | None, query: CallbackQuery):
