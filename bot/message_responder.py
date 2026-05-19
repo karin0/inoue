@@ -93,6 +93,12 @@ class MessageEditHandle(EditHandle):
             return self.inline_message_id
         return env.driver.message_key(self.chat_id, self.message_id)  # type: ignore[arg-type]
 
+    def __repr__(self) -> str:
+        return (
+            f'MessageEditHandle({self.get_message_key()!r}, as_caption={self.as_caption}, '
+            f'msg={self._msg!r})'
+        )
+
     def edit(
         self,
         text: str | None = None,

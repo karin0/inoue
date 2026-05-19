@@ -26,6 +26,7 @@ from .segments import (
     Bold,
     Code,
     Element,
+    FlattenSegment,
     Italic,
     Link,
     Pre,
@@ -139,7 +140,7 @@ class Promise[T: PromiseResult](Box):
             for cb in inner:
                 cb._cancel()
 
-    def _invoke(self, prev: asyncio.Task[T | Promise[T]]) -> None:
+    def _invoke(self, prev: asyncio.Future[T | Promise[T]]) -> None:
         log.debug('Promise: invoke %r\n task: %s', self, _format_task(prev))
         if prev.cancelled():
             self._cancel()
@@ -201,7 +202,7 @@ def _repr(obj, vis: set[int]) -> str:
         vis.remove(x)
 
 
-def to_segment(val: Value | None) -> Segment:
+def to_segment(val: Value | None) -> FlattenSegment:
     if val is None:
         return ''
 
@@ -294,7 +295,7 @@ def trusted[**P, R](
     return wrapper2
 
 
-def _format_task(task: asyncio.Task) -> str:
+def _format_task(task: asyncio.Future) -> str:
     if task.cancelled():
         state = 'cancelled'
     elif task.done():
@@ -307,16 +308,18 @@ def _format_task(task: asyncio.Task) -> str:
     else:
         state = 'pending'
 
-    name = coro.__qualname__ if (coro := task.get_coro()) is not None else '<unknown>'
+    if isinstance(task, asyncio.Task):
+        name = coro.__qualname__ if (coro := task.get_coro()) is not None else '<unknown>'
 
-    return f'<{task.get_name()} ({name}): {state}>'
+        return f'<{task.get_name()} ({name}): {state}>'
+    return f'<Future: {state}>'
 
 
 class Tasks:
     __slots__ = ('_tasks', '__weakref__')
 
     def __init__(self):
-        self._tasks: set[asyncio.Task] = set()
+        self._tasks: set[asyncio.Future] = set()
 
     def __repr__(self) -> str:
         return f'Tasks[{", ".join(_format_task(t) for t in self._tasks)}]'
@@ -324,13 +327,13 @@ class Tasks:
     def __bool__(self) -> bool:
         return bool(self._tasks)
 
-    def create[T: PromiseResult](
-        self, coro: Coroutine[Any, Any, T], ctx: RenderContext
-    ) -> Promise[T]:
+    def create[T: PromiseResult](self, task: asyncio.Future[T], ctx: RenderContext) -> Promise[T]:
         promise = Promise()
 
-        def callback(fut: asyncio.Task[T], _=ctx):
-            self._tasks.remove(fut)
+        def callback(fut: asyncio.Future[T], _=ctx):
+            # `set.remove` may raise here, since the `Future` produced by `edit_message` can be
+            # chained to multiple promises.
+            self._tasks.discard(fut)
             try:
                 promise._invoke(fut)
             except ValueError as e:
@@ -340,7 +343,6 @@ class Tasks:
                 ctx._error(f'Promise: {e}')
             ctx._task_done()
 
-        task = asyncio.create_task(coro)
         task.add_done_callback(callback)
         self._tasks.add(task)
         return promise
@@ -454,7 +456,17 @@ class Bridge(Box):
         if isinstance(tasks := self._tasks, Tasks):
             # Let each task hold a reference to the `RenderContext` to keep it
             # alive until all promises are resolved.
-            return tasks.create(coro, self._cb)
+            return tasks.create(asyncio.create_task(coro), self._cb)
+        raise RuntimeError(f'Promise: {tasks}')
+
+    def _promise_fut[T: PromiseResult](self, fut: asyncio.Future[T]) -> Promise[T]:
+        if self._promise_cap is not None:
+            if self._promise_cap <= 0:
+                raise RuntimeError('Promise capacity exceeded')
+            self._promise_cap -= 1
+
+        if isinstance(tasks := self._tasks, Tasks):
+            return tasks.create(fut, self._cb)
         raise RuntimeError(f'Promise: {tasks}')
 
     @trusted
@@ -492,7 +504,7 @@ class Bridge(Box):
     @public
     def edit_message(self, text) -> Promise:
         log.debug('Bridge: edit_message: %r %r', text, self._cb)
-        return self._promise(self._cb._edit_message(to_segment(text)))
+        return self._promise_fut(self._cb._edit_message(text))
 
     @public
     def sleep(self, seconds: float) -> Promise[None]:

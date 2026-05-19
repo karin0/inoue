@@ -48,11 +48,13 @@ from .segments import (
     BlockQuote,
     Bold,
     Element,
+    FlattenSegment,
     Formatter,
     Pre,
     Segment,
     Time,
     get_renderer,
+    merge_segments,
     render_segment,
 )
 from .text import cleanup_text, pre_block
@@ -332,6 +334,8 @@ class RenderContext:
         '_responder',
         '_edit_handle',
         '_error_idx',
+        '_edit_message_segs',
+        '_edit_message_fut',
         'data',
         'engine',
         '__weakref__',
@@ -359,8 +363,11 @@ class RenderContext:
 
         self._doc_refs = {doc_id: ''} if doc_id is not None else {}
         self._render_time = None
+
         self._error_idx = 0
         self._edit_handle = None
+        self._edit_message_segs: list[FlattenSegment] = []
+        self._edit_message_fut: asyncio.Future[str | None] | None = None
 
         context = get_context()
         if (sender := context.sender) is not None and sender.id in (USER_ID, CHAN_ID):
@@ -408,11 +415,18 @@ class RenderContext:
         self._update_callback = callback and (callback, asyncio.Lock())
 
     async def _invoke_update_callback(self, spec: MessageSpec):
-        if self._update_callback is not None:
-            func, lock = self._update_callback
-            async with lock:
-                self._edit_handle = handle = await func(spec)
-                return handle.get_message_key()
+        assert self._update_callback is not None
+        fut = self._edit_message_fut
+        func, lock = self._update_callback
+        async with lock:
+            if fut is not None and fut.cancelled():
+                log.debug('_invoke_update_callback: context cancelled: %r', spec)
+                return
+            self._edit_handle = handle = await func(spec)
+            log.debug('_invoke_update_callback: handle=%r, fut=%r', handle, fut)
+            if fut is not None:
+                fut.set_result(handle.get_message_key())
+                self._edit_message_fut = None
 
     def _escalate(self) -> int | None:
         if (token := self._can_escalate) is not None:
@@ -447,59 +461,96 @@ class RenderContext:
             self._doc_refs[doc_id] = name
         return row[1]
 
-    def render_text(self, text: str) -> Segment:
+    def render_text(self, text: str) -> FlattenSegment:
         val = self.engine.render_value(text)
-        self._atexit()
         self._render_time = int(time.time())
         log.debug('render_text: %r', val)
-        result = to_segment(val)
-        log.info('rendered %d -> %s (%s)', len(text), type(result).__name__, self._doc_refs)
-        return result
+        seg = to_segment(val)
+        log.info('rendered %d -> %s (%s)', len(text), type(seg).__name__, self._doc_refs)
+        return seg
+
+    def _atexit(self) -> Awaitable[MessageSpec | None] | MessageSpec | None:
+        if callable(hook := get_env(self.data, 'atexit')):
+            if isinstance(hook, Box):
+                log.debug('_atexit: calling hook: %r', hook)
+                # Calling sub-docs (or Engine) should never raise exceptions.
+                hook()
+            else:
+                raise TypeError(f'hook is not a Box: {hook!r}')
 
     # Exposed as a callback to Bridge, used for `edit_message`.
-    # We need to keep this sync to ensure this does not count as a last task in `count_tasks`,
-    # and to consume `error_idx` during rendering and before `flush_errors()` is called.
-    def _edit_message(self, seg: Segment):
+    # This does not count as a last task in `count_tasks`.
+    def _edit_message(self, val: Value | None) -> asyncio.Future[str | None]:
         if self._update_callback is None:
             raise RuntimeError('uneditable context')
 
         self._render_time = int(time.time())
-        spec = self._format_response(seg)
-        return self._invoke_update_callback(spec)
 
-    def _atexit(self):
-        if callable(hook := get_env(self.data, 'atexit')):
-            if isinstance(hook, Box):
-                hook()
-            else:
-                log.error('atexit is not a Box: %r', hook)
+        # We always append the new value, so the doc can clear the message by editing it to empty.
+        seg = to_segment(val) if val is not None else ''
+        self._edit_message_segs.append(seg)
+
+        # To gather multiple edits, along with all `engine.errors` generated during the task
+        # callback, we have to defer the actual update until `_task_done` is called.
+        if self._edit_message_fut is None:
+            self._edit_message_fut = asyncio.get_event_loop().create_future()
+
+        log.debug('_edit_message: %r, %r', self._edit_message_segs, self._edit_message_fut)
+        return self._edit_message_fut
 
     def _task_done(self):
         self._atexit()
-        if (
-            (errors := self.engine.errors)
-            and self._error_idx < len(errors)
-            and (handle := self._edit_handle) is not None
-            and (rs := handle.as_responder()) is not None
-        ):
-            # We do not just use `self._responder`, which might override our original
-            # reply when handling a callback from an inline message.
-            # This ensures we only reply to our rendered message with a new one.
+        log.debug(
+            '_task_done: segs=%r errors=%d/%d',
+            self._edit_message_segs,
+            self._error_idx,
+            len(self.engine.errors),
+        )
+
+        if self._edit_message_segs:
+            seg = merge_segments(self._edit_message_segs)
+            log.debug('_task_done: update seg: %r', seg)
+
+            # The edit buffer is only preserved during a single task callback.
+            self._edit_message_segs.clear()
+
+            spec = self._format_response(seg)
+            create_task(self._invoke_update_callback(spec))
+        elif (errors := self.engine.errors) and self._error_idx < len(errors):
+            # If new error occurs without calling `_edit_message`, we still want to
+            # reply it to the user when possible.
+            create_task(self._report_errors())
+
+    async def _report_errors(self):
+        assert self._update_callback is not None
+        _func, lock = self._update_callback
+
+        # Wait until any ongoing update that provides the handle is done.
+        async with lock:
+            handle = self._edit_handle
+
+        # We do not just use `self._responder`, which might override our original reply when
+        # handling a callback from an inline message.
+        # This ensures we only reply to our rendered message with a new one.
+        if handle is not None and (rs := handle.as_responder()) is not None:
+            errors = self.engine.errors
             new_errors = errors[self._error_idx :]
             self._error_idx = len(errors)
-            log.info('Flushing %d new errors: %r', len(new_errors), new_errors)
-            create_task(rs.reply('\n'.join(new_errors)))
+            log.info('_task_done: flushing %d errors: %r', len(new_errors), new_errors)
+            await rs.reply('\n'.join(new_errors))
 
     def render(self, text: str) -> Awaitable[MessageSpec]:
         return self.to_response(self.render_text(text))
 
-    async def to_response(self, rendered: Segment) -> MessageSpec:
-        spec = self._format_response(rendered)
+    async def to_response(self, seg: FlattenSegment) -> MessageSpec:
+        # Bootstrapping path.
+        self._atexit()
+        spec = self._format_response(seg)
         if self._update_callback is not None:
             await self._invoke_update_callback(spec)
         return spec
 
-    def _format_response(self, seg: Segment) -> MessageSpec:
+    def _format_response(self, seg: FlattenSegment) -> MessageSpec:
         log.debug('_format_response: %r', seg)
         ctx = self.data
         do_cleanup = get_env_flag(ctx, 'cleanup', True)
@@ -796,7 +847,7 @@ def is_doc_ref(text: str) -> tuple[str, tuple[int | None, str]] | tuple[None, st
         return ':' + doc_name, row
 
 
-preview_cache: dict[int, tuple[RenderContext, str, Segment]] = {}
+preview_cache: dict[int, tuple[RenderContext, str, FlattenSegment]] = {}
 
 
 async def handle_render_group(rs: Responder, origin_id: int):
