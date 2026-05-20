@@ -463,7 +463,7 @@ class RenderContext:
 
     def render_text(self, text: str) -> FlattenSegment:
         val = self.engine.render_value(text)
-        self._render_time = int(time.time())
+        self._atexit()
         log.debug('render_text: %r', val)
         seg = to_segment(val)
         log.info('rendered %d -> %s (%s)', len(text), type(seg).__name__, self._doc_refs)
@@ -477,14 +477,13 @@ class RenderContext:
                 hook()
             else:
                 raise TypeError(f'hook is not a Box: {hook!r}')
+        self._render_time = int(time.time())
 
     # Exposed as a callback to Bridge, used for `edit_message`.
     # This does not count as a last task in `count_tasks`.
     def _edit_message(self, val: Value | None) -> asyncio.Future[str | None]:
         if self._update_callback is None:
             raise RuntimeError('uneditable context')
-
-        self._render_time = int(time.time())
 
         # We always append the new value, so the doc can clear the message by editing it to empty.
         seg = to_segment(val) if val is not None else ''
@@ -556,7 +555,6 @@ class RenderContext:
 
     async def to_response(self, seg: FlattenSegment) -> MessageSpec:
         # Bootstrapping path.
-        self._atexit()
         spec = self._format_response(seg)
         if self._update_callback is not None:
             await self._invoke_update_callback(spec)
