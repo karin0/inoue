@@ -18,7 +18,7 @@ except RuntimeError:
 from bot import Responder, app, shorten
 
 from . import media, misc, run  # noqa: F401
-from .commands import reply_usage
+from .commands import handle_help
 from .ctx import Sender, use_context
 from .env import CHAN_ID, GROUP_ID, GUEST_USER_IDS, IGNORE_CHAT_IDS, LOCK_FILE, ME, USER_ID
 from .handlers import (
@@ -141,7 +141,7 @@ async def handle_update(update: Update, _: ContextTypes.DEFAULT_TYPE):
             except (PermissionError, ValueError) as e:
                 log.exception('Error: %s: %s\nFrom: %s', type(e).__name__, e, src)
                 if rs is not None:
-                    await reply_usage(rs)
+                    await handle_help(rs)
         except Exception as e:
             with notify.revocable():
                 # Can be edited to successful responses later after user edits

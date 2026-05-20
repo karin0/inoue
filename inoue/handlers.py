@@ -17,7 +17,7 @@ from telegram.constants import ChatType, MessageEntityType
 
 from bot import CallbackData, Responder, VoicePayload, bot, callback_query
 
-from .commands import dispatch_cmd, reply_usage
+from .commands import dispatch_cmd, handle_help
 from .ctx import Sender, get_context, is_admin
 from .env import CHAN_ID, GROUP_ID, TODO_ID, USER_ID
 from .inoue import render_receipt
@@ -128,7 +128,7 @@ async def handle_msg(rs: Responder, direct: bool = True):
     # itself, since it could be a mocked one from relayed callback queries or
     # guest messages.
     if context.sender_is_guest():
-        return await reply_usage(rs)
+        return await handle_help(rs)
 
     # Administration is only allowed for the host in their own private chat.
     if not (context.sender_is_host() and is_admin(context.update, msg)):

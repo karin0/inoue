@@ -2,6 +2,7 @@ import asyncio
 import re
 import shlex
 
+from collections.abc import Awaitable  # noqa: TC003
 from typing import TYPE_CHECKING
 
 from telegram import (
@@ -22,21 +23,20 @@ from .motto import greeting, hitokoto
 from .run import handle_cmd
 from .text import pre_block, pre_block_raw
 
-if TYPE_CHECKING:
-    from collections.abc import Awaitable
-
 try:
-    from conf import reply_usage  # pyright: ignore[reportMissingImports]
+    from conf import handle_help  # pyright: ignore[reportMissingImports]
 except ImportError as e:
-    log.info('Using default reply_usage: %s', e)
+    log.info('Using default handle_help: %s', e)
 
-    def reply_usage(rs: Responder) -> Awaitable:
+    @command(public=True)
+    def handle_help(rs: Responder) -> Awaitable:  # pyright: ignore[reportRedeclaration]
         return rs.reply_cached(f'Hello, {get_context().sender_name}!')
 
 
 if TYPE_CHECKING:
 
-    def reply_usage(rs: Responder) -> Awaitable: ...
+    @command
+    async def handle_help(rs: Responder) -> Awaitable: ...
 
 
 REG_TEMPLATE_ARG = re.compile(r'\$(\*|\d+)')
@@ -150,8 +150,14 @@ async def handle_greet(rs: Responder, bot: Bot):
 
 
 @command
-def handle_start(rs: Responder, arg: MessageArg):
+def handle_start(rs: Responder):
     if (coro := rs.dispatch_start()) is not None:
         return coro
 
-    return reply_usage(rs)
+    return handle_help(rs)
+
+
+@command(public=True)
+def handle_whoami(rs: Responder):
+    u = rs.get_message().from_user
+    return rs.reply_cached(*pre_block(repr(u)))
