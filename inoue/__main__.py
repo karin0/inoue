@@ -29,7 +29,7 @@ from .handlers import (
     handle_msg,
     handle_post,
 )
-from .log import log, notify, trace
+from .log import log, notify
 
 
 async def handle_update(update: Update, _: ContextTypes.DEFAULT_TYPE):
@@ -83,7 +83,7 @@ async def handle_update(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
     sender = Sender(sender_id, sender_name or '', is_guest) if sender_id is not None else None
 
-    trace('Update from %s: %s', src, update)
+    log.trace('Update from %s: %s', src, update)
 
     def _rs():
         if rs is None:

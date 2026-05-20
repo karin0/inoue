@@ -6,7 +6,7 @@ import os
 from collections import deque
 from contextlib import contextmanager
 from datetime import datetime
-from typing import override
+from typing import TYPE_CHECKING, override
 
 from bot import Responder, bot, create_task, escape, truncate_text
 from bot import log as bot_log
@@ -151,16 +151,20 @@ def _get_logger(name):
     return logger
 
 
-log = _get_logger(ME_LOWER)
+if TYPE_CHECKING:
+
+    class Logger(logging.Logger):
+        trace = logging.Logger.debug
+else:
+    Logger = logging.Logger
+
+log: Logger = _get_logger(ME_LOWER)  # type: ignore[assignment]
 is_debug = log.isEnabledFor(logging.DEBUG)
 
 if TRACE:
-    trace = functools.partial(log.log, TRACE_LVL)
+    log.trace = functools.partial(log.log, TRACE_LVL)
 else:
-
-    def trace(*args, **kwargs):
-        pass
-
+    log.trace = lambda *_: None  # type: ignore[assignment]
 
 NOTIFY_LIMIT_INTERVAL_SEC = 20
 NOTIFY_LIMIT_BURST = 5
