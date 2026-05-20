@@ -117,6 +117,7 @@ def make_markup(
     ctx: Mapping[str, Value],
     current_state: MarkupState | None,
     doc_ids: dict[int, str] | None,
+    ext_btn: tuple[str, str] | None,
 ) -> tuple[InlineKeyboardMarkup | None, str | None]:
     # query data:
     #   ('-'|'+' <flag-key>)*
@@ -213,6 +214,9 @@ def make_markup(
                 ),
             )
         )
+
+    if ext_btn is not None:
+        push_button(*ext_btn)
 
     for k in buttons:
         label = str(icon) if (icon := get_env(ctx, 'icon.' + k)) else k
@@ -423,7 +427,11 @@ class RenderContext:
                 log.debug('_invoke_update_callback: context cancelled: %r', spec)
                 return
             self._edit_handle = handle = await func(spec)
-            log.debug('_invoke_update_callback: handle=%r, fut=%r', handle, fut)
+            log.debug(
+                '_invoke_update_callback: handle=%r, fut=%r',
+                handle and handle.get_message_key(),
+                fut,
+            )
             if fut is not None:
                 fut.set_result(handle.get_message_key())
                 self._edit_message_fut = None
@@ -547,7 +555,7 @@ class RenderContext:
         spec = self._format_response(seg, has_markup=False)
         rs = (await self._reply_to_rs()) or self._responder
         h = await rs.reply(*spec)
-        log.debug('_reply: replied: %r, %r', rs, h)
+        log.debug('_reply: replied: %r', h and h.get_message_key())
         return h.get_message_key() if h is not None else None
 
     def render(self, text: str) -> Awaitable[MessageSpec]:
@@ -592,10 +600,14 @@ class RenderContext:
             markup = state = None
         else:
             rs = self._responder
-            if rs is not None and (c := count_tasks(rs.get_message_key())):
-                ctx[BUTTON_PREFIX + '_cancel'] = 1
-                ctx[ICON_PREFIX + '_cancel'] = f'🛑{c}'
-            markup, state = make_markup(self._path, ctx, self._markup_state, self._doc_refs)
+            ext_btn = (
+                (f'🛑{c}', '_cancel')
+                if rs is not None and (c := count_tasks(rs.get_message_key()))
+                else None
+            )
+            markup, state = make_markup(
+                self._path, ctx, self._markup_state, self._doc_refs, ext_btn
+            )
 
         if get_env_flag(ctx, 'plain'):
             parse_mode = None

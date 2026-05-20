@@ -66,7 +66,7 @@ def _call_then[T: PromiseResult](callback: Callback[T], arg) -> T | Promise[T] |
 class Promise[T: PromiseResult](Box):
     __slots__ = ('_inner', '_func', '_next', '__weakref__')
 
-    def __init__(self, func: Callback[T] | None = None):
+    def __init__(self, func: Callback[T] | None = None, then_cb: Callable[[], Any] | None = None):
         self._inner: list[Promise] | tuple[T | Promise[T] | None] = []
         self._func = func
         self._next: WeakSet[Promise] = WeakSet()
@@ -316,24 +316,33 @@ def _format_task(task: asyncio.Future) -> str:
 
 
 class Tasks:
-    __slots__ = ('_tasks', '__weakref__')
+    __slots__ = ('_tasks', '_promises', '__weakref__')
 
     def __init__(self):
         self._tasks: set[asyncio.Future] = set()
+        self._promises: WeakSet[Promise] = WeakSet()
 
     def __repr__(self) -> str:
-        return f'Tasks[{", ".join(_format_task(t) for t in self._tasks)}]'
+        return (
+            f'Tasks[tasks: {", ".join(_format_task(t) for t in self._tasks)}, '
+            f'promises: {", ".join(repr(p) for p in self._promises)}]'
+        )
 
     def __bool__(self) -> bool:
         return bool(self._tasks)
 
     def create[T: PromiseResult](self, task: asyncio.Future[T], ctx: RenderContext) -> Promise[T]:
         promise = Promise()
+        if not isinstance(task, asyncio.Task):
+            # For non-task futures from edit_message, we count their chained promises instead, or
+            # a cancel button will always show up for every edited message.
+            self._promises.add(promise)
 
         def callback(fut: asyncio.Future[T], _=ctx):
             # `set.remove` may raise here, since the `Future` produced by `edit_message` can be
             # chained to multiple promises.
             self._tasks.discard(fut)
+            self._promises.discard(promise)
             try:
                 promise._invoke(fut)
             except ValueError as e:
@@ -360,6 +369,20 @@ class Tasks:
             if not task.done():
                 log.warning('Tasks._cancel_done: task not done: %r', _format_task(task))
 
+    def count(self, key: str) -> int:
+        n = len([t for t in self._tasks if isinstance(t, asyncio.Task) and not t.done()])
+        m = sum(len(p._inner) for p in self._promises if isinstance(p._inner, list))
+        log.debug(
+            'Tasks.count: %s: %r: %d/%d tasks, %d/%d promises',
+            key,
+            self,
+            n,
+            len(self._tasks),
+            m,
+            len(self._promises),
+        )
+        return n + m
+
 
 INSTANCES = WeakSet()
 TASK_GROUPS: WeakValueDictionary[str, Tasks] = WeakValueDictionary()
@@ -367,7 +390,7 @@ TASK_GROUPS: WeakValueDictionary[str, Tasks] = WeakValueDictionary()
 
 def count_tasks(key: str) -> int:
     if (tasks := TASK_GROUPS.get(key)) is not None:
-        return len(tasks._tasks)
+        return tasks.count(key)
     return 0
 
 
