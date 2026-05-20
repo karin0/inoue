@@ -25,13 +25,13 @@ async def reroute_cmd(rs: Responder, text: str) -> Sequence[tuple[str, str | Non
         log.warning('reroute: already in reroute_cmd: %s', rs)
         return None
 
-    if (callback := rs.get_route()) is not None:
-        buf = []
-        old_text = rs.get_text()
-        rs.set_text(text)
-        try:
+    old_text = rs.get_text()
+    rs.set_text(text)
+    try:
+        if (callback := rs.get_route()) is not None:
+            buf = []
             with rs.capture(buf):
                 await callback(rs)
-        finally:
-            rs.set_text(old_text)
-        return buf
+            return buf
+    finally:
+        rs.set_text(old_text)
