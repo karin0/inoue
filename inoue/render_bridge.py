@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 
+from collections import ChainMap
 from collections.abc import Callable, Coroutine, MutableMapping
 from datetime import datetime
 from functools import wraps
@@ -224,16 +225,20 @@ class Bridge(Box):
     @trusted
     def evil(self, code):
         code = to_str(code).strip()
+
+        # Bring back the names overridden by `RenderContext`.
+        ctx: MutableMapping[str, Any] = self._ctx
+        local = ChainMap({'os': os, 'sys': sys}, ctx)
         if '\n' in code:
             res = []
 
             def print(*args):
-                res.extend(repr(arg) for arg in args)
+                res.extend(map(repr, args))
 
-            exec(code, globals={'print': print}, locals=self._ctx)  # noqa: S102
+            exec(code, globals={'print': print}, locals=local)  # noqa: S102
             return '\n'.join(res)
 
-        return eval(code, locals=self._ctx)  # noqa: S307
+        return eval(code, locals=local)  # noqa: S307
 
     @trusted
     def debug(self, *vals) -> Promise:
