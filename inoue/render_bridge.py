@@ -317,6 +317,7 @@ def write_file(path, text) -> None:
         raise TypeError(f'path must be a str, got {path!r}')
 
     text = to_str(text)
+    log.info('Bridge: write_file: %s (%d chars)', path, len(text))
     with open(path, 'w', encoding='utf-8') as fp:
         fp.write(text)
 
