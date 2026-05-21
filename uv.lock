@@ -293,9 +293,13 @@ dependencies = [
     { name = "yt-dlp" },
 ]
 
+[package.optional-dependencies]
+og = [
+    { name = "objgraph" },
+]
+
 [package.dev-dependencies]
 dev = [
-    { name = "objgraph" },
     { name = "pyinstrument" },
     { name = "pyright" },
     { name = "pytest" },
@@ -306,20 +310,21 @@ dev = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.13.5" },
     { name = "lark", specifier = ">=1.3.1" },
+    { name = "objgraph", marker = "extra == 'og'", specifier = ">=3.6.2" },
     { name = "pathvalidate", specifier = ">=3.3.1" },
     { name = "pillow", specifier = ">=10.0.0" },
     { name = "prettytable", specifier = ">=3.17.0" },
-    { name = "ptbcontrib", git = "https://github.com/python-telegram-bot/ptbcontrib.git?rev=main" },
+    { name = "ptbcontrib", git = "https://github.com/python-telegram-bot/ptbcontrib?rev=main" },
     { name = "python-telegram-bot", git = "https://github.com/karin0/python-telegram-bot?rev=inoue" },
     { name = "regex", specifier = ">=2026.4.4" },
     { name = "rembg", extras = ["cpu"], specifier = ">=2.0.75" },
     { name = "simpleeval", specifier = ">=1.0.3" },
     { name = "yt-dlp", specifier = ">=2026.3.17" },
 ]
+provides-extras = ["og"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "objgraph", specifier = ">=3.6.2" },
     { name = "pyinstrument", specifier = ">=5.1.2" },
     { name = "pyright", specifier = ">=1.1.409" },
     { name = "pytest", specifier = ">=9.0.3" },
@@ -683,7 +688,7 @@ wheels = [
 [[package]]
 name = "ptbcontrib"
 version = "0.0.0"
-source = { git = "https://github.com/python-telegram-bot/ptbcontrib.git?rev=main#dba9ac33676b431446fba6fdf9bc4ddbc1e1ce7a" }
+source = { git = "https://github.com/python-telegram-bot/ptbcontrib?rev=main#dba9ac33676b431446fba6fdf9bc4ddbc1e1ce7a" }
 dependencies = [
     { name = "python-telegram-bot" },
 ]

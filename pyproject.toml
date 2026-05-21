@@ -17,18 +17,20 @@ dependencies = [
     "regex>=2026.4.4",
 ]
 
-[tool.uv.sources]
-ptbcontrib = { git = "https://github.com/python-telegram-bot/ptbcontrib.git", rev = "main" }
-python-telegram-bot = { git = "https://github.com/karin0/python-telegram-bot", rev = "inoue" }
+[project.optional-dependencies]
+og = ["objgraph>=3.6.2"]
 
 [dependency-groups]
 dev = [
-    "objgraph>=3.6.2",
     "ruff>=0.15.12",
     "pyright>=1.1.409",
     "pyinstrument>=5.1.2",
     "pytest>=9.0.3",
 ]
+
+[tool.uv.sources]
+ptbcontrib = { git = "https://github.com/python-telegram-bot/ptbcontrib", rev = "main" }
+python-telegram-bot = { git = "https://github.com/karin0/python-telegram-bot", rev = "inoue" }
 
 [tool.ruff]
 line-length = 100
@@ -62,6 +64,7 @@ ignore = [
     "RUF022",
     "RUF023",
     "SLF001",
+    "TC001",
     "TC006",
     "TRY003",
     "TRY004",
