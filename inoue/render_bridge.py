@@ -110,18 +110,17 @@ class Promise[T: PromiseResult](Box):
                 log.error('Promise._resolve: loop chaining: %r', inner)
                 raise ValueError('loop chaining')
 
-            for v in self._next:
-                if v is not result:
-                    result._next.add(v)
-                else:
-                    # A 2-cycle. Further detection is skipped.
-                    self._cancel()
-                    v._cancel()
-                    log.error('Promise._resolve: circular chaining: %r', inner)
-                    raise ValueError('circular chaining')
+            if result in self._next:
+                # A 2-cycle. Further detection is skipped.
+                self._cancel()
+                result._cancel()
+                log.error('Promise._resolve: circular chaining: %r', inner)
+                raise ValueError('circular chaining')
 
+            result._next.update(self._next)
             result._next.add(self)
             self._next.clear()
+
             for cb in inner:
                 result._chain(cb)
         else:
