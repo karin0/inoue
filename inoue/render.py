@@ -42,8 +42,9 @@ from .ctx import get_context
 from .db import db
 from .env import CHAN_ID, MAX_TEXT_LENGTH, USER_ID, encode_id, list_env
 from .log import do_notify, log
-from .render_bridge import Bridge, LocalPath, count_tasks, to_segment
+from .render_bridge import Bridge, count_tasks
 from .render_context import OverriddenDict, decode_value, encode_value
+from .render_lib import LocalPath, to_segment
 from .segments import (
     BlockQuote,
     Bold,
