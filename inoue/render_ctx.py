@@ -28,18 +28,8 @@ from .env import CHAN_ID, USER_ID, list_env
 from .log import log
 from .render_bridge import Bridge, count_tasks
 from .render_context import OverriddenDict
-from .render_lib import LocalPath, to_segment
-from .segments import (
-    BlockQuote,
-    Element,
-    FlattenSegment,
-    Formatter,
-    Pre,
-    Segment,
-    Time,
-    get_renderer,
-    merge_segments,
-)
+from .render_lib import FlattenSegment, LocalPath, merge_segments, to_segment
+from .segments import BlockQuote, Element, Formatter, Pre, Segment, Time, get_renderer
 from .text import cleanup_text
 
 ENV_PREFIX = '_env.'
@@ -86,8 +76,7 @@ class RenderContext:
         '_responder',
         '_edit_handle',
         '_error_idx',
-        '_edit_message_segs',
-        '_edit_message_fut',
+        '_editing',
         'data',
         'engine',
         '__weakref__',
@@ -115,8 +104,7 @@ class RenderContext:
 
         self._error_idx = 0
         self._edit_handle = None
-        self._edit_message_segs: list[FlattenSegment] = []
-        self._edit_message_fut: asyncio.Future[str | None] | None = None
+        self._editing: tuple[list[FlattenSegment], asyncio.Future[str | None]] | None = None
 
         context = get_context()
         if (sender := context.sender) is not None and sender.id in (USER_ID, CHAN_ID):
@@ -163,23 +151,29 @@ class RenderContext:
     def set_update_callback(self, callback: UpdateCallback | None) -> None:
         self._update_callback = callback and (callback, asyncio.Lock())
 
-    async def _invoke_update_callback(self, spec: MessageSpec):
+    async def _invoke_update_callback(self, seg: FlattenSegment) -> MessageSpec:
         assert self._update_callback is not None
-        fut = self._edit_message_fut
+        editing = self._editing
+        self._editing = None
         func, lock = self._update_callback
         async with lock:
-            if fut is not None and fut.cancelled():
-                log.debug('_invoke_update_callback: context cancelled: %r', spec)
-                return
+            if editing is not None:
+                content, fut = editing
+                if fut.cancelled():
+                    log.debug('_invoke_update_callback: context cancelled: %r', seg)
+                    return self._format_response(seg)
+                seg = merge_segments((seg, *content)) if seg else merge_segments(content)
+            spec = self._format_response(seg)
             self._edit_handle = handle = await func(spec)
-            log.debug(
-                '_invoke_update_callback: handle=%r, fut=%r',
-                handle and handle.get_message_key(),
-                fut,
-            )
-            if fut is not None:
-                fut.set_result(handle.get_message_key())
-                self._edit_message_fut = None
+            key = handle.get_message_key()
+            log.debug('_invoke_update_callback: key=%r, editing=%r', key, editing)
+            if editing is not None:
+                _, fut = editing
+                if fut.cancelled():
+                    log.info('_invoke_update_callback: context cancelled after update: %r', fut)
+                else:
+                    fut.set_result(key)
+            return spec
 
     def _escalate(self) -> int | None:
         if (token := self._can_escalate) is not None:
@@ -240,35 +234,34 @@ class RenderContext:
 
         # We always append the new value, so the doc can clear the message by editing it to empty.
         seg = to_segment(val) if val is not None else ''
-        self._edit_message_segs.append(seg)
 
         # To gather multiple edits, along with all `engine.errors` generated during the task
         # callback, we have to defer the actual update until `_task_done` is called.
-        if self._edit_message_fut is None:
-            self._edit_message_fut = asyncio.get_event_loop().create_future()
+        if self._editing is None:
+            fut = asyncio.get_event_loop().create_future()
+            self._editing = ([seg], fut)
+        else:
+            content, fut = self._editing
+            content.append(seg)
 
-        log.debug('_edit_message: %r, %r', self._edit_message_segs, self._edit_message_fut)
-        return self._edit_message_fut
+        log.debug('_edit_message: %r', self._editing)
+        return fut
 
     def _task_done(self):
         self._atexit()
         log.debug(
-            '_task_done: segs=%r errors=%d/%d',
-            self._edit_message_segs,
+            '_task_done: editing=%r errors=%d/%d',
+            self._editing,
             self._error_idx,
             len(self.engine.errors),
         )
 
-        if self._edit_message_segs:
-            seg = merge_segments(self._edit_message_segs)
-            log.debug('_task_done: update seg: %r', seg)
-
+        if self._editing is not None:
+            log.debug('_task_done: _editing: %r', self._editing)
             # The edit buffer is only preserved during a single task callback.
-            self._edit_message_segs.clear()
-
-            spec = self._format_response(seg)
-            create_task(self._invoke_update_callback(spec))
+            create_task(self._invoke_update_callback(''))
         elif (errors := self.engine.errors) and self._error_idx < len(errors):
+            log.debug('_task_done: new errors: %d/%d', self._error_idx, len(errors))
             # If new error occurs without calling `_edit_message`, we still want to
             # reply it to the user when possible.
             create_task(self._report_errors())
@@ -308,10 +301,9 @@ class RenderContext:
 
     async def to_response(self, seg: FlattenSegment) -> MessageSpec:
         # Bootstrapping path.
-        spec = self._format_response(seg)
         if self._update_callback is not None:
-            await self._invoke_update_callback(spec)
-        return spec
+            return await self._invoke_update_callback(seg)
+        return self._format_response(seg)
 
     def _format_response(self, seg: FlattenSegment, *, has_markup: bool = True) -> MessageSpec:
         from .render import make_markup

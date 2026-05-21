@@ -39,6 +39,7 @@ from .render_ctx import (
     BUTTON_KEY,
     DOC_OVERRIDE_DIR,
     ENV_PREFIX,
+    FlattenSegment,
     MarkupState,
     MessageSpec,
     RenderContext,
@@ -48,7 +49,7 @@ from .render_ctx import (
     get_env,
     get_env_flag,
 )
-from .segments import Bold, Element, FlattenSegment, render_segment
+from .segments import Bold, Element, render_segment
 from .text import pre_block
 from .utils import get_msg_url
 

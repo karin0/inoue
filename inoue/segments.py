@@ -1,6 +1,6 @@
 import functools
 
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 
 from bot import escape, html_escape
@@ -333,21 +333,3 @@ class Formatter:
 
     def plain(self) -> str:
         return render_segment(self.segments, to_plain)
-
-
-# This must have more than one element, though we cannot enforce it with the type system.
-type PluralSequence[T] = Sequence[T]
-
-type FlattenSegment = str | BaseElement | PluralSequence[str | BaseElement]
-
-
-def merge_segments(segs: Iterable[FlattenSegment]) -> FlattenSegment:
-    out: list[str | BaseElement] = []
-    for seg in segs:
-        if isinstance(seg, (str, BaseElement)):
-            out.append(seg)
-        else:
-            out.extend(seg)
-    if len(out) == 1:
-        return out[0]
-    return out or ''

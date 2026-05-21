@@ -1,17 +1,38 @@
 import asyncio
 import time
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Sequence
 from typing import TYPE_CHECKING, Any, cast
 from weakref import WeakSet
 
 from render_core import Box, Fragment, Value, to_str
 
 from .log import log
-from .segments import BaseElement, FlattenSegment
+from .segments import BaseElement
 
 if TYPE_CHECKING:
     from .render import RenderContext
+
+
+def join_str[T](iter: Iterable[T]) -> Iterable[T]:
+    # Join consecutive strings.
+    buf = []
+    for v in iter:
+        if isinstance(v, str):
+            buf.append(v)
+        else:
+            if buf:
+                if r := ''.join(buf):
+                    yield r  # type: ignore[yield-type]
+                buf.clear()
+            yield v
+    if buf and (r := ''.join(buf)):
+        yield r  # type: ignore[yield-type]
+
+
+# This must have more than one element, though the type system cannot enforce it.
+type PluralSequence[T] = Sequence[T]
+type FlattenSegment = str | BaseElement | PluralSequence[str | BaseElement]
 
 
 def to_segment(val: Value | None) -> FlattenSegment:
@@ -22,31 +43,26 @@ def to_segment(val: Value | None) -> FlattenSegment:
         return val
 
     if isinstance(val, Fragment):
-        out = []
-        parts = []
-        for v in val:
-            s = to_segment(v)
-            # Exclude empty strings and sequences.
-            if isinstance(s, str):
-                # Join consecutive strings.
-                if s:
-                    parts.append(s)
-            else:
-                # Fragment is flattened when iterated, so returned seg cannot be
-                # another Sequence.
-                assert isinstance(s, BaseElement)
-                if parts:
-                    out.append(''.join(parts))
-                    parts.clear()
-                out.append(s)
-        if parts:
-            out.append(''.join(parts))
-
+        # Fragment is flattened when iterated, so returned seg cannot be
+        # another Sequence.
+        out: list[BaseElement | str] = [to_segment(v) for v in join_str(val)]  # type: ignore[assignment]
         if len(out) == 1:
             return out[0]
         return out or ''
 
     return to_str(val)
+
+
+def merge_segments(segs: Iterable[FlattenSegment]) -> FlattenSegment:
+    out: list[str | BaseElement] = []
+    for seg in join_str(segs):
+        if isinstance(seg, (str, BaseElement)):
+            out.append(seg)
+        else:
+            out.extend(seg)
+    if len(out) == 1:
+        return out[0]
+    return out or ''
 
 
 type PromiseResult = Value | list[Value] | tuple[Value, ...] | dict[str, Value] | None
