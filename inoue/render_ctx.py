@@ -464,6 +464,9 @@ class RenderContext:
     def _format_footers(self, state: str | None) -> Iterable[Segment]:
         ctx = self.data
 
+        if get_env_flag(ctx, 'no_footer'):
+            return
+
         if footer := get_env(ctx, 'footer'):
             yield to_segment(footer)
 
