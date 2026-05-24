@@ -111,11 +111,14 @@ class Responder(Protocol):
         s = self.get_text()
         if not s.startswith('/'):
             return ''
-        p = next((i for i, c in enumerate(s) if c.isspace() or c == '@'), len(s))
+        p = next((i for i, c in enumerate(s) if c.isspace()), len(s))
         cmd = s[1:p]
-        if p < len(s) and s[p] == '@' and s[p + 1 :] != bot.username:
-            # Omit commands for other bots.
-            return ''
+        q = cmd.find('@')
+        if q != -1:
+            if cmd[q + 1 :] != bot.username:
+                # Omit commands for other bots.
+                return ''
+            cmd = cmd[:q]
         return cmd
 
     def get_arg(self) -> str:
