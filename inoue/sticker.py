@@ -8,7 +8,7 @@ from typing import cast
 
 from pathvalidate import sanitize_filename
 from PIL import Image
-from telegram import Animation, Document, Message, PhotoSize, Sticker  # noqa: TC002
+from telegram import Animation, Document, Message, PhotoSize, Sticker
 from telegram.constants import ChatAction
 
 from bot import DocumentPayload, Responder, bot, command
@@ -135,7 +135,7 @@ async def send(
     )
 
 
-async def _handle_sticker(rs: Responder, src: Message) -> bool:
+async def _handle_sticker(rs: Responder, src: Message) -> str | None:
     if sti := src.sticker:
         base, emoji = sti.set_name, sti.emoji
         if sti.is_video:
@@ -153,7 +153,7 @@ async def _handle_sticker(rs: Responder, src: Message) -> bool:
             with rs.keep_chat_action(ChatAction.UPLOAD_PHOTO):
                 path = await download(sti, '.webp')
                 await send(rs, path, base, '.webp', emoji, raw=True)
-        return True
+        return path
 
     if photos := src.photo:
         ph = next(
@@ -162,13 +162,13 @@ async def _handle_sticker(rs: Responder, src: Message) -> bool:
         with rs.keep_chat_action(ChatAction.UPLOAD_PHOTO):
             path = await download(ph, '.jpg')
             await send(rs, to_webp(path, rs), None, '.webp')
-        return True
+        return path
 
     if ani := src.animation:
         with rs.keep_chat_action(ChatAction.UPLOAD_VIDEO):
             path = await download(ani, '.mp4')
             await send(rs, to_webm(path), ani.file_name, '.webm')
-        return True
+        return path
 
     if doc := src.document:
         mime = doc.mime_type or ''
@@ -178,26 +178,21 @@ async def _handle_sticker(rs: Responder, src: Message) -> bool:
             with rs.keep_chat_action(ChatAction.UPLOAD_VIDEO):
                 path = await download(doc, ext)
                 await send(rs, to_webm(path), name, '.webm')
-        elif mime.startswith('image'):
+            return path
+        if mime.startswith('image'):
             with rs.keep_chat_action(ChatAction.UPLOAD_PHOTO):
                 path = await download(doc, ext)
                 await send(rs, to_webp(path, rs), name, '.webp')
-        else:
-            return False
-        return True
-
-    return False
+            return path
 
 
 @command(public=True)
-async def handle_sticker(msg: Message, rs: Responder, as_command: bool = True) -> bool:
+async def handle_sticker(rs: Responder, as_command: bool = True) -> bool:
     try:
-        r = await _handle_sticker(rs, msg) or (
-            (m := msg.reply_to_message) is not None and await _handle_sticker(rs, m)
-        )
+        r = await rs.extract_async(_handle_sticker)
     except TooLarge:
         await rs.reply_cached('File is too large.')
         return True
-    if not r and as_command:
+    if r is None and as_command:
         await rs.reply_cached('Send or reply to a photo/animation to convert it into a sticker.')
-    return r
+    return r is not None

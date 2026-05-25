@@ -103,9 +103,7 @@ async def handle_msg(rs: Responder, direct: bool = True):
         log.debug('Via bot: %s', msg)
         return None
 
-    if await handle_voice.route(rs, as_command=False) or await handle_sticker(
-        msg, rs, as_command=False
-    ):
+    if await handle_voice.route(rs, as_command=False) or await handle_sticker(rs, as_command=False):
         return None
 
     # ID Bot

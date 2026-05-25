@@ -235,11 +235,12 @@ async def _handle_voice(
 # Otherwise, the inline message would be sent before the voice is ready.
 @command(public=True)
 async def handle_voice(
-    rs: Responder, msg: Message, arg: MessageArg, flush: RequireDefer, as_command: bool = True
+    rs: Responder, arg: MessageArg, flush: RequireDefer, as_command: bool = True
 ) -> bool:
-    info = extract_media(msg) or (msg.reply_to_message and extract_media(msg.reply_to_message))
     parsed = None
-    if info or (as_command and (parsed := extract_url(arg)) is not None):
+    if (info := rs.extract(extract_media)) is not None or (
+        as_command and (parsed := extract_url(arg)) is not None
+    ):
         # An inline message cannot contain two media, so we have to skip sending
         # the original audio when deferred.
         await _handle_voice(rs, info, parsed, arg, flush is None)

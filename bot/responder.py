@@ -12,7 +12,7 @@ from .app import bot, create_task
 from .env import log
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Iterator
+    from collections.abc import Awaitable, Callable, Iterator
 
     from .dispatch import Route
     from .message_responder import MessageEditHandle
@@ -153,6 +153,22 @@ class Responder(Protocol):
         from .dispatch import dispatch_start
 
         return dispatch_start(self, self.get_arg())
+
+    def extract[T](self, extractor: Callable[[Message], T | None]) -> T | None:
+        msg = self.get_message()
+        if (r := extractor(msg)) is not None:
+            return r
+        if (m := msg.reply_to_message) is not None:
+            return extractor(m)
+
+    async def extract_async[T](
+        self, extractor: Callable[[Responder, Message], Awaitable[T | None]]
+    ) -> T | None:
+        msg = self.get_message()
+        if (r := await extractor(self, msg)) is not None:
+            return r
+        if (m := msg.reply_to_message) is not None:
+            return await extractor(self, m)
 
     @contextmanager
     def capture(

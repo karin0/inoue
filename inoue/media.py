@@ -1,4 +1,4 @@
-from telegram import Message  # noqa: TC002
+from telegram import Message
 
 from bot import MessageArg, Responder, command, escape, start
 
@@ -7,7 +7,7 @@ from .log import log
 from .utils import get_deep_link_url, get_msg_url
 
 
-def extract_media(msg: Message) -> tuple[str, str] | None:
+def extract_media(msg: Message) -> tuple[Message, str, str] | None:
     if (
         f := msg.voice
         or msg.document
@@ -27,23 +27,17 @@ def extract_media(msg: Message) -> tuple[str, str] | None:
             mime_type or '<unknown>',
             f.file_size,
         )
-        return file_name, f.file_id
-
-    return None
+        return msg, file_name, f.file_id
 
 
 @command
-def handle_save(rs: Responder, msg: Message, arg: MessageArg):
-    if (target := msg.reply_to_message) and (info := extract_media(target)) is not None:
-        pass
-    elif (info := extract_media(msg)) is not None:
-        target = msg
-    else:
+def handle_save(rs: Responder, arg: MessageArg):
+    if (info := rs.extract(extract_media)) is None:
         return rs.reply_cached(
             r'Send or reply to a media message with `/save [title]` to save it\.', 'MarkdownV2'
         )
 
-    file_name, file_id = info
+    target, file_name, file_id = info
     title = arg.strip() or file_name or ''
     is_new = db.save_media(target.chat_id, target.message_id, title, file_id)
     media_text = render_media(target.chat_id, target.message_id, title)
