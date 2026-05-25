@@ -7,7 +7,7 @@ from . import env
 from .app import bot
 from .env import log
 from .payload import MediaPayload, MediaPayloadWithInput, payload_has_input
-from .responder import EditHandle, Responder
+from .responder import EditHandle, ReplyMarkup, Responder
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
@@ -180,7 +180,7 @@ class MessageResponder(Responder):
         self,
         text: str | None = None,
         parse_mode: str | None = None,
-        reply_markup: InlineKeyboardMarkup | None = None,
+        reply_markup: ReplyMarkup | None = None,
         *,
         cached: bool = False,
         media: MediaPayload | None = None,
@@ -233,7 +233,9 @@ class MessageResponder(Responder):
         if not (val := env.driver.get(key)):
             return await _do_reply()
 
-        if media is not None and not payload_has_input(media):
+        if (media is not None and not payload_has_input(media)) or (
+            reply_markup is not None and not isinstance(reply_markup, InlineKeyboardMarkup)
+        ):
             env.driver.discard(key)
             return await _do_reply()
 

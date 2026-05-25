@@ -35,6 +35,8 @@ from .env import log
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Iterator
 
+    from .responder import ReplyMarkup
+
 type Media = Audio | Document | PhotoSize | Sticker | Video | Voice
 CACHED_MEDIA_TYPES = (Audio, Document, PhotoSize, Sticker, Video, Voice, str)
 
@@ -69,7 +71,7 @@ class MediaPayload[T: Content](Protocol):
         *,
         caption: str | None = None,
         parse_mode: str | None = None,
-        reply_markup: InlineKeyboardMarkup | None = None,
+        reply_markup: ReplyMarkup | None = None,
         message_thread_id: int | None = None,
         disable_notification: bool | None = None,
         reply_parameters: ReplyParameters | None = None,
@@ -110,7 +112,7 @@ class MediaPayload[T: Content](Protocol):
         msg: Message,
         caption: str | None = None,
         parse_mode: str | None = None,
-        reply_markup: InlineKeyboardMarkup | None = None,
+        reply_markup: ReplyMarkup | None = None,
     ) -> Message:
         with open_content(self.content) as c:
             return await self._send(
@@ -237,7 +239,7 @@ class PhotoPayload[T: Content](MediaPayloadWithInput[T]):
         *,
         caption: str | None = None,
         parse_mode: str | None = None,
-        reply_markup: InlineKeyboardMarkup | None = None,
+        reply_markup: ReplyMarkup | None = None,
         message_thread_id: int | None = None,
         disable_notification: bool | None = None,
         reply_parameters: ReplyParameters | None = None,
@@ -296,7 +298,7 @@ class DocumentPayload[T: Content](MediaPayloadWithInput[T]):
         *,
         caption: str | None = None,
         parse_mode: str | None = None,
-        reply_markup: InlineKeyboardMarkup | None = None,
+        reply_markup: ReplyMarkup | None = None,
         message_thread_id: int | None = None,
         disable_notification: bool | None = None,
         reply_parameters: ReplyParameters | None = None,
@@ -365,7 +367,7 @@ class VideoPayload[T: Content](MediaPayloadWithInput[T]):
         *,
         caption: str | None = None,
         parse_mode: str | None = None,
-        reply_markup: InlineKeyboardMarkup | None = None,
+        reply_markup: ReplyMarkup | None = None,
         message_thread_id: int | None = None,
         disable_notification: bool | None = None,
         reply_parameters: ReplyParameters | None = None,
@@ -440,7 +442,7 @@ class AudioPayload[T: Content](MediaPayloadWithInput[T]):
         *,
         caption: str | None = None,
         parse_mode: str | None = None,
-        reply_markup: InlineKeyboardMarkup | None = None,
+        reply_markup: ReplyMarkup | None = None,
         message_thread_id: int | None = None,
         disable_notification: bool | None = None,
         reply_parameters: ReplyParameters | None = None,
@@ -510,7 +512,7 @@ class VoicePayload[T: Content](MediaPayload[T]):
         *,
         caption: str | None = None,
         parse_mode: str | None = None,
-        reply_markup: InlineKeyboardMarkup | None = None,
+        reply_markup: ReplyMarkup | None = None,
         message_thread_id: int | None = None,
         disable_notification: bool | None = None,
         reply_parameters: ReplyParameters | None = None,
@@ -563,7 +565,7 @@ class StickerPayload[T: Content](MediaPayload[T]):
         *,
         caption: str | None = None,
         parse_mode: str | None = None,
-        reply_markup: InlineKeyboardMarkup | None = None,
+        reply_markup: ReplyMarkup | None = None,
         message_thread_id: int | None = None,
         disable_notification: bool | None = None,
         reply_parameters: ReplyParameters | None = None,

@@ -4,7 +4,15 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import TYPE_CHECKING, Protocol
 
-from telegram import Chat, InlineKeyboardMarkup, Message, Update, User
+from telegram import (
+    Chat,
+    InlineKeyboardMarkup,
+    Message,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+    Update,
+    User,
+)
 from telegram.constants import ChatAction, ChatType
 
 from . import env
@@ -22,6 +30,8 @@ if TYPE_CHECKING:
 # It takes care of default reply parameters, media payload, inline message adaptation,
 # text capturing, caching for in-place editing (opt-in), and so on.
 
+type ReplyMarkup = InlineKeyboardMarkup | ReplyKeyboardMarkup | ReplyKeyboardRemove
+
 
 class Responder(Protocol):
     __slots__ = ('_text', '_capture_buf')
@@ -34,7 +44,7 @@ class Responder(Protocol):
         self,
         text: str | None = None,
         parse_mode: str | None = None,
-        reply_markup: InlineKeyboardMarkup | None = None,
+        reply_markup: ReplyMarkup | None = None,
         *,
         cached: bool = False,
         media: MediaPayload | None = None,

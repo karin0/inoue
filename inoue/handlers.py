@@ -22,6 +22,7 @@ from .ctx import Sender, get_context, is_admin
 from .env import CHAN_ID, GROUP_ID, TODO_ID, USER_ID
 from .inoue import render_receipt
 from .log import log
+from .merge import check_merge
 from .render import handle_render_doc, handle_render_group, handle_render_inline_query
 from .rg import handle_rg
 from .sticker import handle_sticker
@@ -81,6 +82,10 @@ async def handle_msg(rs: Responder, direct: bool = True):
     # This allows commands to be sent as any styled text (pre/quote), rather than
     # a canonical BOT_COMMAND entity.
     if (coro := rs.dispatch_command()) is not None:
+        return await coro
+
+    # Check if this session is in merge mode and handle the media message
+    if (coro := check_merge(msg)) is not None:
         return await coro
 
     if (

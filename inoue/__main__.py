@@ -17,7 +17,7 @@ except RuntimeError:
 
 from bot import Responder, app, shorten
 
-from . import media, misc, run  # noqa: F401
+from . import media, merge, misc, run  # noqa: F401
 from .commands import handle_help
 from .ctx import Sender, use_context
 from .env import CHAN_ID, GROUP_ID, GUEST_USER_IDS, IGNORE_CHAT_IDS, LOCK_FILE, ME, USER_ID

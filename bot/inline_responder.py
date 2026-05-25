@@ -15,7 +15,7 @@ from .app import bot
 from .env import log
 from .message_responder import MessageEditHandle
 from .payload import CachedPayload, MediaPayload, MediaPayloadWithInput, payload_has_input
-from .responder import EditHandle, Responder
+from .responder import EditHandle, ReplyMarkup, Responder
 from .text import escape, html_escape, shorten, truncate_text
 
 if TYPE_CHECKING:
@@ -86,7 +86,7 @@ class InlineResponder(Responder):
         self,
         text: str | None = None,
         parse_mode: str | None = None,
-        reply_markup: InlineKeyboardMarkup | None = None,
+        reply_markup: ReplyMarkup | None = None,
         *,
         cached: bool = False,
         media: MediaPayload | None = None,
@@ -97,13 +97,17 @@ class InlineResponder(Responder):
             cached = False
 
         if reply_markup is not None:
-            if self._reply_markup is not None:
-                log.warning(
-                    'InlineResponder: overriding reply_markup: %s -> %s',
-                    self._reply_markup,
-                    reply_markup,
-                )
-            self._reply_markup = reply_markup
+            if isinstance(reply_markup, InlineKeyboardMarkup):
+                if self._reply_markup is not None:
+                    log.warning(
+                        'InlineResponder: overriding reply_markup: %s -> %s',
+                        self._reply_markup,
+                        reply_markup,
+                    )
+                self._reply_markup = reply_markup
+            else:
+                log.warning('InlineResponder: ignored non-inline reply_markup: %s', reply_markup)
+                reply_markup = None
 
         if disable_web_page_preview is not None:
             self._disable_web_page_preview = disable_web_page_preview
