@@ -66,7 +66,9 @@ MAX_BITRATE_K = 192
 QUALITY_THRESHOLD_K = 32
 
 
-async def encode_opus(src: str, bitrate_k: int) -> tuple[bytes, str]:
+async def encode_opus(
+    src: str, bitrate_k: int, start_time: float | None, duration: float | None
+) -> tuple[bytes, str]:
     args = ['-b:a', f'{bitrate_k}k']
     quality = bitrate_k > QUALITY_THRESHOLD_K
 
@@ -83,13 +85,18 @@ async def encode_opus(src: str, bitrate_k: int) -> tuple[bytes, str]:
 
     attrs.append(os.path.basename(src))
 
+    if start_time is not None or duration is not None:
+        attrs.append(f'crop:{start_time or 0}+{duration or ""}')
+
     settings += f'({",".join(attrs)})'
     log.debug('Running ffmpeg with %s', settings)
 
     out = await run_ffmpeg(
         '-xerror',
+        *(() if start_time is None else ('-ss', str(start_time))),
         '-i',
         src,
+        *(() if duration is None else ('-t', str(duration))),
         '-map',
         '0:a:0',
         '-vn',
@@ -145,6 +152,25 @@ def _estimate_bitrate_from_sample(sample_bitrate_k: int, sample_size: int) -> in
     return _clamp_bitrate(estimated)
 
 
+def _normalize_crop(
+    duration: float, start_time: float | None, end_time: float | None
+) -> tuple[float, float | None, float | None]:
+    s = min(max(0, start_time), duration) if start_time is not None else 0
+    e = min(max(0, end_time), duration) if end_time is not None else duration
+    if s > e:
+        s, e = e, s
+
+    if (dur := e - s) < 1:
+        if duration < 1:
+            s = 0
+            e = dur = duration
+        elif (e := s + (dur := 1)) > duration:
+            s = duration - 1
+            e = duration
+
+    return dur, s or None, (None if e == duration else dur)
+
+
 class EncodedVoice(NamedTuple):
     duration: float
     data: bytes
@@ -158,14 +184,27 @@ async def encode_voice(
     duration: float,
     bitrate_k: int = 0,
     quality: bool = False,
+    start_time: float | None = None,
+    end_time: float | None = None,
 ) -> EncodedVoice:
     curr_len = 0
     raw_result: EncodedVoice | None = None
     iterations = 0
 
+    if duration <= 0:
+        value = await probe_duration(src)
+        log.info('ffprobe: %s', value)
+        report(0, f'ffprobe: `{escape(value)}`')
+        duration = float(value)
+        if duration <= 0:
+            raise ValueError(f'Invalid duration: {duration}')
+
+    duration, start_time, crop_duration = _normalize_crop(duration, start_time, end_time)
+    log.info('Encoding voice: crop=%s+%s duration=%.1f', start_time, crop_duration, duration)
+
     async def do_encode(desc: str, bitrate_k: int) -> EncodedVoice | None:
         nonlocal curr_len, raw_result, iterations
-        out, info = await encode_opus(src, bitrate_k)
+        out, info = await encode_opus(src, bitrate_k, start_time, crop_duration)
         curr_len = len(out)
         report(1, f'ffmpeg: `{info}` @ {curr_len}')
         success = curr_len <= MAX_VOICE_SIZE
@@ -185,14 +224,6 @@ async def encode_voice(
 
     if bitrate_k > 0 and (result := await do_encode('Hinted', bitrate_k)):
         return result
-
-    if duration <= 0:
-        value = await probe_duration(src)
-        log.info('ffprobe: %s', value)
-        report(0, f'ffprobe: `{escape(value)}`')
-        duration = float(value)
-        if duration <= 0:
-            raise ValueError('Invalid duration: %s', duration)
 
     bitrate_k = _estimate_bitrate_from_duration(duration, quality)
     result = await do_encode('Duration-based', bitrate_k)

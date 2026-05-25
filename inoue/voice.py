@@ -1,10 +1,11 @@
 import asyncio
 import math
 import os
+import re
 
 from datetime import timedelta
 
-from telegram import Audio, Document, Message, Video
+from telegram import Audio, Document, Message, Video, Voice
 from telegram.constants import ChatAction
 
 from bot import (
@@ -25,8 +26,7 @@ from .ytdlp import Output, extract_url, run_ytdlp
 
 VOICE_ASSETS_DIR = 'assets/voice'
 
-
-type Media = Document | Audio | Video
+type Media = Document | Audio | Video | Voice
 
 
 # https://github.com/yagop/node-telegram-bot-api/issues/544
@@ -38,6 +38,8 @@ async def convert_voice(
     bitrate_k: int,
     quality: bool,
     quiet: bool,
+    start_time: float | None = None,
+    end_time: float | None = None,
 ) -> None:
     log.info('Attachment: %s', attachment)
 
@@ -48,7 +50,7 @@ async def convert_voice(
         file_name = os.path.basename(attachment.path)
         file_size = attachment.size
     else:
-        file_name = attachment.file_name
+        file_name = attachment.file_name if not isinstance(attachment, Voice) else None
         file_size = attachment.file_size
 
     attrs = []
@@ -56,6 +58,8 @@ async def convert_voice(
         attrs.append(f'{file_size} bytes')
     if duration > 0:
         attrs.append(f'{duration} s')
+    if start_time is not None or end_time is not None:
+        attrs.append(f'crop:{start_time or 0}-{end_time or ''}')
     if bitrate_k > 0:
         attrs.append(f'{bitrate_k}k')
     if quality:
@@ -141,11 +145,11 @@ async def convert_voice(
             file_path = str(src)
 
     log.info('Encoding voice from %s', file_path)
-    r = await encode_voice(file_path, report, duration, bitrate_k, quality)
+    r = await encode_voice(file_path, report, duration, bitrate_k, quality, start_time, end_time)
     if queue is not None:
         queue.put_nowait(None)
     report(2, f'Encoded into {len(r.data)} bytes at {r.bitrate_k} kbps in {r.iterations} iters')
-    await rs.reply(media=VoicePayload(r.data, math.ceil(duration) if duration >= 0 else None))
+    await rs.reply(media=VoicePayload(r.data, math.ceil(r.duration) if r.duration >= 0 else None))
 
 
 def extract_media(msg: Message) -> tuple[Media, int | timedelta] | None:
@@ -154,8 +158,37 @@ def extract_media(msg: Message) -> tuple[Media, int | timedelta] | None:
         log.debug('voice: document mime: %s', mime)
         if mime and (mime.startswith(('audio', 'video'))):
             return media, 0
-    elif (media := msg.audio or msg.video) is not None:
+    elif (media := msg.audio or msg.video or msg.voice) is not None:
         return media, media.duration
+
+
+CROP_RE = re.compile(r'((?:\d+:){0,2}\d+(?:\.\d+)?)?-((?:\d+:){0,2}\d+(?:\.\d+)?)?')
+
+
+def parse_time(s: str) -> float:
+    parts = s.split(':')
+    match len(parts):
+        case 1:
+            return float(parts[0])
+        case 2:
+            return int(parts[0]) * 60 + float(parts[1])
+        case _:
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+
+
+def extract_crop(arg: str) -> tuple[str, float | None, float | None] | None:
+    new_args = []
+    interval = None
+    for word in arg.split():
+        if interval is None and '-' in word and (m := CROP_RE.fullmatch(word)) is not None:
+            start = m.group(1)
+            end = m.group(2)
+            if start or end:
+                interval = (parse_time(start) if start else None, parse_time(end) if end else None)
+                continue
+        new_args.append(word)
+    if interval is not None:
+        return ' '.join(new_args), *interval
 
 
 async def _handle_voice(
@@ -175,6 +208,12 @@ async def _handle_voice(
                 create_task(output.finish(rs, audio_only=True))
             info = output, output.duration
 
+        # Parse crop interval from arg
+        if arg and (r := extract_crop(arg)) is not None:
+            arg, start_time, end_time = r
+        else:
+            start_time = end_time = None
+
         if get_context().sender_is_host():
             quality = 'Q' not in arg
         elif arg:
@@ -186,7 +225,7 @@ async def _handle_voice(
 
         bitrate_k = int(arg[:p]) if (p := arg.find('k')) > 0 and arg[:p].isdigit() else 0
 
-        await convert_voice(rs, *info, bitrate_k, quality, quiet)
+        await convert_voice(rs, *info, bitrate_k, quality, quiet, start_time, end_time)
 
 
 # XXX: No `InputMediaVoice` exists, so the voice result cannot be edited onto
