@@ -128,6 +128,12 @@ class Responder(Protocol):
         p = next((i for i, c in enumerate(s) if c.isspace()), len(s))
         return s[p + 1 :].strip()
 
+    def get_effective_arg(self) -> str:
+        s = self.get_arg()
+        replied = self.get_message().reply_to_message
+        t = replied is not None and (replied.text or replied.caption) or ''
+        return f'{s} {t}' if s and t else (s or t)
+
     def get_route(self) -> Route | None:
         from .dispatch import commands
 

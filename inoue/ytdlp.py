@@ -30,7 +30,6 @@ from bot import (
     DocumentPayload,
     EditHandle,
     MediaPayload,
-    MessageArg,
     Responder,
     VideoPayload,
     VoicePayload,
@@ -384,19 +383,15 @@ async def run_ytdlp(url: str, *, audio_only: bool = False) -> Output:
 
 async def _handle_yt(
     rs: Responder,
-    arg: str,
     cmd: str,
     action: ChatAction,
     *,
     audio_only: bool = False,
     video_note: bool = False,
 ):
-    if not arg:
+    arg = rs.get_effective_arg()
+    if not arg or (url := find_url(arg)) is None:
         await rs.reply_cached(f'Usage: {cmd} <url>')
-        return
-
-    if (url := find_url(arg)) is None:
-        await rs.reply_cached('Please provide a valid URL.')
         return
 
     with rs.keep_chat_action(action):
@@ -413,18 +408,18 @@ async def _handle_yt(
 
 
 @command(public=True)
-def handle_yt(rs: Responder, arg: MessageArg):
-    return _handle_yt(rs, arg, '/yt', ChatAction.RECORD_VIDEO)
+def handle_yt(rs: Responder):
+    return _handle_yt(rs, '/yt', ChatAction.RECORD_VIDEO)
 
 
 @command(public=True)
-def handle_yta(rs: Responder, arg: MessageArg):
-    return _handle_yt(rs, arg, '/yta', ChatAction.RECORD_VOICE, audio_only=True)
+def handle_yta(rs: Responder):
+    return _handle_yt(rs, '/yta', ChatAction.RECORD_VOICE, audio_only=True)
 
 
 @command(public=True)
-def handle_ytn(rs: Responder, arg: MessageArg):
-    return _handle_yt(rs, arg, '/ytn', ChatAction.RECORD_VIDEO_NOTE, video_note=True)
+def handle_ytn(rs: Responder):
+    return _handle_yt(rs, '/ytn', ChatAction.RECORD_VIDEO_NOTE, video_note=True)
 
 
 LABEL = {'video': '📹 Video', 'audio': '🎵 Audio', 'voice': '🎤 Voice', 'document': '📄 File'}
