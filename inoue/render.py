@@ -294,16 +294,8 @@ def create_data(overrides: dict[str, Value]) -> OverriddenDict:
 
 
 @command(public=True)
-def handle_render(msg: Message, rs: Responder, arg: MessageArg):
-    target = msg.reply_to_message
-    text = target and (target.text or target.caption or '').strip()
-
-    if text:
-        if arg:
-            text = arg + '\n' + text
-    elif arg:
-        text = arg
-    else:
+def handle_render(msg: Message, rs: Responder):
+    if not (text := rs.get_effective_arg('\n')):
         return rs.reply_cached('Specify text or reply to a message to render.')
 
     if doc_ref := is_doc_ref(text):
