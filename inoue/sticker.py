@@ -159,7 +159,7 @@ async def _handle_sticker(rs: Responder, src: Message) -> str | None:
         ph = next(
             (p for p in photos if p.width >= STICKER_SIDE or p.height >= STICKER_SIDE), photos[-1]
         )
-        with rs.keep_chat_action(ChatAction.UPLOAD_PHOTO):
+        with rs.keep_chat_action(ChatAction.CHOOSE_STICKER):
             path = await download(ph, '.jpg')
             await send(rs, to_webp(path, rs), None, '.webp')
         return path
@@ -180,7 +180,7 @@ async def _handle_sticker(rs: Responder, src: Message) -> str | None:
                 await send(rs, to_webm(path), name, '.webm')
             return path
         if mime.startswith('image'):
-            with rs.keep_chat_action(ChatAction.UPLOAD_PHOTO):
+            with rs.keep_chat_action(ChatAction.CHOOSE_STICKER):
                 path = await download(doc, ext)
                 await send(rs, to_webp(path, rs), name, '.webp')
             return path
