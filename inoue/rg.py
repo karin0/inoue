@@ -35,40 +35,59 @@ SECTION_SEP = b'>>> 202'
 SECTION_SEP_OFFSET = 2
 SECTION_GAP = 24
 
+# One character takes up to 4 bytes in UTF-8.
 SECTION_TEXT_LIMIT = MAX_TEXT_LENGTH << 2
-SECTION_FIND_LIMIT = SECTION_TEXT_LIMIT + SECTION_SEP_OFFSET
+
+# Max byte distance from viewport start to the match to ensure the match remains
+# visible within MAX_TEXT_LENGTH limit. Subtract 400 bytes as headroom.
+MAX_MATCH_LOOKBACK = MAX_TEXT_LENGTH - 400
 
 
 @dataclass(frozen=True, slots=True, eq=False, match_args=False)
 class Section:
+    # True section boundaries driving navigation and edge detection.
     start: int
     end: int
     hit: bool
 
+    # Boundaries of the rendered viewport.
+    view_start: int
+    view_end: int
+
     @staticmethod
     def discover(mm: mmap.mmap, off: int) -> Section | None:
-        # One character takes up to 4 bytes in UTF-8.
-        bound = max(0, off - SECTION_FIND_LIMIT)
-        section_start = mm.rfind(SECTION_SEP, bound, off)
+        start = mm.rfind(SECTION_SEP, 0, off)
+        # Search from off + 1 to avoid matching a separator starting exactly at off.
+        end = mm.find(SECTION_SEP, off + 1)
+        if end < 0:
+            end = mm.size()
 
-        bound = (off if section_start < 0 else section_start) + SECTION_FIND_LIMIT
-
-        section_end = mm.find(SECTION_SEP, off, bound)
-
-        if section_end < 0:
-            section_end = min(mm.size(), bound)
-
-        if hit := section_start >= 0:
-            section_start += SECTION_SEP_OFFSET
+        # Render from start only if the match fits within MAX_TEXT_LENGTH;
+        # otherwise, slide the viewport back to keep the match visible.
+        if start >= 0 and off - start < MAX_MATCH_LOOKBACK:
+            hit = True
+            view_start = start + SECTION_SEP_OFFSET
         else:
-            section_start = max(0, section_end - SECTION_TEXT_LIMIT)
+            hit = False
+            view_start = max(start, 0, off - MAX_MATCH_LOOKBACK)
 
-        log.info('section: %d in %d-%d (hit=%s)', off, section_start, section_end, hit)
-        if section_start < section_end:
-            return Section(start=section_start, end=section_end, hit=hit)
+        start = max(start, 0)
+        view_end = min(end, view_start + SECTION_TEXT_LIMIT)
+        log.info(
+            'section: %d view %d-%d (hit=%s, section=%d-%d)',
+            off,
+            view_start,
+            view_end,
+            hit,
+            start,
+            end,
+        )
+        if view_start < view_end:
+            return Section(start=start, end=end, hit=hit, view_start=view_start, view_end=view_end)
 
     def decode(self, mm: mmap.mmap) -> str:
-        return mm[self.start : self.end].decode('utf-8', errors='replace').strip('�').strip()
+        raw = mm[self.view_start : self.view_end]
+        return raw.decode('utf-8', errors='replace').strip('�').strip()
 
     @property
     def next_offset(self) -> int:
@@ -205,6 +224,7 @@ def do_show(rs: Responder, i: int, j: int, k: int | None, alt_off: int | None):
             return rs.reply_cached('Unable to show the section.')
 
         text = sect.decode(mm)
+        file_size = mm.size()
 
     text = truncate_text(text)
     parse_mode = None
@@ -223,10 +243,21 @@ def do_show(rs: Responder, i: int, j: int, k: int | None, alt_off: int | None):
             text = header + pre_block_raw(body)
             parse_mode = 'MarkdownV2'
 
+    prev_btn = (
+        InlineKeyboardButton(text=' ', callback_data='noop')
+        if sect.end >= file_size
+        else InlineKeyboardButton(text='Prev', callback_data=f'rg_show_{i}_{j}_{sect.prev_offset}')
+    )
+    next_btn = (
+        InlineKeyboardButton(text=' ', callback_data='noop')
+        if sect.start <= 0
+        else InlineKeyboardButton(text='Next', callback_data=f'rg_show_{i}_{j}_{sect.next_offset}')
+    )
+
     row = [
-        InlineKeyboardButton(text='Prev', callback_data=f'rg_show_{i}_{j}_{sect.prev_offset}'),
+        prev_btn,
         InlineKeyboardButton(text='Back', callback_data=f'rg_back_{i}'),
-        InlineKeyboardButton(text='Next', callback_data=f'rg_show_{i}_{j}_{sect.next_offset}'),
+        next_btn,
     ]
 
     return message.edit_text(
