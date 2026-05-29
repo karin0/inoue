@@ -305,11 +305,8 @@ async def _run_rg(arg: str, cwd: str) -> RGQuery:
     return query
 
 
-def render_page(
-    query: RGQuery,
-    idx: int,
-    page_num: int = 0,  # must be an existing or next page ( `<= len(page_offsets)`)
-) -> str:
+# `page_num` must be an existing or next page ( `<= len(page_offsets)`).
+def render_page(query: RGQuery, idx: int, page_num: int = 0) -> str:
     offsets = (0, 0, 0) if page_num == 0 else query.page_offsets[page_num - 1]
     *render_offset, total_offset = offsets
 
@@ -324,14 +321,12 @@ def render_page(
     # end up with an empty page that blocks navigation, since the length of each
     # match is limited in `RGMatch.segment`. Therefore, the final `page_offset`
     # will always point to (-1, -1, cnt).
-    offset: tuple[int, int] = (-1, -1)
-    total = total_offset - 1
-
     fmt = Formatter(strict=True)
-    total += len(list(itertools.islice(query.render(fmt, idx, *render_offset), PAGE_LIMIT + 1)))
+    rendered = list(itertools.islice(query.render(fmt, idx, *render_offset), PAGE_LIMIT + 1))
+    assert rendered
+    total = total_offset - 1 + len(rendered)
+    offset = rendered[-1]
     result = fmt.html()
-
-    assert total >= total_offset
 
     page_offset = (offset[0], offset[1], total)
     if len(query.page_offsets) == page_num:
