@@ -352,6 +352,13 @@ def get_ytdlp(audio_only: bool) -> YoutubeDL:
         'allowed_extractors': ('default', '-generic'),
     }
 
+    if file := os.environ.get('YT_DLP_COOKIE_FILE'):
+        if os.path.exists(file):
+            log.info('Using cookie file for yt-dlp: %s', file)
+            opts['cookiefile'] = file
+        else:
+            log.error('Specified YT_DLP_COOKIE_FILE does not exist: %s', file)
+
     _instances[audio_only] = ydl = YoutubeDL(cast(Any, opts))
     return ydl
 
