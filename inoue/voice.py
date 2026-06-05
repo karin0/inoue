@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import math
 import os
 import re
@@ -40,6 +41,8 @@ async def convert_voice(
     quiet: bool,
     start_time: float | None = None,
     end_time: float | None = None,
+    speed: float = 1,
+    drum: bool = False,
 ) -> None:
     log.info('Attachment: %s', attachment)
 
@@ -59,11 +62,15 @@ async def convert_voice(
     if duration > 0:
         attrs.append(f'{duration} s')
     if start_time is not None or end_time is not None:
-        attrs.append(f'crop:{start_time or 0}-{end_time or ''}')
+        attrs.append(f'crop:{start_time or 0}-{end_time or ""}')
     if bitrate_k > 0:
         attrs.append(f'{bitrate_k}k')
     if quality:
         attrs.append('quality')
+    if drum:
+        attrs.append('drum')
+    if speed != 1:
+        attrs.append(f'speed={speed}')
 
     attrs = ', '.join(attrs)
     log.info('Processing: %s (%s)', file_name, attrs)
@@ -145,7 +152,17 @@ async def convert_voice(
             file_path = str(src)
 
     log.info('Encoding voice from %s', file_path)
-    r = await encode_voice(file_path, report, duration, bitrate_k, quality, start_time, end_time)
+    r = await encode_voice(
+        file_path,
+        report,
+        duration,
+        bitrate_k,
+        quality,
+        start_time,
+        end_time,
+        speed=speed,
+        drum=drum,
+    )
     if queue is not None:
         queue.put_nowait(None)
     report(2, f'Encoded into {len(r.data)} bytes at {r.bitrate_k} kbps in {r.iterations} iters')
@@ -191,6 +208,24 @@ def extract_crop(arg: str) -> tuple[str, float | None, float | None] | None:
         return ' '.join(new_args), *interval
 
 
+def extract_effects(arg: str) -> tuple[str, float, bool]:
+    speed = 1
+    drum = False
+
+    if arg:
+        if m := re.search(r'\b(?:nc|nightcore)(?:=)?([0-9.]+)?\b', arg):
+            speed = 1.5
+            if speed_str := m.group(1):
+                with contextlib.suppress(ValueError):
+                    speed = float(speed_str)
+            # Remove the matched nightcore part from arg
+            arg = (arg[: m.start()].rstrip() + ' ' + arg[m.end() :].lstrip()).strip()
+
+        drum = 'd' in arg
+
+    return arg, speed, drum
+
+
 async def _handle_voice(
     rs: Responder,
     info: tuple[Media | Output, float | timedelta] | None,
@@ -207,6 +242,9 @@ async def _handle_voice(
             if finish:
                 create_task(output.finish(rs, audio_only=True))
             info = output, output.duration
+
+        # Parse voice effects parameters
+        arg, speed, drum = extract_effects(arg)
 
         # Parse crop interval from arg
         if arg and (r := extract_crop(arg)) is not None:
@@ -225,7 +263,17 @@ async def _handle_voice(
 
         bitrate_k = int(arg[:p]) if (p := arg.find('k')) > 0 and arg[:p].isdigit() else 0
 
-        await convert_voice(rs, *info, bitrate_k, quality, quiet, start_time, end_time)
+        await convert_voice(
+            rs,
+            *info,
+            bitrate_k,
+            quality,
+            quiet,
+            start_time,
+            end_time,
+            speed=speed,
+            drum=drum,
+        )
 
 
 # XXX: No `InputMediaVoice` exists, so the voice result cannot be edited onto

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Literal, NamedTuple, overload
 
 from bot import escape
 
+from .drum import detect_bpm_and_offset, generate_drum_track
 from .log import is_debug, log
 
 if TYPE_CHECKING:
@@ -66,39 +67,57 @@ MAX_BITRATE_K = 192
 QUALITY_THRESHOLD_K = 32
 
 
-async def encode_opus(
-    src: str, bitrate_k: int, start_time: float | None, duration: float | None
+async def _encode_opus(
+    src: str,
+    bitrate_k: int,
+    settings: str,
+    start_time: float | None,
+    duration: float | None,
+    speed: float,
+    drum_path: str | None,
 ) -> tuple[bytes, str]:
     args = ['-b:a', f'{bitrate_k}k']
-    quality = bitrate_k > QUALITY_THRESHOLD_K
 
-    if quality:
-        # Standard quality settings.
+    if bitrate_k > QUALITY_THRESHOLD_K:
         args += ('-frame_duration', '60')
     else:
         args += ('-frame_duration', '120', '-ac', '1', '-application', 'voip')
 
-    settings = f'{bitrate_k}k'
-    attrs = []
-    if quality:
-        attrs.append('q')
+    inputs = ['-i', src]
 
-    attrs.append(os.path.basename(src))
+    if speed != 1:
+        a0_label = 'a_speed'
+        filter_chunks = [
+            f'[0:a:0]aresample=44100,asetrate=44100*{speed},aresample=44100[{a0_label}]'
+        ]
+    else:
+        a0_label = 'a0'
+        filter_chunks = [f'[0:a:0]aresample=44100[{a0_label}]']
 
-    if start_time is not None or duration is not None:
-        attrs.append(f'crop:{start_time or 0}+{duration or ""}')
-
-    settings += f'({",".join(attrs)})'
-    log.debug('Running ffmpeg with %s', settings)
+    if drum_path:
+        inputs += ('-i', drum_path)
+        filter_chunks.append('[1:a:0]volume=1[a1]')
+        filter_chunks.append(
+            f'[{a0_label}][a1]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[out]'
+        )
+        filters = ('-filter_complex', ';'.join(filter_chunks))
+        maps = ('-map', '[out]')
+    elif speed != 1.0:
+        filters = (
+            '-filter_complex',
+            f'[0:a:0]aresample=44100,asetrate=44100*{speed},aresample=44100[out]',
+        )
+        maps = ('-map', '[out]')
+    else:
+        filters = ()
+        maps = ('-map', '0:a:0')
 
     out = await run_ffmpeg(
-        '-xerror',
-        *(() if start_time is None else ('-ss', str(start_time))),
-        '-i',
-        src,
-        *(() if duration is None else ('-t', str(duration))),
-        '-map',
-        '0:a:0',
+        *(('-ss', str(start_time)) if start_time is not None else ()),
+        *inputs,
+        *(('-t', str(duration)) if duration is not None else []),
+        *filters,
+        *maps,
         '-vn',
         '-sn',
         '-dn',
@@ -118,6 +137,58 @@ async def encode_opus(
         capture=True,
     )
     return out, ' '.join(args)
+
+
+async def encode_opus(
+    src: str,
+    bitrate_k: int,
+    start_time: float | None,
+    duration: float | None,
+    full_duration: float,
+    speed: float,
+    drum: tuple[float, float] | None,
+) -> tuple[bytes, str]:
+    settings = f'{bitrate_k}k'
+    attrs = []
+    if speed != 1:
+        attrs.append(f'speed:{speed}')
+    if drum is not None:
+        bpm, offset = drum
+        attrs.append(f'drum:{bpm:.1f}')
+
+    attrs.append(os.path.basename(src))
+
+    if start_time is not None or duration is not None:
+        attrs.append(f'crop:{start_time or 0}+{duration or ''}')
+
+    settings += f'({','.join(attrs)})'
+    log.debug('Running ffmpeg with %s', settings)
+
+    drum_path = None
+    if drum is not None:
+        import tempfile
+
+        bpm, offset = drum
+
+        fd, drum_path = tempfile.mkstemp(suffix='.wav')
+        try:
+            os.close(fd)
+            drum_bpm = bpm * speed
+            offset_new = offset / speed
+            drum_dur = full_duration / speed
+            if drum_dur <= 0:
+                drum_dur = 30
+            generate_drum_track(drum_path, drum_dur, drum_bpm, offset_new)
+            return await _encode_opus(
+                src, bitrate_k, settings, start_time, duration, speed, drum_path
+            )
+        finally:
+            try:
+                os.remove(drum_path)
+            except OSError:
+                log.exception('Failed to remove drum track: %s', drum_path)
+
+    return await _encode_opus(src, bitrate_k, settings, start_time, duration, speed, None)
 
 
 async def probe_duration(src: str) -> str:
@@ -186,6 +257,8 @@ async def encode_voice(
     quality: bool = False,
     start_time: float | None = None,
     end_time: float | None = None,
+    speed: float = 1,
+    drum: bool = False,
 ) -> EncodedVoice:
     curr_len = 0
     raw_result: EncodedVoice | None = None
@@ -202,9 +275,23 @@ async def encode_voice(
     duration, start_time, crop_duration = _normalize_crop(duration, start_time, end_time)
     log.info('Encoding voice: crop=%s+%s duration=%.1f', start_time, crop_duration, duration)
 
+    adj_duration = duration / speed if speed != 1 else duration
+
+    drum_grid = None
+    if drum:
+        try:
+            drum_grid = await detect_bpm_and_offset(src, start_time, crop_duration)
+        except (RuntimeError, OSError, ValueError) as e:
+            log.warning('Failed to detect bpm: %s', e)
+            report(0, 'bpm: `failed`')
+        else:
+            report(0, f'bpm: `{drum_grid[0]:.1f}`')
+
     async def do_encode(desc: str, bitrate_k: int) -> EncodedVoice | None:
         nonlocal curr_len, raw_result, iterations
-        out, info = await encode_opus(src, bitrate_k, start_time, crop_duration)
+        out, info = await encode_opus(
+            src, bitrate_k, start_time, crop_duration, duration, speed, drum_grid
+        )
         curr_len = len(out)
         report(1, f'ffmpeg: `{info}` @ {curr_len}')
         success = curr_len <= MAX_VOICE_SIZE
@@ -214,18 +301,18 @@ async def encode_voice(
             iterations,
             desc,
             'success' if success else 'failed',
-            duration,
+            adj_duration,
             bitrate_k,
             curr_len,
         )
-        raw_result = EncodedVoice(duration, out, bitrate_k, iterations)
+        raw_result = EncodedVoice(adj_duration, out, bitrate_k, iterations)
         if success:
             return raw_result
 
     if bitrate_k > 0 and (result := await do_encode('Hinted', bitrate_k)):
         return result
 
-    bitrate_k = _estimate_bitrate_from_duration(duration, quality)
+    bitrate_k = _estimate_bitrate_from_duration(adj_duration, quality)
     result = await do_encode('Duration-based', bitrate_k)
 
     end = min(bitrate_k + 10, MAX_BITRATE_K)
@@ -282,7 +369,6 @@ async def encode_video_note(src: str, duration: float) -> str:
 
     log.info('Encoding video note: %s (%.1fs, %dk)', dst, duration, video_bitrate_k)
     await run_ffmpeg(
-        '-xerror',
         '-i',
         src,
         '-t',
