@@ -43,7 +43,7 @@ def sentences() -> Iterable[str]:
 
 
 def greeting() -> str:
-    s = random.choice(SENTENCES)  # noqa: S311
+    s = random.choice(SENTENCES)
     log.info('motto: %s', s)
     return s
 
@@ -110,6 +110,6 @@ else:
 
 
 def hitokoto() -> str:
-    s = random.choice(HITOKOTO_SENTENCES)  # noqa: S311
+    s = random.choice(HITOKOTO_SENTENCES)
     log.info('hitokoto: %s', s)
     return s

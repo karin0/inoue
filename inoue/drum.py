@@ -34,7 +34,7 @@ def _add_clap(samples: array.array, start_idx: int, fs: int) -> None:
         if idx >= len(samples):
             break
         t = j / fs
-        noise = random.uniform(-1.0, 1.0)  # noqa: S311
+        noise = random.uniform(-1.0, 1.0)
         if t < 0.01:
             env = 0.2
         elif t < 0.02:
@@ -59,7 +59,7 @@ def _add_cymbal(samples: array.array, start_idx: int, fs: int) -> None:
         if idx >= len(samples):
             break
         t = j / fs
-        noise = random.uniform(-1.0, 1.0)  # noqa: S311
+        noise = random.uniform(-1.0, 1.0)
         metal = (
             math.sin(2.0 * math.pi * 8000.0 * t)
             + math.sin(2.0 * math.pi * 9500.0 * t)
