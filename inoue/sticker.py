@@ -13,7 +13,7 @@ from telegram.constants import ChatAction
 
 from bot import DocumentPayload, Responder, bot, command
 
-from .ffmpeg import run_ffmpeg
+from .ffmpeg import capture_ffmpeg
 from .log import log
 
 STICKER_SIDE = 512
@@ -55,17 +55,15 @@ def to_webp(src: str, rs: Responder) -> bytes:
 
 async def to_webm(src: str) -> bytes:
     base = ('-t', '3', '-i', src)
-    data = await run_ffmpeg(*base, '-lossless', '1', *WEBM_ARGS, desc='webm/lossless', capture=True)
+    data = await capture_ffmpeg(*base, '-lossless', '1', *WEBM_ARGS, desc='webm/lossless')
     if len(data) <= MAX_WEBM_SIZE:
         return data
     log.info('Lossless webm too large (%d B), retrying lossy', len(data))
-    return await run_ffmpeg(*base, *WEBM_ARGS, desc='webm/lossy', capture=True)
+    return await capture_ffmpeg(*base, *WEBM_ARGS, desc='webm/lossy')
 
 
 async def webm_to_gif(src: str) -> bytes:
-    return await run_ffmpeg(
-        '-i', src, '-c:v', 'gif', '-f', 'gif', 'pipe:1', desc='webm/gif', capture=True
-    )
+    return await capture_ffmpeg('-i', src, '-c:v', 'gif', '-f', 'gif', 'pipe:1', desc='webm/gif')
 
 
 async def tgs_to_gif(path: str) -> bytes:

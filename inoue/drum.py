@@ -79,12 +79,12 @@ def _add_cymbal(samples: array.array, start_idx: int, fs: int) -> None:
 async def detect_bpm_and_offset(
     src: str, start_time: float | None, duration: float | None
 ) -> tuple[float, float]:
-    from .ffmpeg import run_ffmpeg
+    from .ffmpeg import capture_ffmpeg
 
     analysis_start = start_time if start_time is not None else 0.0
     dur_arg = ('-t', str(duration)) if duration is not None and duration < 30.0 else ('-t', '30')
 
-    pcm_data = await run_ffmpeg(
+    pcm_data = await capture_ffmpeg(
         '-ss',
         str(analysis_start),
         '-i',
@@ -98,7 +98,6 @@ async def detect_bpm_and_offset(
         '11025',
         'pipe:1',
         desc='bpm_detect',
-        capture=True,
     )
 
     samples = array.array('h')

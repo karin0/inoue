@@ -2,7 +2,7 @@ import asyncio
 import os
 import sys
 
-from typing import TYPE_CHECKING, Literal, NamedTuple, overload
+from typing import TYPE_CHECKING, NamedTuple
 
 from bot import escape
 
@@ -13,52 +13,53 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 
-@overload
-async def run_ffmpeg(
-    *args: str, desc: str = '', prog: str = 'ffmpeg', capture: Literal[False] = False
-) -> None: ...
-
-
-@overload
-async def run_ffmpeg(
-    *args: str, desc: str = '', prog: str = 'ffmpeg', capture: Literal[True] = True
-) -> bytes: ...
-
-
-async def run_ffmpeg(
-    *args: str, desc: str = '', prog: str = 'ffmpeg', capture: bool = False
-) -> bytes | None:
+async def _run_ffmpeg(
+    args: tuple[str, ...], prog: str, stdout: int | None, desc: str
+) -> tuple[bytes, bytes]:
     proc = await asyncio.create_subprocess_exec(
         prog,
         '-hide_banner',
         *(() if is_debug else ('-v', 'warning')),
         *args,
-        stdout=asyncio.subprocess.PIPE if capture else None,
-        stderr=None if is_debug else asyncio.subprocess.PIPE,
+        stdout=stdout,
+        stderr=asyncio.subprocess.PIPE,
     )
-
+    desc = f'{prog} ({desc})' if desc else prog
     out, err = await proc.communicate()
 
     if err:
         sys.stderr.buffer.write(err)
         sys.stderr.buffer.flush()
+    else:
+        err = b''
 
     ret = proc.returncode
-    desc = f'{prog} ({desc})' if desc else prog
 
-    if capture:
+    if out:
         log.info('%s finished with %s, output %s bytes', desc, ret, len(out))
     else:
         log.info('%s finished with %s', desc, ret)
+        out = b''
 
     if ret:
-        if err and (text := err.decode(errors='replace').strip()):
-            msg = text[text.rfind('\n') + 1 :]
-        else:
-            msg = None
+        text = err.decode(errors='replace').strip()
+        msg = text and text[text.rfind('\n') + 1 :].strip() or None
         raise RuntimeError(f'{desc} failed: {msg}')
 
+    return out, err
+
+
+async def capture_ffmpeg(
+    *args: str, desc: str = '', prog: str = 'ffmpeg', on_error: Callable[[str], None] | None = None
+) -> bytes:
+    out, err = await _run_ffmpeg(args, prog, asyncio.subprocess.PIPE, desc)
+    if on_error and err and (text := err.decode(errors='replace').strip()):
+        on_error(text)
     return out
+
+
+async def run_ffmpeg(*args: str, desc: str = '', prog: str = 'ffmpeg') -> None:
+    await _run_ffmpeg(args, prog, None, desc)
 
 
 MAX_VOICE_SIZE = 1 << 20
@@ -75,6 +76,7 @@ async def _encode_opus(
     duration: float | None,
     speed: float,
     drum_path: str | None,
+    on_error: Callable[[str], None] | None,
 ) -> tuple[bytes, str]:
     args = ['-b:a', f'{bitrate_k}k']
 
@@ -112,7 +114,7 @@ async def _encode_opus(
         filters = ()
         maps = ('-map', '0:a:0')
 
-    out = await run_ffmpeg(
+    out = await capture_ffmpeg(
         *(('-ss', str(start_time)) if start_time is not None else ()),
         *inputs,
         *(('-t', str(duration)) if duration is not None else []),
@@ -134,7 +136,7 @@ async def _encode_opus(
         'ogg',
         'pipe:1',
         desc=f'voice/{settings}',
-        capture=True,
+        on_error=on_error,
     )
     return out, ' '.join(args)
 
@@ -147,6 +149,7 @@ async def encode_opus(
     full_duration: float,
     speed: float,
     drum: tuple[float, float] | None,
+    on_error: Callable[[str], None] | None,
 ) -> tuple[bytes, str]:
     settings = f'{bitrate_k}k'
     attrs = []
@@ -180,7 +183,7 @@ async def encode_opus(
                 drum_dur = 30
             generate_drum_track(drum_path, drum_dur, drum_bpm, offset_new)
             return await _encode_opus(
-                src, bitrate_k, settings, start_time, duration, speed, drum_path
+                src, bitrate_k, settings, start_time, duration, speed, drum_path, on_error
             )
         finally:
             try:
@@ -188,18 +191,18 @@ async def encode_opus(
             except OSError:
                 log.exception('Failed to remove drum track: %s', drum_path)
 
-    return await _encode_opus(src, bitrate_k, settings, start_time, duration, speed, None)
+    return await _encode_opus(src, bitrate_k, settings, start_time, duration, speed, None, on_error)
 
 
-async def probe_duration(src: str) -> str:
-    out = await run_ffmpeg(
+async def probe_duration(src: str, on_error: Callable[[str], None] | None) -> str:
+    out = await capture_ffmpeg(
         '-show_entries',
         'format=duration',
         '-of',
         'default=noprint_wrappers=1:nokey=1',
         src,
         prog='ffprobe',
-        capture=True,
+        on_error=on_error,
     )
     return out.decode(errors='replace').strip()
 
@@ -264,8 +267,20 @@ async def encode_voice(
     raw_result: EncodedVoice | None = None
     iterations = 0
 
+    # dict to preserve order
+    seen_errors = {}
+
+    def on_error(text: str) -> None:
+        for line in text.splitlines():
+            if (line := line.strip()) not in seen_errors and len(seen_errors) < 8:
+                lower = line.lower()
+                if any(p in lower for p in ('invalid', 'failed', 'error')):
+                    seen_errors[line] = None
+                    log.info('ffmpeg error: %s', line)
+                    report(3, escape('\n'.join(f'ffmpeg: {s}' for s in seen_errors)))
+
     if duration <= 0:
-        value = await probe_duration(src)
+        value = await probe_duration(src, on_error=on_error)
         log.info('ffprobe: %s', value)
         report(0, f'ffprobe: `{escape(value)}`')
         duration = float(value)
@@ -283,17 +298,24 @@ async def encode_voice(
             drum_grid = await detect_bpm_and_offset(src, start_time, crop_duration)
         except (RuntimeError, OSError, ValueError) as e:
             log.warning('Failed to detect bpm: %s', e)
-            report(0, 'bpm: `failed`')
+            report(1, 'bpm: `failed`')
         else:
-            report(0, f'bpm: `{drum_grid[0]:.1f}`')
+            report(1, f'bpm: `{drum_grid[0]:.1f}`')
 
     async def do_encode(desc: str, bitrate_k: int) -> EncodedVoice | None:
         nonlocal curr_len, raw_result, iterations
         out, info = await encode_opus(
-            src, bitrate_k, start_time, crop_duration, duration, speed, drum_grid
+            src,
+            bitrate_k,
+            start_time,
+            crop_duration,
+            duration,
+            speed,
+            drum_grid,
+            on_error=on_error,
         )
         curr_len = len(out)
-        report(1, f'ffmpeg: `{info}` @ {curr_len}')
+        report(2, f'ffmpeg: `{info}` @ {curr_len}')
         success = curr_len <= MAX_VOICE_SIZE
         iterations += 1
         log.info(

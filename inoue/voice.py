@@ -165,7 +165,7 @@ async def convert_voice(
     )
     if queue is not None:
         queue.put_nowait(None)
-    report(2, f'Encoded into {len(r.data)} bytes at {r.bitrate_k} kbps in {r.iterations} iters')
+    report(4, f'Encoded into {len(r.data)} bytes at {r.bitrate_k} kbps in {r.iterations} iters')
     await rs.reply(media=VoicePayload(r.data, math.ceil(r.duration) if r.duration >= 0 else None))
 
 
