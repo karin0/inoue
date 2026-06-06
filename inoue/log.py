@@ -73,7 +73,18 @@ class NotifyHandler(logging.Handler):
             self._suppressed = old
 
 
-class MicrosecondFormatter(logging.Formatter):
+class Formatter(logging.Formatter):
+    __slots__ = ()
+    __BOT_TOKEN = os.environ.pop('TELEGRAM_BOT_TOKEN')
+
+    @override
+    def format(self, record):
+        return super().format(record).replace(self.__BOT_TOKEN, '***')
+
+
+class MicrosecondFormatter(Formatter):
+    __slots__ = ()
+
     @override
     def formatTime(self, record, datefmt=None):
         return datetime.fromtimestamp(record.created).strftime('%m-%d %H:%M:%S.%f')
@@ -109,7 +120,7 @@ def _get_logger(name):
 
     if 'JOURNAL_STREAM' in os.environ:
         fmt = '[%(levelname)s] %(message)s'
-        fmt = logging.Formatter(fmt)
+        fmt = Formatter(fmt)
     else:
         fmt = '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
         fmt = MicrosecondFormatter(fmt)
