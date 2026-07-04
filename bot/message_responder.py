@@ -138,15 +138,15 @@ class MessageEditHandle(EditHandle):
             allow_not_modified=allow_not_modified,
         )
 
-    def edit_media(
+    async def edit_media(
         self,
         media: MediaPayloadWithInput,
         text: str | None = None,
         parse_mode: str | None = None,
         reply_markup: InlineKeyboardMarkup | None = None,
-    ) -> Awaitable[Message | bool]:
+    ) -> Message | bool:
         with media.as_input(text, parse_mode) as im:
-            return bot.edit_message_media(
+            return await bot.edit_message_media(
                 im,
                 chat_id=self.chat_id,
                 message_id=self.message_id,
