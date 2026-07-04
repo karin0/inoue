@@ -435,6 +435,9 @@ def render_query_menu(
     return fmt, markup
 
 
+@command('rg0')
+@command('rg2')
+@command('rg4')
 @command
 async def handle_rg(rs: Responder, arg: MessageArg):
     if not arg:
@@ -444,10 +447,7 @@ async def handle_rg(rs: Responder, arg: MessageArg):
     assert text
     text = text.strip()
     if len(bare := text.removeprefix('/rg')) != len(text):
-        if bare:
-            off = ('' if c == '0' else c) if (c := bare[0]).isdigit() else '4'
-        else:
-            raise ValueError(text)
+        off = ('' if c == '0' else c) if (c := bare[0]).isdigit() else '4'
     else:
         off = '2'
 
