@@ -62,8 +62,36 @@ async def to_webm(src: str) -> bytes:
     return await capture_ffmpeg(*base, *WEBM_ARGS, desc='webm/lossy')
 
 
+# Transparent animated GIF: reserve a palette slot for transparency and map
+# low-alpha source pixels onto it. `-transdiff` disables GIF frame-diff
+# transparency, which otherwise ghosts the real alpha into a blotchy
+# background. bayer dithering keeps flat sticker art free of the noise that
+# error-diffusion (the default) sprays across solid regions.
+GIF_FILTER = (
+    'split[a][b];'
+    '[a]palettegen=reserve_transparent=1:stats_mode=full[p];'
+    '[b][p]paletteuse=alpha_threshold=128:dither=bayer:bayer_scale=3'
+)
+
+
 async def webm_to_gif(src: str) -> bytes:
-    return await capture_ffmpeg('-i', src, '-c:v', 'gif', '-f', 'gif', 'pipe:1', desc='webm/gif')
+    return await capture_ffmpeg(
+        # Telegram video stickers carry alpha as a VP9 side-channel that ffmpeg's
+        # native decoder silently drops (compositing onto black). Only libvpx-vp9
+        # decodes it, so the filter graph below actually sees the transparency.
+        '-c:v',
+        'libvpx-vp9',
+        '-i',
+        src,
+        '-filter_complex',
+        GIF_FILTER,
+        '-gifflags',
+        '-transdiff',
+        '-f',
+        'gif',
+        'pipe:1',
+        desc='webm/gif',
+    )
 
 
 async def tgs_to_gif(path: str) -> bytes:
