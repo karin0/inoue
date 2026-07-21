@@ -21,7 +21,7 @@ class NotifyHandler(logging.Handler):
 
     def __init__(self):
         super().__init__(logging.WARNING)
-        self.setFormatter(logging.Formatter())
+        self.setFormatter(Formatter())
         self._revocable = False
         self._suppressed = False
 

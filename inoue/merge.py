@@ -1,5 +1,6 @@
 import asyncio
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from telegram import (
@@ -25,7 +26,14 @@ type Key = tuple[int, int, int | None]
 
 MAX_QUEUE_MEDIA = 100
 
-merge_sessions: dict[Key, list[Message]] = {}
+
+@dataclass(slots=True)
+class Session:
+    messages: list[Message]
+    timer: asyncio.TimerHandle
+
+
+merge_sessions: dict[Key, Session] = {}
 
 
 def session_key(msg: Message) -> Key | None:
@@ -42,10 +50,10 @@ def check_merge(msg: Message) -> Coroutine | None:
     if (
         (msg.photo or msg.video or msg.audio or msg.document)
         and (key := session_key(msg)) is not None
-        and (messages := merge_sessions.get(key)) is not None
-        and len(messages) < MAX_QUEUE_MEDIA
+        and (session := merge_sessions.get(key)) is not None
+        and len(session.messages) < MAX_QUEUE_MEDIA
     ):
-        messages.append(msg)
+        session.messages.append(msg)
         return msg.set_reaction(ReactionEmoji.RED_HEART)
 
 
@@ -85,9 +93,9 @@ async def handle_merge(rs: Responder, msg: Message, arg: MessageArg):
     if (key := session_key(msg)) is None:
         raise ValueError('handle_merge: no sender')
 
-    if (messages := merge_sessions.pop(key, None)) is None:
-        merge_sessions[key] = []
-        asyncio.get_running_loop().call_later(300, clean_session, key)
+    if (session := merge_sessions.pop(key, None)) is None:
+        timer = asyncio.get_running_loop().call_later(300, clean_session, key)
+        merge_sessions[key] = Session([], timer)
         return await rs.reply(
             '📥 **Media Merge Start\\!**\n\n'
             'Send messages with photos, videos, audio, or documents here\\.\n'
@@ -98,6 +106,9 @@ async def handle_merge(rs: Responder, msg: Message, arg: MessageArg):
                 ((('/merge', '/merge cancel'),)), one_time_keyboard=True, resize_keyboard=True
             ),
         )
+
+    session.timer.cancel()
+    messages = session.messages
 
     if arg.lower() == 'cancel' or not messages:
         return await rs.reply('Media Merge cancelled.', reply_markup=ReplyKeyboardRemove())

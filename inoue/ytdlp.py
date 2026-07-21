@@ -206,7 +206,7 @@ class Output:
         if size > MAX_FILE_SIZE:
             raise ValueError(f'File too large for Telegram ({size})')
 
-        self.duration = float(info.get('duration', 0))
+        self.duration = float(info.get('duration') or 0)
         self.thumbnail_path = _get_thumbnail_path(info)
         log.info(
             'ytdlp: %s / %s bytes / %s secs / %s', path, size, self.duration, self.thumbnail_path

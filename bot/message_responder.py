@@ -263,7 +263,7 @@ class MessageResponder(Responder):
                 if 'too long' in str(e):
                     if media is not None:
                         log.info('Caption too long, fallback to text: %s', e)
-                        resp = await r.edit_media(media, text, parse_mode, reply_markup)
+                        resp = await r.edit_media(media, None, None, reply_markup)
                         if text:
                             resp = await _reply_text(text)
                             env.driver[key] = str(resp.message_id)
@@ -277,6 +277,10 @@ class MessageResponder(Responder):
                         return MessageEditHandle.from_message(resp)
                 raise
             else:
+                if edited is False:
+                    # `edit_message` swallowed a 'not modified' BadRequest under
+                    # `allow_not_modified`. Return the cached handle as-is.
+                    return r
                 if not isinstance(edited, Message):
                     # We don't handle inline messages, so this should not happen.
                     raise RuntimeError(f'edit returned non-Message: {edited}')
@@ -286,17 +290,9 @@ class MessageResponder(Responder):
                 raise
 
             # Cache expired, remove it first for other coroutines.
-            # We don't bypass 'Message is not modified' here, as the user side cannot
-            # distinguish whether the message is being updated.
-            # This behavior can be overridden by `allow_not_modified`.
-            if (
-                isinstance(e, BadRequest)
-                and 'Message is not modified' in str(e)
-                and allow_not_modified
-            ):
-                log.info('Message not modified: %s -> %s', key, val)
-                return r
-
+            # 'Message is not modified' without `allow_not_modified` falls through
+            # here intentionally, since the user side cannot distinguish whether the
+            # message is being updated.
             env.driver.discard(key)
             log.warning('Failed to edit response: %s -> %s: %s: %s', key, val, type(e).__name__, e)
             return await _do_reply()

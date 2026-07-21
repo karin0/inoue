@@ -140,7 +140,7 @@ class DataStore:
         return default
 
     def __getitem__(self, key: str) -> str:
-        if value := self.get(key):
+        if (value := self.get(key)) is not None:
             return value
         raise KeyError(key)
 
