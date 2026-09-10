@@ -375,7 +375,7 @@ class ScopedContext[T]:
             raise NameError(name)
         return r
 
-    def _get_eval_name(self, name: str) -> Value | ScopeProxy | None | TCO:
+    def _get_eval_name(self, name: str) -> Value | ScopeProxy | TCO | None:
         key, val = self.resolve_raw(name)
         trace('eval: item: %s -> %r', key, val)
 

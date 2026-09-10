@@ -40,6 +40,7 @@ ignore = [
     "A",
     "ANN",
     "ARG",
+    "CPY",
     "D",
     "EM",
     "ERA",
