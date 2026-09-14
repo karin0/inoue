@@ -6,9 +6,10 @@ import sys
 import unittest
 import warnings
 
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from . import Engine, Value
+from . import engine as engine_module
 from .context import log, trace
 from .lex import Chunker
 
@@ -79,6 +80,9 @@ count_2; raw_text }
 '''
 
 db_instance = Mock()
+
+
+EXAMPLES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'examples')
 
 
 def mock_db(func: Callable[[str], str | None]) -> Callable[[str], str | None]:
@@ -1456,6 +1460,19 @@ d
 t
 }1'''
         self.render_it(text, eq='headeris\nthe\noftextABCC\nDendC\nD1')
+
+    def render_example(self, name: str, n: int) -> list[int]:
+        with open(os.path.join(EXAMPLES_DIR, name), encoding='utf-8') as fp:
+            text = fp.read()
+        with patch.object(engine_module, 'MAX_GAS', 1000000):
+            return [int(v) for v in self.render_it(text, {'0': n}).split()]
+
+    def test_examples(self):
+        for name in ('sort.c', 'quick_sort.c'):
+            for n in (0, 1, 2, 20):
+                values = self.render_example(name, n)
+                assert len(values) == n, (name, n, values)
+                assert values == sorted(values), (name, n, values)
 
 
 if __name__ == '__main__':
