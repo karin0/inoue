@@ -20,7 +20,7 @@ n = $0;
 flag = 1;
 { cond ↦ i<n-1 ? flag : 0 }
 body = {@; ↦
-  t = 0; flag ^ t
+  t = 0
   { init ↦ j = 0 }
   { cond ↦ j < n-i-1 }
   { step ↦ ++j }
