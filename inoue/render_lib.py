@@ -2,7 +2,7 @@ import asyncio
 import time
 
 from collections.abc import Callable, Iterable, Sequence
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 from weakref import WeakSet
 
 from render_core import Box, Fragment, Value, to_str
@@ -91,7 +91,7 @@ INSTANCES = WeakSet()
 class Promise[T: PromiseResult](Box):
     __slots__ = ('_inner', '_func', '_next', '__weakref__')
 
-    def __init__(self, func: Callback[T] | None = None, then_cb: Callable[[], Any] | None = None):
+    def __init__(self, func: Callback[T] | None = None):
         self._inner: list[Promise] | tuple[T | Promise[T] | None] = []
         self._func = func
         self._next: WeakSet[Promise] = WeakSet()
@@ -116,7 +116,7 @@ class Promise[T: PromiseResult](Box):
         inner = self._inner
         if not isinstance(inner, list):
             self._cancel()
-            raise RuntimeError('Promise._resolve: already resolved: %r %r', self, inner)
+            raise RuntimeError(f'Promise._resolve: already resolved: {self!r} {inner!r}')
 
         # We track all our "resolved" successors, i.e. `v` such that
         # `v._inner == (self,)` in `self._next` to collapse the waiting chain.
@@ -186,13 +186,11 @@ class Promise[T: PromiseResult](Box):
         else:
             fut._resolve(inner[0])
 
-    def then(self, *funcs: tuple[Callback, ...]) -> Promise:
+    def then(self, *funcs: Callback) -> Promise:
         promise = self
         if not all(callable(f) for f in funcs):
             raise TypeError(f'Promise.then: callback must be callable, got {funcs}')
         for f in funcs:
-            f: Any
-            # p = p._then(f)
             new = Promise(f)
             promise._chain(new)
             promise = new
