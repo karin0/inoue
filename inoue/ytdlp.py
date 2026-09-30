@@ -394,7 +394,7 @@ async def _handle_yt(
     action: ChatAction,
     *,
     audio_only: bool = False,
-    video_note: bool = False,
+    video_note_to: Message | None = None,
 ):
     arg = rs.get_effective_arg()
     if not arg or (url := find_url(arg)) is None:
@@ -404,8 +404,8 @@ async def _handle_yt(
     with rs.keep_chat_action(action):
         try:
             output = await run_ytdlp(url, audio_only=audio_only)
-            if video_note:
-                await output.finish_video_note(rs.get_message())
+            if video_note_to is not None:
+                await output.finish_video_note(video_note_to)
             else:
                 await output.finish(rs, audio_only=audio_only)
         except Exception as e:
@@ -425,8 +425,8 @@ def handle_yta(rs: Responder):
 
 
 @command(public=True)
-def handle_ytn(rs: Responder):
-    return _handle_yt(rs, '/ytn', ChatAction.RECORD_VIDEO_NOTE, video_note=True)
+def handle_ytn(rs: Responder, msg: Message):
+    return _handle_yt(rs, '/ytn', ChatAction.RECORD_VIDEO_NOTE, video_note_to=msg)
 
 
 LABEL = {'video': '📹 Video', 'audio': '🎵 Audio', 'voice': '🎤 Voice', 'document': '📄 File'}

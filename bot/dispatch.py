@@ -113,7 +113,9 @@ class Route[**P, T]:
         defer = None
         for ty in self._params:
             if ty is Message:
-                args.append(_unwrap(rs).get_message())
+                if (msg := _unwrap(rs).get_message()) is None:
+                    raise ValueError(f'{self} needs a message')
+                args.append(msg)
             elif ty is MessageArg:
                 args.append('' if rs is None else rs.get_arg())
             elif ty is CallbackQuery:

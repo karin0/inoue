@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 class Emitter(Protocol):
     __slots__ = ()
 
-    def get_message_key(self, rs: InlineResponder) -> str: ...
+    def get_message_key(self) -> str: ...
     def as_edit_handle(self) -> InlineMessageEditHandle | None: ...
     async def emit(self, rs: InlineResponder) -> bool: ...
     async def extract_media(self, payload: MediaPayload) -> MediaPayload | None: ...
@@ -49,26 +49,29 @@ class InlineResponder(Responder):
         '_emitter',
     )
 
-    def __init__(self, msg: Message, inline_message_id: str | None) -> None:
+    def __init__(self, source: Message | str) -> None:
+        '''`source` is the guest message to answer or the inline message to edit.'''
         super().__init__()
-        self._msg = msg
         self._fragments: list[tuple[str, str | None]] = []
         self._reply_markup: InlineKeyboardMarkup | None = None
         self._disable_web_page_preview: bool | None = None
         self._cached_idx: int | None = None
         self._media: MediaPayload | None = None
-        self._emitter = (
-            InlineEmitter(inline_message_id) if inline_message_id is not None else GuestEmitter()
-        )
+        if isinstance(source, str):
+            self._msg = None
+            self._emitter: Emitter = InlineEmitter(source)
+        else:
+            self._msg = source
+            self._emitter = GuestEmitter(source)
 
     def __repr__(self) -> str:
         return f'InlineResponder({self._msg!r}, {self._emitter!r})'
 
-    def get_message(self) -> Message:
+    def get_message(self) -> Message | None:
         return self._msg
 
     def get_message_key(self) -> str:
-        return self._emitter.get_message_key(self)
+        return self._emitter.get_message_key()
 
     def as_edit_handle(self) -> InlineMessageEditHandle | None:
         return self._emitter.as_edit_handle()
@@ -205,7 +208,7 @@ class InlineEmitter(Emitter):
     def __repr__(self) -> str:
         return f'InlineResponder({self._inline_message_id!r})'
 
-    def get_message_key(self, rs: InlineResponder) -> str:
+    def get_message_key(self) -> str:
         return self._inline_message_id
 
     def as_edit_handle(self) -> InlineMessageEditHandle:
@@ -239,23 +242,18 @@ class InlineEmitter(Emitter):
 
 
 class GuestEmitter(Emitter):
-    __slots__ = ('_deferred', '_dirty', '_message_key')
+    __slots__ = ('_deferred', '_dirty', '_msg')
 
-    def __init__(self) -> None:
+    def __init__(self, msg: Message) -> None:
         self._deferred = False
         self._dirty = False
-        self._message_key = None
+        self._msg = msg
 
     def __repr__(self) -> str:
         return f'GuestResponder(deferred={self._deferred}, dirty={self._dirty})'
 
-    def get_message_key(self, rs: InlineResponder) -> str:
-        if self._message_key is None:
-            # Cache it to avoid a volatile result.
-            m = rs._msg
-            self._message_key = env.driver.message_key(m.chat_id, m.message_id)
-
-        return self._message_key
+    def get_message_key(self) -> str:
+        return env.driver.message_key(self._msg.chat_id, self._msg.message_id)
 
     def as_edit_handle(self) -> None:
         return None
@@ -287,8 +285,8 @@ class GuestEmitter(Emitter):
             )
         log.debug('GuestEmitter: emitting inline result: %s', result)
 
-        if (gid := rs._msg.guest_query_id) is None:
-            raise ValueError('No guest_query_id in message: %s', rs._msg)
+        if (gid := self._msg.guest_query_id) is None:
+            raise ValueError('No guest_query_id in message: %s', self._msg)
         r = await bot.answer_guest_query(gid, result)
 
         log.info('GuestEmitter: emitted inline message: %s', r)

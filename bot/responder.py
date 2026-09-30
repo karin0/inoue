@@ -1,21 +1,17 @@
 import asyncio
 
 from contextlib import contextmanager
-from datetime import datetime
 from typing import TYPE_CHECKING, Protocol
 
 from telegram import (
-    Chat,
     InlineKeyboardMarkup,
     Message,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
     Update,
-    User,
 )
-from telegram.constants import ChatAction, ChatType
+from telegram.constants import ChatAction
 
-from . import env
 from .app import bot, create_task
 from .env import log
 
@@ -99,19 +95,21 @@ class Responder(Protocol):
         finally:
             task.cancel()
 
-    def get_message(self) -> Message: ...
+    def get_message(self) -> Message | None:
+        '''The incoming message, absent for a callback on an inline message and
+        for a chosen inline result.'''
+        ...
 
     def as_edit_handle(self) -> MessageEditHandle | InlineMessageEditHandle | None:
         return None
 
-    def get_message_key(self) -> str:
-        msg = self.get_message()
-        return env.driver.message_key(msg.chat_id, msg.message_id)
+    def get_message_key(self) -> str: ...
 
     def get_text(self) -> str:
         if self._text is not None:
             return self._text
-        msg = self.get_message()
+        if (msg := self.get_message()) is None:
+            return ''
         return msg.text or msg.caption or ''
 
     def set_text(self, text: str) -> None:
@@ -140,7 +138,7 @@ class Responder(Protocol):
 
     def get_effective_arg(self, sep: str = ' ') -> str:
         s = self.get_arg()
-        replied = self.get_message().reply_to_message
+        replied = msg.reply_to_message if (msg := self.get_message()) is not None else None
         t = replied is not None and (replied.text or replied.caption) or ''
         return f'{s}{sep}{t}' if s and t else (s or t)
 
@@ -165,7 +163,8 @@ class Responder(Protocol):
         return dispatch_start(self, self.get_arg())
 
     def extract[T](self, extractor: Callable[[Message], T | None]) -> T | None:
-        msg = self.get_message()
+        if (msg := self.get_message()) is None:
+            return None
         if (r := extractor(msg)) is not None:
             return r
         if (m := msg.reply_to_message) is not None:
@@ -174,7 +173,8 @@ class Responder(Protocol):
     async def extract_async[T](
         self, extractor: Callable[[Responder, Message], Awaitable[T | None]]
     ) -> T | None:
-        msg = self.get_message()
+        if (msg := self.get_message()) is None:
+            return None
         if (r := await extractor(self, msg)) is not None:
             return r
         if (m := msg.reply_to_message) is not None:
@@ -228,30 +228,20 @@ class Responder(Protocol):
                 return MessageResponder(msg)
 
             if mid := callback.inline_message_id:
-                if msg is not None:
-                    stub = Message(
-                        msg.message_id, msg.date, msg.chat, from_user=callback.from_user, text=''
-                    )
-                else:
-                    stub = _stub(callback.from_user)
-                return InlineResponder(stub, mid)
+                return InlineResponder(mid)
 
             return None
 
         if (chosen := update.chosen_inline_result) is not None:
             if mid := chosen.inline_message_id:
-                return InlineResponder(_stub(chosen.from_user), mid)
+                return InlineResponder(mid)
             return None
 
         if (msg := update.guest_message) is not None:
-            return InlineResponder(msg, None)
+            return InlineResponder(msg)
 
     def __repr__(self) -> str:
         return f'{type(self).__name__}({self.get_message()})'
-
-
-def _stub(from_user: User) -> Message:
-    return Message(0, datetime.now(), Chat(0, ChatType.SENDER), from_user=from_user, text='')
 
 
 class EditHandle(Protocol):

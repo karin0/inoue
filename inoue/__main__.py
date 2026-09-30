@@ -116,7 +116,7 @@ async def handle_update(update: Update, _: ContextTypes.DEFAULT_TYPE):
         func = lambda: handle_chosen_inline(rs, chosen)
     elif (post := update.guest_message) is not None:
         log.info('%s: guest message %s', src, shorten(post.text))
-        func = lambda: handle_guest(_rs())
+        func = lambda: handle_guest(_rs(), post)
     else:
         log.warning('%s: unhandled: %s', src, update)
         func = None

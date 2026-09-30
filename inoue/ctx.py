@@ -72,7 +72,7 @@ def is_admin(update: Update, msg: Message) -> bool:
 def use_context(update: Update, rs: Responder | None, sender: Sender | None):
     # Only messages from USER_ID are allowed to be set in the context, since it's
     # used for `do_notify` to notify system events.
-    if rs is not None and not is_admin(update, rs.get_message()):
+    if rs is not None and ((msg := rs.get_message()) is None or not is_admin(update, msg)):
         rs = None
 
     token = current_context.set(Context(update, rs, sender))
