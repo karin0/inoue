@@ -82,7 +82,21 @@ def encode_flags(flags: dict[str, bool] | None) -> str:
 
 
 MEMORY_KEY = '_mem'
-SPECIAL_KEYS = (MEMORY_KEY, BUTTON_KEY)
+# Context keys the host writes, which callback data must never set.
+HOST_KEYS = frozenset(
+    {
+        '_trusted',
+        '_user_id',
+        '_user_name',
+        '_chat_id',
+        '_chat_title',
+        '_source',
+        '_msg_id',
+        '_state',
+        BUTTON_KEY,
+        MEMORY_KEY,
+    }
+)
 BUTTON_PREFIX = ENV_PREFIX + 'btn.'
 ICON_PREFIX = ENV_PREFIX + 'icon.'
 
@@ -137,7 +151,7 @@ def make_markup(
                 buttons.append(btn_key)
             continue
 
-        if k.startswith(ENV_PREFIX) or k in SPECIAL_KEYS or not is_safe_key(k):
+        if k.startswith(ENV_PREFIX) or k in HOST_KEYS or not is_safe_key(k):
             continue
 
         if v == '0' or v == 0:  # This covers `False` as well.
@@ -427,6 +441,8 @@ def handle_render_callback(callback: CallbackQuery, data: CallbackData, rs: Resp
             if clicked_button is not None:
                 raise ValueError('handle_render_callback: multiple buttons: ' + data)
             clicked_button = key
+        elif key in HOST_KEYS:
+            raise ValueError('handle_render_callback: host key as flag: ' + data)
         else:
             flags[key] = sign == true
 
