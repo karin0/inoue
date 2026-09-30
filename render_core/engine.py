@@ -1574,8 +1574,8 @@ class Engine(Interpreter):
 
                 # Write back even if unchanged. This has two effects:
                 # 1. Ensures the var in the inner scope with the outer value.
-                # 2. Notifies the underlying `OverriddenDict` to touch the key.
-                #    See `OverriddenDict._setitem__`.
+                # 2. Passes the key through the mapping's `__setitem__`, so the host sees it
+                #    assigned by the document even when its value stays the same.
                 self._ctx[key] = new
 
             if val is None:
@@ -1594,8 +1594,7 @@ class Engine(Interpreter):
 
             case ':=':
                 # Context override: {key:=value}
-                # a. Can never be overridden (except by markup buttons)
-                # b. Does not interrupt the natural order of flags detected in markup
+                # The host's `setitem_with` decides what it does beyond assigning.
                 # {key1:=key2=...=value} affects all keys
                 for key in keys:
                     self._scope.set_with(key, val, ':=')
