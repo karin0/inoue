@@ -214,33 +214,33 @@ class Exit(Abort):
 # it should be invoked later.
 @dataclass(frozen=True, slots=True, repr=False, eq=False, match_args=False)
 class SubDoc(Box):
-    tree: Tree
-    params: tuple[str, ...] | None
-    engine: Engine
-    scope: str | None
+    _tree: Tree
+    _params: tuple[str, ...] | None
+    _engine: Engine
+    _scope: str | None
 
     def bind(self) -> SubDoc:
-        return replace(self, scope=self.engine._scope.current())
+        return replace(self, _scope=self._engine._scope.current())
 
     def __call__(self, *args, **kwargs) -> Value | None:
         # Called from Python side.
         if is_tracing:
-            assert self.tree.data == 'block_inner', self
+            assert self._tree.data == 'block_inner', self
             trace(
                 'SubDoc called: @%s %s args=%s kwargs=%s',
-                self.scope,
-                self.engine.debug_node(self.tree),
+                self._scope,
+                self._engine.debug_node(self._tree),
                 args,
                 kwargs,
             )
 
-        env = self.engine._create_block_env(self, args, kwargs)
-        return self.engine._call_subdoc(self, env, default=None)
+        env = self._engine._create_block_env(self, args, kwargs)
+        return self._engine._call_subdoc(self, env, default=None)
 
     @override
     def __repr__(self) -> str:
-        scope = f' @{self.scope!r}' if self.scope is not None else ''
-        return f'{{{self.params}{scope} ↦ {Engine.debug_node(self.tree)}}}'
+        scope = f' @{self._scope!r}' if self._scope is not None else ''
+        return f'{{{self._params}{scope} ↦ {Engine.debug_node(self._tree)}}}'
 
 
 def _trim_str(val: str, trim: int) -> str:
@@ -1252,7 +1252,7 @@ class Engine(Interpreter):
                 self._error('bad tail-call')
                 return ''
             return self._set_tco(
-                sub_doc.tree, env=self._create_block_env(*val), scope=sub_doc.scope
+                sub_doc._tree, env=self._create_block_env(*val), scope=sub_doc._scope
             )
 
         # Not necessarily str!
@@ -1434,13 +1434,13 @@ class Engine(Interpreter):
             trace('_doc_ref%s: key=%s val=%r', s, key, val)
 
         if isinstance(val, SubDoc):
-            tree = val.tree
+            tree = val._tree
             if is_tracing:
                 trace('_doc_ref: Rendering sub-doc: %s %s', key, self.debug_node(tree))
             if inplace:
                 self._error('cannot expand sub-doc in-place: ' + key)
             if allow_tco:
-                return self._set_tco(tree, scope=val.scope)
+                return self._set_tco(tree, scope=val._scope)
             return self._call_subdoc(val, trim=True)
 
         if (doc := self.get_doc(key)) is None:
@@ -1473,7 +1473,7 @@ class Engine(Interpreter):
     def _create_block_env(
         self, sub_doc: SubDoc, args: tuple, kwargs: dict[str, Any]
     ) -> dict[str, Any]:
-        params = sub_doc.params
+        params = sub_doc._params
         if params:
             for param, arg in zip(params, args, strict=False):
                 kwargs.setdefault(param, arg)
@@ -1494,7 +1494,7 @@ class Engine(Interpreter):
         default: T = '',
         trim: bool = False,
     ) -> Value | T:
-        scope = sub_doc.scope
+        scope = sub_doc._scope
 
         # If `sub_doc` has a captured scope, temporarily switch to it so the
         # block sees its definition-site locals.
@@ -1506,7 +1506,7 @@ class Engine(Interpreter):
         try:
             # Recursive boxed calls are still bounded by `MAX_DEPTH`.
             with self._push():
-                self._run_block(sub_doc.tree, env=env)
+                self._run_block(sub_doc._tree, env=env)
                 return self._gather_output(default=default, trim=trim)
         finally:
             if scope is not None:
