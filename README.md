@@ -99,9 +99,9 @@ document's author that every trusted builtin the document reaches does the same
 thing whoever expanded it. A guest who presses a button can send any callback
 data, so every flag, `_btn`, `_mem` and `_state` is guest input, and so is every
 `pm.` name. An escalating document passes none of them to a trusted builtin and
-never uses them to decide whether to call one. `_user_id` is the presser's real
-id, because `create_data` writes it from the update after the flags. Nothing
-verifies the claim.
+never uses them to decide whether to call one. A flag may not name one of the
+`HOST_KEYS` in `render.py`, so the context values the host writes, such as
+`_user_id` and `_trusted`, are genuine or absent. Nothing verifies the claim.
 
 Inside the language the names `os` and `sys` are bound to the `Bridge` object,
 so source reaching for `os.system` finds the guarded method. simpleeval refusing
