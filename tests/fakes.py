@@ -71,6 +71,7 @@ class FakeResponder(Responder):
         msg.message_thread_id = None
         msg.text = text
         msg.caption = None
+        msg.reply_to_message = None
         msg.sender_chat = None
         msg.from_user.id = USER_ID
         self.replies: list[Sent] = []
@@ -87,7 +88,8 @@ class FakeResponder(Responder):
         disable_web_page_preview=None,
         allow_not_modified=False,
     ) -> FakeEditHandle:
-        self.replies.append((text, parse_mode, reply_markup))
+        if not self._try_capture(text, parse_mode):
+            self.replies.append((text, parse_mode, reply_markup))
         return self.handle
 
     def reply_copy(self, from_chat_id: int, message_id: int):
