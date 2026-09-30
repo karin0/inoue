@@ -10,4 +10,5 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run pyright .
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: uv run python -m pytest -v
