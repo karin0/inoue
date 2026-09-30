@@ -93,10 +93,15 @@ checks.
 from there, while `@public` ones are reachable by anyone whose update survived
 the first level.
 
-A document may call `escalate()` to run trusted after a guest expanded it. That
-call is a claim by the document's author that none of its behaviour depends on
-context values, which a guest can forge through callback data. Nothing verifies
-the claim.
+A document may call `escalate()` to run trusted after a guest expanded it, and
+the call succeeds only in a render of a saved document. It is a claim by the
+document's author that every trusted builtin the document reaches does the same
+thing whoever expanded it. A guest who presses a button can send any callback
+data, so every flag, `_btn`, `_mem` and `_state` is guest input, and so is every
+`pm.` name. An escalating document passes none of them to a trusted builtin and
+never uses them to decide whether to call one. `_user_id` is the presser's real
+id, because `create_data` writes it from the update after the flags. Nothing
+verifies the claim.
 
 Inside the language the names `os` and `sys` are bound to the `Bridge` object,
 so source reaching for `os.system` finds the guarded method. simpleeval refusing
