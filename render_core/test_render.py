@@ -1,17 +1,19 @@
-# ruff: noqa: E402
 import logging
 import math
 import os
-import sys
 import unittest
 import warnings
 
+from typing import TYPE_CHECKING
 from unittest.mock import Mock, patch
 
-from . import Engine, Value
+from . import Context, Engine, Value
 from . import engine as engine_module
 from .context import log, trace
 from .lex import Chunker
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping
 
 if os.environ.get('TEST_TRACE') == '1':
     log.setLevel(logging.DEBUG)
@@ -19,23 +21,9 @@ if os.environ.get('TEST_TRACE') == '1':
 else:
     log.setLevel(logging.CRITICAL)
 
-sys.modules['inoue.log'] = mock_log = Mock('log')
-mock_log.log = log
 
-sys.modules['inoue.db'] = mock_db = Mock('db')
-mock_db.db = None
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from typing import TYPE_CHECKING
-
-import inoue.render_context as render_ctx
-
-if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
-
-render_ctx.persisted = persisted = {}
-OverriddenDict = render_ctx.OverriddenDict
+class ContextDict(dict, Context):
+    pass
 
 
 test_text = '''
@@ -93,7 +81,6 @@ def mock_db(func: Callable[[str], str | None]) -> Callable[[str], str | None]:
 class TestRender(unittest.TestCase):
     def setUp(self):
         db_instance.reset_mock()
-        persisted.clear()
 
     @staticmethod
     def start(ctx: Engine | Mapping[str, Value] | None = None) -> Engine:
@@ -101,7 +88,7 @@ class TestRender(unittest.TestCase):
             return ctx
         if ctx is None:
             ctx = {}
-        return Engine(OverriddenDict(ctx, {}), doc_loader=db_instance)
+        return Engine(ContextDict(ctx), doc_loader=db_instance)
 
     def render_it(
         self,
@@ -211,23 +198,6 @@ class TestRender(unittest.TestCase):
         assert self.render_it('status={; c="100+100"; `200} ? OK : ERR;', ctx) == 'OK'
 
         assert self.render_it('{c?=d=e=100; c=d=200; status=c=d=200?OK:ERR}', ctx) == 'OK'
-        assert self.render_it('{c:=d=e=200; c=d=100; status=c=d=200?OK:ERR}', ctx) == 'OK'
-        assert (
-            self.render_it(
-                '{c:=d=e=200; c=d=f=g=100; s=xyxzyqx; s|y/c=e=200|x/c=$f|z/g=$f|q/g=f; '
-                'd=c=d=200? $s :ERR; }',
-                ctx,
-            )
-            == '0101100'
-        )
-        assert (
-            self.render_it(
-                "{c=d=e='200'; f='100'; x=(c=d=f); y=(c=d=e); z=(c?=d=e); w=(c:=d=$e); x+y+z+w }",
-                ctx,
-            )
-            == '00200200'
-        )
-        assert self.render_it('a=1; a; x=(a:=2); x; a; y=(a?=3); y; a;') == '12222'
         assert self.render_it('a?=1 ? OK : ERR;', ctx) == 'OK'
 
         # Lazy evaluation is only for `?=`.
@@ -396,12 +366,6 @@ class TestRender(unittest.TestCase):
         assert self.render_it('{a=b=c=3;a;b;c}') == '333'
         assert self.render_it('{a=b=c=3;d=e=;a;d;b;e;c}') == '333'
 
-    def test_context_override(self):
-        text = '{mode:=write}{mode=read}Current: {mode}'
-        result, ctx = self.render_it_all(text)
-        assert result == 'Current: write'
-        assert ctx.get('mode') == 'write'
-
     def test_doc_recursion(self):
         @mock_db
         def side_effect(name):
@@ -561,23 +525,12 @@ Write the following sentence twice, the second time within quotes.
             == '810' * 2 + '893' * 2 + '810810893'
         )
 
-        # Paren as scope name.
-        text = (
-            '{ a=1; s="\'p\'"; a; s; @("s+\'m\'") { a; x?=::a; x=int(x)+1; x; a=3; a }; a; pm.a; }'
-        )
-        assert self.render_it(text) == '1p12313'
-
-        text = (
-            '{ a=1; t=m; s="\'p\'+t"; a; s; @($s) { a; x?=$a; x="int(x)+1"; x; a=2; a }; a; pm.a; }'
-        )
-        assert self.render_it(text) == '1pm33212'
-
         # Scope with empty name is not global.
         text = (
             '{ a=1; a; @ {a; b=2; a; b; a=3; a; b; a^b; a; b; b=::a; b; @{c={b}} };'
-            ' a; .a; .b; ..c; pm.a; }'
+            ' a; .a; .b; ..c; }'
         )
-        assert self.render_it(text) == '11123223112112'
+        assert self.render_it(text) == '1112322311211'
 
         # Scope declaration inside block.
         text = '{ @s; a=1; a; {@r; b=1; b; }; b?=3; b; r.b; }'
@@ -589,35 +542,6 @@ Write the following sentence twice, the second time within quotes.
 
         text = '{ x=1; @s {@(x); b=1; b; }; }'
         self.render_it(text, e='double scope')
-
-    def test_static(self):
-        text = r't=0; @pm { a?="0"; a+=1; a^t; }; t; pm.a=$t;'
-        assert self.render_it(text) == '1'
-
-        text = r'c=$pm.a; d="1"; @pm {c=::c; a="c+d"; a;} ;'
-        assert self.render_it(text) == '2'
-
-        text = r'pm.a?="0"; c=$pm.a; d="1"; @pm {c=::c; a="c+d";}; pm.a;'
-        assert self.render_it(text) == '3'
-
-        text = r'pm.a?="0"; c=$pm.a; d="1"; @pm {c=::c; a="c+d";}; "pm.a";'
-        assert self.render_it(text) == '4'
-
-        # PM keys can be overridden, but that makes them local and doesn't affect
-        # persisted ones.
-        text2 = r'@pm {t=$a; a:=11451; a; t; }; a?=810; a;'
-        assert self.render_it(text2) == '114514810'
-        assert self.render_it(text2) == '114514810'
-        assert self.render_it(text) == '5'
-
-        text = r't=@pm {a+=1;a}; t;'
-        assert self.render_it(text) == '6'
-
-        text = r'@pm{}; ++pm.a; pm.a;'
-        assert self.render_it(text) == '7'
-
-        text = r'@pm {a+=1;a};'
-        assert self.render_it(text) == '8'
 
     def test_return_value(self):
         # The type of the return value must be preserved if only one value is
@@ -858,76 +782,6 @@ m * m > n ? $n; n=n > 2 && n+2 or 3; m=2 :;
             else:
                 yield n
             n += 2
-
-    def test_prime_pm(self):
-        # Use PM to persist state across multiple invocations, like a "generator".
-        text = r'''{prime_pm:; a=@pm {
-n ?= m = "2";
-{"m * m > n" ? $n;};
-{"m * m > n or n % m == 0" ? n="n+1"; m="2" : m="m+1";};
-}; a?"a-1+1":*prime_pm;}
-'''
-        for v in self.iter_prime(89):
-            assert self.render_it(text) == str(v)
-        self.render_it(text, e='stack overflow')
-
-    def test_prime_pm2(self):
-        text = r'''{p:; a=@pm {
-n ?= m = "2";
-{"m * m > n" ? $n; n="n > 2 and n+2 or 3"; m="2" :;};
-{"m * m <= n and n % m == 0" ? n="n+2"; m="2" :;};
-{"m * m <= n and n % m" ? m="m > 2 and m+2 or 3"};
-}; a?$a;:*p;}
-'''
-        for v in self.iter_prime(283):
-            assert self.render_it(text) == str(v)
-
-    def test_prime_pm3(self):
-        text = r'''p:;
-@{ x = @pm {
-    n ?= 0;
-    n ? {
-        { "m*m > n" ? $n; n="n+2"; m="3" :};
-        { "n%m == 0" ? n="n+2"; m="3" : m="m+2" };
-    } : { "2"; n=m="3"; }
-}; x ? 'Result: '; $x : *p;}
-'''
-        for v in self.iter_prime(100):
-            assert self.render_it(text).lstrip('@') == 'Result: ' + str(v)
-
-    def test_prime_pm4(self):
-        text1 = r'''
-@{ doc1:; x = @pm {
-   n ?= 0;
-   n ? "m*m>n" ? $n; n="n+2"; m="3" : !;;;;
-       "n%m"   ? m="m+2" : n="n+2"; m="3" !;;;
-     : "2"; n=m="3" !;
-}; x ? 'Result: '; $x : *doc1; x=0; ! }
-x ? rest;
-'''
-        text2 = r'''
-@{ doc1:; x = @pm {
-   n ?= 0;
-   n ? "m*m>n" ? $n; n="n+2"; m="3" : !;;;;
-       "n%m"   ? m="m+2" : n="n+2"; m="3" !;;;
-     : "2"; n=m="3" !;
-}; x ? 'Result: '; $x : *doc1; x=0; ! }
-x ? rest;
-'''
-
-        text3 = r'''
-@{ doc1:; x = @pm {
-   n ?= { n=m="3"; "print('Result: 2\nrest') or exit()" };
-   "m*m>n" ? $n; n="n+2"; m="3" : !;
-   "n%m"   ? m="m+2" : n="n+2"; m="3" !;
-}; x ? 'Result: '; $x : *doc1; x=0; ! }
-x ? rest;
-'''
-
-        for text in (text1, text2, text3):
-            persisted.clear()
-            for v in self.iter_prime(100):
-                assert self.render_it(text).lstrip('@') == 'Result: ' + str(v) + '\nrest'
 
     def test_fib_wrong(self):
         # Use scopes as "stack frames" to achieve non-tail recursion!
@@ -1226,24 +1080,6 @@ a[k] = '11';
 '''
         self.render_it(text, eq='7\n7\n42\n7\n50')
         self.render_it('a[:];', e='bad subscript index')
-
-    def test_context(self):
-        ctx = OverriddenDict({}, {})
-
-        def foo(a: int, b: str):
-            return f'{a} {b} {" ".join(ctx)} {" ".join(str(s) for s in ctx.values())}'
-
-        engine = Engine(ctx, funcs=lambda name: foo if name == 'foo' else None)
-        text = r'''
-a=3;
-d=7;
-d:=6;
-c=4;
-d=1;
-b=5;
-"foo(42, 'Test')";
-'''
-        self.render_it(text, engine, eq='42 Test a d c b 3 6 4 5')
 
     def test_if_clause(self):
         text = r'''
