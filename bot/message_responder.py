@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, cast
 
 from telegram import InlineKeyboardMarkup, Message
 from telegram.error import BadRequest
@@ -15,91 +15,18 @@ if TYPE_CHECKING:
     from telegram.constants import ChatAction
 
 
-async def edit_message(
-    chat_id: int | None = None,
-    message_id: int | None = None,
-    *,
-    as_caption: bool = False,
-    inline_message_id: str | None = None,
-    text: str | None = None,
-    parse_mode: str | None = None,
-    reply_markup: InlineKeyboardMarkup | None = None,
-    media: MediaPayloadWithInput | None = None,
-    disable_web_page_preview: bool | None = None,
-    allow_not_modified: bool = False,
-) -> Message | bool:
-    try:
-        if media is not None:
-            with media.as_input(text, parse_mode) as im:
-                return await bot.edit_message_media(
-                    im,
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    inline_message_id=inline_message_id,
-                    reply_markup=reply_markup,
-                )
-        if as_caption:
-            return await bot.edit_message_caption(
-                chat_id=chat_id,
-                message_id=message_id,
-                inline_message_id=inline_message_id,
-                caption=text,
-                parse_mode=parse_mode,
-                reply_markup=reply_markup,
-            )
-        if text:
-            return await bot.edit_message_text(
-                text,
-                chat_id=chat_id,
-                message_id=message_id,
-                inline_message_id=inline_message_id,
-                parse_mode=parse_mode,
-                reply_markup=reply_markup,
-                disable_web_page_preview=disable_web_page_preview,
-            )
-        if reply_markup is not None:
-            return await bot.edit_message_reply_markup(
-                chat_id=chat_id,
-                message_id=message_id,
-                inline_message_id=inline_message_id,
-                reply_markup=reply_markup,
-            )
-        raise TypeError('Any of text, media, as_caption, or reply_markup must be provided')
-    except BadRequest as e:
-        if allow_not_modified and 'Message is not modified' in str(e):
-            log.info('Message not modified: %s', e)
-            return False
-        raise
+class BotEditHandle[R: Message | bool](EditHandle):
+    '''The Bot API returns the edited `Message` for a chat message and `True` for
+    an inline message, which `R` records per subclass.'''
 
+    __slots__ = ('as_caption',)
 
-class MessageEditHandle(EditHandle):
-    __slots__ = ('chat_id', 'message_id', 'as_caption', 'inline_message_id', '_msg')
-
-    def __init__(
-        self, id: tuple[int, int] | str, as_caption: bool = False, message: Message | None = None
-    ):
-        if isinstance(id, str):
-            self.inline_message_id = id
-            self.chat_id = None
-            self.message_id = None
-        else:
-            self.chat_id, self.message_id = id
-            self.inline_message_id = None
+    def __init__(self, as_caption: bool) -> None:
         self.as_caption = as_caption
-        self._msg = message
 
-    def get_message_key(self) -> str:
-        if self.inline_message_id:
-            return self.inline_message_id
-        return env.driver.message_key(self.chat_id, self.message_id)  # type: ignore[arg-type]
+    def _target(self) -> tuple[int | None, int | None, str | None]: ...
 
-    def __repr__(self) -> str:
-        return (
-            f'MessageEditHandle({self.get_message_key()!r}, as_caption={self.as_caption}, '
-            f'msg={self._msg!r})'
-        )
-
-    def edit(
+    async def edit(
         self,
         text: str | None = None,
         parse_mode: str | None = None,
@@ -107,19 +34,52 @@ class MessageEditHandle(EditHandle):
         media: MediaPayloadWithInput | None = None,
         disable_web_page_preview: bool | None = None,
         allow_not_modified: bool = False,
-    ) -> Awaitable[Message | bool]:
-        return edit_message(
-            chat_id=self.chat_id,
-            message_id=self.message_id,
-            inline_message_id=self.inline_message_id,
-            as_caption=self.as_caption,
-            text=text,
-            parse_mode=parse_mode,
-            reply_markup=reply_markup,
-            media=media,
-            disable_web_page_preview=disable_web_page_preview,
-            allow_not_modified=allow_not_modified,
-        )
+    ) -> R:
+        chat_id, message_id, inline_message_id = self._target()
+        try:
+            if media is not None:
+                with media.as_input(text, parse_mode) as im:
+                    r = await bot.edit_message_media(
+                        im,
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        inline_message_id=inline_message_id,
+                        reply_markup=reply_markup,
+                    )
+            elif self.as_caption:
+                r = await bot.edit_message_caption(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    inline_message_id=inline_message_id,
+                    caption=text,
+                    parse_mode=parse_mode,
+                    reply_markup=reply_markup,
+                )
+            elif text:
+                r = await bot.edit_message_text(
+                    text,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    inline_message_id=inline_message_id,
+                    parse_mode=parse_mode,
+                    reply_markup=reply_markup,
+                    disable_web_page_preview=disable_web_page_preview,
+                )
+            elif reply_markup is not None:
+                r = await bot.edit_message_reply_markup(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    inline_message_id=inline_message_id,
+                    reply_markup=reply_markup,
+                )
+            else:
+                raise TypeError('Any of text, media, as_caption, or reply_markup must be provided')
+        except BadRequest as e:
+            if allow_not_modified and 'Message is not modified' in str(e):
+                log.info('Message not modified: %s', e)
+                return cast('R', False)
+            raise
+        return cast('R', r)
 
     def edit_text(
         self,
@@ -129,7 +89,7 @@ class MessageEditHandle(EditHandle):
         *,
         disable_web_page_preview: bool | None = None,
         allow_not_modified: bool = False,
-    ) -> Awaitable[Message | bool]:
+    ) -> Awaitable[R]:
         return self.edit(
             text=text,
             parse_mode=parse_mode,
@@ -138,35 +98,63 @@ class MessageEditHandle(EditHandle):
             allow_not_modified=allow_not_modified,
         )
 
-    async def edit_media(
-        self,
-        media: MediaPayloadWithInput,
-        text: str | None = None,
-        parse_mode: str | None = None,
-        reply_markup: InlineKeyboardMarkup | None = None,
-    ) -> Message | bool:
-        with media.as_input(text, parse_mode) as im:
-            return await bot.edit_message_media(
-                im,
-                chat_id=self.chat_id,
-                message_id=self.message_id,
-                inline_message_id=self.inline_message_id,
-                reply_markup=reply_markup,
-            )
+    async def edit_reply_markup(self, reply_markup: InlineKeyboardMarkup | None = None) -> R:
+        chat_id, message_id, inline_message_id = self._target()
+        return cast(
+            'R',
+            await bot.edit_message_reply_markup(
+                chat_id, message_id, inline_message_id=inline_message_id, reply_markup=reply_markup
+            ),
+        )
 
-    def edit_reply_markup(
-        self, reply_markup: InlineKeyboardMarkup | None = None
-    ) -> Awaitable[Message | bool]:
-        return bot.edit_message_reply_markup(
-            self.chat_id,
-            self.message_id,
-            inline_message_id=self.inline_message_id,
-            reply_markup=reply_markup,
+
+class MessageEditHandle(BotEditHandle[Message | Literal[False]]):
+    __slots__ = ('chat_id', 'message_id', '_msg')
+
+    def __init__(
+        self,
+        chat_id: int,
+        message_id: int,
+        as_caption: bool = False,
+        message: Message | None = None,
+    ):
+        super().__init__(as_caption)
+        self.chat_id = chat_id
+        self.message_id = message_id
+        self._msg = message
+
+    def _target(self) -> tuple[int, int, None]:
+        return self.chat_id, self.message_id, None
+
+    def get_message_key(self) -> str:
+        return env.driver.message_key(self.chat_id, self.message_id)
+
+    def __repr__(self) -> str:
+        return (
+            f'MessageEditHandle({self.get_message_key()!r}, as_caption={self.as_caption}, '
+            f'msg={self._msg!r})'
         )
 
     def as_responder(self) -> MessageResponder | None:
         if self._msg is not None:
             return MessageResponder(self._msg)
+
+
+class InlineMessageEditHandle(BotEditHandle[bool]):
+    __slots__ = ('inline_message_id',)
+
+    def __init__(self, inline_message_id: str):
+        super().__init__(as_caption=False)
+        self.inline_message_id = inline_message_id
+
+    def _target(self) -> tuple[None, None, str]:
+        return None, None, self.inline_message_id
+
+    def get_message_key(self) -> str:
+        return self.inline_message_id
+
+    def __repr__(self) -> str:
+        return f'InlineMessageEditHandle({self.inline_message_id!r})'
 
 
 class MessageResponder(Responder):
@@ -247,7 +235,7 @@ class MessageResponder(Responder):
             resp_msg_id = int(val)
 
         log.debug('Editing cached response: %s -> %s', key, val)
-        r = MessageEditHandle((m.chat_id, resp_msg_id), as_caption)
+        r = MessageEditHandle(m.chat_id, resp_msg_id, as_caption)
 
         try:
             try:
@@ -263,7 +251,7 @@ class MessageResponder(Responder):
                 if 'too long' in str(e):
                     if media is not None:
                         log.info('Caption too long, fallback to text: %s', e)
-                        resp = await r.edit_media(media, None, None, reply_markup)
+                        resp = await r.edit(media=media, reply_markup=reply_markup)
                         if text:
                             resp = await _reply_text(text)
                             env.driver[key] = str(resp.message_id)
@@ -278,12 +266,9 @@ class MessageResponder(Responder):
                 raise
             else:
                 if edited is False:
-                    # `edit_message` swallowed a 'not modified' BadRequest under
+                    # `edit` swallowed a 'not modified' BadRequest under
                     # `allow_not_modified`. Return the cached handle as-is.
                     return r
-                if not isinstance(edited, Message):
-                    # We don't handle inline messages, so this should not happen.
-                    raise RuntimeError(f'edit returned non-Message: {edited}')
                 return MessageEditHandle.from_message(edited)
         except Exception as e:
             if isinstance(e, TypeError):
@@ -304,7 +289,7 @@ class MessageResponder(Responder):
         copied = await self.msg.reply_copy(
             from_chat_id, message_id, do_quote=True, allow_sending_without_reply=True
         )
-        return MessageEditHandle((self.msg.chat_id, copied.message_id), as_caption=False)
+        return MessageEditHandle(self.msg.chat_id, copied.message_id)
 
     async def reply_forward(self, from_chat_id: int, message_id: int) -> MessageEditHandle:
         msg = await self.msg.get_bot().forward_message(
