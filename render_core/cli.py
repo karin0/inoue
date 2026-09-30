@@ -48,7 +48,8 @@ def main():
             text = fp.read()
 
     ctx = {str(i): try_to_value(arg) for i, arg in enumerate(args.args)}
-    engine = Engine(ContextDict(ctx))
+    data = ContextDict(ctx)
+    engine = Engine(data)
 
     if args.instrument:
         import pyinstrument
@@ -80,7 +81,7 @@ def main():
         print('Error:', err, file=sys.stderr)
 
     if args.dump_ctx:
-        for k, v in engine.items():
+        for k, v in data.items():
             print(' ', k, '=', repr(v), file=sys.stderr)
 
     print('Gas used:', engine._gas, file=sys.stderr)
