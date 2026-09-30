@@ -1652,7 +1652,7 @@ class Engine(Interpreter):
 
                     try:
                         val = regex.sub(pat, sub, val, flags=flags, timeout=0.1)
-                    except regex.error as e:
+                    except (regex.error, TimeoutError) as e:
                         self._error(f'regex replace: {e}')
                     else:
                         self._ctx[key] = val
