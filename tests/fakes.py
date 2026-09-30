@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 from telegram import Message
 
-from bot import EditHandle, Responder
+from bot import EditHandle, Responder, env
 from inoue.ctx import Sender, use_context
 from inoue.env import USER_ID
 from inoue.render_bridge import Bridge
@@ -103,6 +103,9 @@ class FakeResponder(Responder):
 
     def get_message(self) -> Message:
         return self._msg
+
+    def get_message_key(self) -> str:
+        return env.driver.message_key(self._msg.chat_id, self._msg.message_id)
 
 
 def make_data(data: dict[str, Value] | None = None) -> OverriddenDict:

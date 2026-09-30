@@ -347,8 +347,8 @@ def is_doc_ref(text: str) -> tuple[str, tuple[int | None, str]] | tuple[None, st
 preview_cache: dict[int, tuple[RenderContext, str, FlattenSegment]] = {}
 
 
-async def handle_render_group(rs: Responder, origin_id: int):
-    msg_id = rs.get_message().message_id
+async def handle_render_group(rs: Responder, msg: Message, origin_id: int):
+    msg_id = msg.message_id
     if cache := preview_cache.pop(origin_id, None):
         ctx, doc_name, result = cache
         log.info('Doc in group: %s -> %s %s', msg_id, origin_id, doc_name)

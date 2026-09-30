@@ -159,5 +159,5 @@ def handle_start(rs: Responder):
 
 @command(public=True)
 def handle_whoami(rs: Responder):
-    u = rs.get_message().from_user
+    u = get_context().update.effective_user
     return rs.reply_cached(*pre_block(repr(u)))

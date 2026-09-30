@@ -56,7 +56,8 @@ def handle_post(channel_post: Message, sender: Sender | None):
 
 async def handle_msg(rs: Responder, direct: bool = True):
     context = get_context()
-    msg = rs.get_message()
+    if (msg := rs.get_message()) is None:
+        raise ValueError(f'handle_msg: no message: {rs}')
     log.debug('handle_msg: rs: %s, sender: %s', rs, context.sender)
 
     if TODO_ID and msg.chat_id == TODO_ID:
@@ -73,7 +74,7 @@ async def handle_msg(rs: Responder, direct: bool = True):
         and msg.chat_id == GROUP_ID
         and origin.chat.id == CHAN_ID
     ):
-        return await handle_render_group(rs, origin.message_id)
+        return await handle_render_group(rs, msg, origin.message_id)
 
     # Reroute if the text starts with a command.
     # This allows commands to be sent as any styled text (pre/quote), rather than
@@ -89,7 +90,7 @@ async def handle_msg(rs: Responder, direct: bool = True):
         msg.chat.type != ChatType.PRIVATE
         and direct
         and not (
-            strip_mention(rs)
+            strip_mention(rs, msg)
             or (m := msg.reply_to_message) is not None
             and (u := m.from_user) is not None
             and u.id == bot.bot.id
@@ -124,9 +125,8 @@ async def handle_msg(rs: Responder, direct: bool = True):
 
         return await rs.reply(media=VoicePayload(Path('out.ogg')))
 
-    # We always check the sender's identity from the `context` rather than `msg`
-    # itself, since it could be a mocked one from relayed callback queries or
-    # guest messages.
+    # The sender's identity comes from the `context`, since for a relayed callback
+    # query `msg` is the bot's own message that carries the button.
     if context.sender_is_guest():
         return await handle_help(rs)
 
@@ -173,9 +173,8 @@ async def handle_chosen_inline(rs: Responder | None, result: ChosenInlineResult)
         log.error('Bad chosen inline result: %s', result)
 
 
-def strip_mention(rs: Responder) -> bool:
+def strip_mention(rs: Responder, msg: Message) -> bool:
     # ruff: noqa: E741
-    msg = rs.get_message()
     if msg.text:
         text, entities = msg.text, msg.entities
     elif msg.caption:
@@ -199,10 +198,10 @@ def strip_mention(rs: Responder) -> bool:
     return False
 
 
-def handle_guest(rs: Responder):
+def handle_guest(rs: Responder, msg: Message):
     log.debug('handle_guest: %s', rs)
     # Guest messages may mention or reply to us.
-    strip_mention(rs)
+    strip_mention(rs, msg)
     return handle_msg(rs, direct=False)
 
 

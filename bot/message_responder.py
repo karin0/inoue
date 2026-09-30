@@ -300,6 +300,9 @@ class MessageResponder(Responder):
     def get_message(self) -> Message:
         return self.msg
 
+    def get_message_key(self) -> str:
+        return env.driver.message_key(self.msg.chat_id, self.msg.message_id)
+
     def as_edit_handle(self) -> MessageEditHandle | None:
         if (u := self.msg.from_user) is not None and u.is_bot:
             return MessageEditHandle.from_message(self.msg)
