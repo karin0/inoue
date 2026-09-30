@@ -13,7 +13,7 @@ from telegram.error import BadRequest
 from . import env
 from .app import bot
 from .env import log
-from .message_responder import MessageEditHandle
+from .message_responder import InlineMessageEditHandle
 from .payload import CachedPayload, MediaPayload, MediaPayloadWithInput, payload_has_input
 from .responder import EditHandle, ReplyMarkup, Responder
 from .text import escape, html_escape, shorten, truncate_text
@@ -26,7 +26,7 @@ class Emitter(Protocol):
     __slots__ = ()
 
     def get_message_key(self, rs: InlineResponder) -> str: ...
-    def as_edit_handle(self) -> MessageEditHandle | None: ...
+    def as_edit_handle(self) -> InlineMessageEditHandle | None: ...
     async def emit(self, rs: InlineResponder) -> bool: ...
     async def extract_media(self, payload: MediaPayload) -> MediaPayload | None: ...
 
@@ -70,7 +70,7 @@ class InlineResponder(Responder):
     def get_message_key(self) -> str:
         return self._emitter.get_message_key(self)
 
-    def as_edit_handle(self) -> MessageEditHandle | None:
+    def as_edit_handle(self) -> InlineMessageEditHandle | None:
         return self._emitter.as_edit_handle()
 
     async def reply_chat_action(self, action: ChatAction) -> bool:
@@ -208,8 +208,8 @@ class InlineEmitter(Emitter):
     def get_message_key(self, rs: InlineResponder) -> str:
         return self._inline_message_id
 
-    def as_edit_handle(self) -> MessageEditHandle | None:
-        return MessageEditHandle(self._inline_message_id)
+    def as_edit_handle(self) -> InlineMessageEditHandle:
+        return InlineMessageEditHandle(self._inline_message_id)
 
     async def extract_media(self, payload: MediaPayload) -> MediaPayloadWithInput | None:
         if payload_has_input(payload):
@@ -224,21 +224,18 @@ class InlineEmitter(Emitter):
     async def emit(self, rs: InlineResponder) -> bool:
         mid = self._inline_message_id
         log.info('InlineEmitter: editing inline message: %s', mid)
-        handle = MessageEditHandle(mid)
+        handle = InlineMessageEditHandle(mid)
         text, parse_mode = rs._collapse()
         if (media := rs._media) is not None and not payload_has_input(media):
             # We have warned about this in `_set_media`.
             media = None
-        r = await handle.edit(
+        return await handle.edit(
             text or None,
             parse_mode,
             rs._reply_markup,
             media=media,
             disable_web_page_preview=rs._disable_web_page_preview,
         )
-        if not isinstance(r, bool):
-            raise RuntimeError(f'Not a bool: {r!r}')
-        return r
 
 
 class GuestEmitter(Emitter):

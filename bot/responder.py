@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
 
     from .dispatch import Route
-    from .message_responder import MessageEditHandle
+    from .message_responder import InlineMessageEditHandle, MessageEditHandle
     from .payload import MediaPayload, MediaPayloadWithInput
 
 # A responder is a wrapped `Message` that enforces an edit-after-reply pattern.
@@ -101,7 +101,7 @@ class Responder(Protocol):
 
     def get_message(self) -> Message: ...
 
-    def as_edit_handle(self) -> MessageEditHandle | None:
+    def as_edit_handle(self) -> MessageEditHandle | InlineMessageEditHandle | None:
         return None
 
     def get_message_key(self) -> str:
@@ -291,5 +291,5 @@ class EditHandle(Protocol):
         from .message_responder import MessageEditHandle
 
         return MessageEditHandle(
-            (message.chat_id, message.message_id), as_caption=message.text is None, message=message
+            message.chat_id, message.message_id, as_caption=message.text is None, message=message
         )
