@@ -1363,7 +1363,8 @@ class Engine(Interpreter):
 
         match op:
             # Flag set: {+name} or {-name}
-            # This means {name:=1} or {name:=0}.
+            # Sets 1 or 0 through `setitem_with` under the name without a scope prefix,
+            # so a flag is one global name whatever scope sets it.
             case '+':
                 self._ctx.setitem_with(key, 1, '+')
                 return self._ctx[key] if captured else ''
