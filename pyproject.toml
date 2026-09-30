@@ -31,6 +31,9 @@ dev = [
 [tool.uv.sources]
 ptbcontrib = { git = "https://github.com/python-telegram-bot/ptbcontrib", rev = "main" }
 
+[tool.uv]
+exclude-newer = "15 days"
+
 [tool.ruff]
 line-length = 100
 
