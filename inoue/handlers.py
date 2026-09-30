@@ -1,17 +1,14 @@
 import asyncio
 import sys
 
-from datetime import datetime
 from pathlib import Path
 
 from telegram import (
     CallbackQuery,
-    Chat,
     ChosenInlineResult,
     InlineQuery,
     Message,
     MessageOriginChannel,
-    User,
 )
 from telegram.constants import ChatType, MessageEntityType
 
@@ -221,10 +218,6 @@ async def handle_callback_query(rs: Responder | None, query: CallbackQuery):
     except Exception:
         await query.answer('Error', show_alert=True)
         raise
-
-
-def message_stub(from_user: User) -> Message:
-    return Message(0, datetime.now(), Chat(0, ChatType.SENDER), from_user=from_user, text='')
 
 
 @callback_query('relay')
