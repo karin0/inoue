@@ -217,7 +217,7 @@ class InlineEmitter(Emitter):
             return payload
         log.warning(
             'InlineEmitter: inline message sent but InputMedia is unavailable, '
-            'For guest queries consider using `GuestEmitter.wait_until()`: %s',
+            'for guest queries declare a RequireDefer parameter: %s',
             payload,
         )
 
