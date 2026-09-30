@@ -446,6 +446,11 @@ Write the following sentence twice, the second time within quotes.
         self.render_it("s=abc; s|'a'\\x\\q; s;", e='bad regex flag')
         self.render_it("s=abc; s|'([a'\\x; s;", e='regex replace')
 
+    def test_replace_regex_timeout(self):
+        # Catastrophic backtracking runs past the 0.1 s limit.
+        text = "{s='" + 'a' * 40 + "!'; s | '(a|aa)+$' \\ x; 'after'}"
+        assert self.render_it(text, e='timed out') == 'after'
+
     def test_empty_values(self):
         text = '{;a=} {;b:=;} {c=; d=2345;} {d|4/} {a+b+c+d}'
         result = self.render_it(text)
