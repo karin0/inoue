@@ -61,6 +61,8 @@ class MediaPayload[T: Content](Protocol):
     KIND: ClassVar[str]
     INPUT_MEDIA_TYPE: ClassVar[InputMediaType]
 
+    # A property keeps `T` covariant. Each payload implements it with a frozen
+    # dataclass field, which pyright reports as an incompatible override.
     @property
     def content(self) -> T: ...
 
@@ -227,7 +229,7 @@ def payload_has_input(payload: MediaPayload) -> TypeGuard[MediaPayloadWithInput]
 
 @dataclass(frozen=True, slots=True, eq=False, match_args=False)
 class PhotoPayload[T: Content](MediaPayloadWithInput[T]):
-    content: T  # pyright: ignore[reportIncompatibleMethodOverride]
+    content: T  # pyright: ignore[reportIncompatibleMethodOverride] -- see MediaPayload
 
     KIND: ClassVar[str] = 'photo'
     INPUT_MEDIA_TYPE: ClassVar[InputMediaType] = InputMediaPhoto
@@ -284,7 +286,7 @@ class PhotoPayload[T: Content](MediaPayloadWithInput[T]):
 
 @dataclass(frozen=True, slots=True, eq=False, match_args=False)
 class DocumentPayload[T: Content](MediaPayloadWithInput[T]):
-    content: T  # pyright: ignore[reportIncompatibleMethodOverride]
+    content: T  # pyright: ignore[reportIncompatibleMethodOverride] -- see MediaPayload
     filename: str | None = None
     disable_content_type_detection: bool | None = None
 
@@ -351,7 +353,7 @@ class DocumentPayload[T: Content](MediaPayloadWithInput[T]):
 
 @dataclass(frozen=True, slots=True, eq=False, match_args=False)
 class VideoPayload[T: Content](MediaPayloadWithInput[T]):
-    content: T  # pyright: ignore[reportIncompatibleMethodOverride]
+    content: T  # pyright: ignore[reportIncompatibleMethodOverride] -- see MediaPayload
     duration: int | None = None
     filename: str | None = None
     thumbnail: bytes | None = None
@@ -425,7 +427,7 @@ class VideoPayload[T: Content](MediaPayloadWithInput[T]):
 
 @dataclass(frozen=True, slots=True, eq=False, match_args=False)
 class AudioPayload[T: Content](MediaPayloadWithInput[T]):
-    content: T  # pyright: ignore[reportIncompatibleMethodOverride]
+    content: T  # pyright: ignore[reportIncompatibleMethodOverride] -- see MediaPayload
     duration: int | None = None
     filename: str | None = None
     title: str | None = None
@@ -499,7 +501,7 @@ class AudioPayload[T: Content](MediaPayloadWithInput[T]):
 
 @dataclass(frozen=True, slots=True, eq=False, match_args=False)
 class VoicePayload[T: Content](MediaPayload[T]):
-    content: T  # pyright: ignore[reportIncompatibleMethodOverride]
+    content: T  # pyright: ignore[reportIncompatibleMethodOverride] -- see MediaPayload
     duration: int | None = None
 
     KIND: ClassVar[str] = 'voice'
@@ -553,7 +555,7 @@ class VoicePayload[T: Content](MediaPayload[T]):
 
 @dataclass(frozen=True, slots=True, eq=False, match_args=False)
 class StickerPayload[T: Content](MediaPayload[T]):
-    content: T  # pyright: ignore[reportIncompatibleMethodOverride]
+    content: T  # pyright: ignore[reportIncompatibleMethodOverride] -- see MediaPayload
 
     KIND: ClassVar[str] = 'sticker'
     INPUT_MEDIA_TYPE: ClassVar[InputMediaType] = None
