@@ -11,9 +11,9 @@ GROUP_ID = int(os.environ['GROUP_ID'])
 TODO_ID = int(os.environ.get('TODO_ID', 0))
 
 
-def encode_id(chat_id: int, default: str = 'u') -> str:
+def encode_id(chat_id: int) -> str:
     if chat_id == USER_ID:
-        return default
+        return 'u'
     if chat_id == CHAN_ID:
         return 'c'
     if chat_id == GROUP_ID:

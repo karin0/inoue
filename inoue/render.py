@@ -32,7 +32,7 @@ from render_core import Value, to_str
 
 from .ctx import get_context
 from .db import db
-from .env import CHAN_ID, MAX_TEXT_LENGTH, encode_id
+from .env import CHAN_ID, MAX_TEXT_LENGTH
 from .log import do_notify, log
 from .render_context import OverriddenDict, decode_value, encode_value
 from .render_ctx import (
@@ -294,7 +294,7 @@ def create_data(overrides: dict[str, Value]) -> OverriddenDict:
 
 
 @command(public=True)
-def handle_render(msg: Message, rs: Responder):
+def handle_render(rs: Responder):
     if not (text := rs.get_effective_arg('\n')):
         return rs.reply_cached('Specify text or reply to a message to render.')
 
@@ -305,9 +305,11 @@ def handle_render(msg: Message, rs: Responder):
         assert isinstance(row, tuple)
         doc_id, text = row
     else:
-        chat_prefix = encode_id(msg.chat_id, '')
-        path = f'#{chat_prefix}{msg.message_id}'
-        db['r-' + path] = text
+        path = '#' + rs.get_message_key()
+        # A captured reply drops its buttons, and the key belongs to the capturing
+        # render, whose stored source this would overwrite.
+        if not rs.is_captured():
+            db['r-' + path] = text
         doc_id = None
 
     data = create_data({})
