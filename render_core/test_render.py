@@ -490,6 +490,14 @@ Write the following sentence twice, the second time within quotes.
         assert result == '42'
         assert self.render_it('a=42; { ( ( ( a ) ) ) };') == '42'
 
+    def test_this_names_the_innermost_document(self):
+        @mock_db
+        def side_effect(name):
+            return '{__this__()}/{__name__()}' if name == 'inner' else None
+
+        text = '{main:}{f ↦ __this__()}{__this__()} {*f} {:inner} {*inner} {**inner}'
+        assert self.render_it(text) == 'main main inner/main inner/main inner/main'
+
     def test_doc_name_definition(self):
         def f(text):
             ctx = self.start()

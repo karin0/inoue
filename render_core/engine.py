@@ -1448,13 +1448,13 @@ class Engine(Interpreter):
 
         trace('_doc_ref: Rendering doc: %s', key)
         if inplace:
-            self._render(doc)
+            self._render(doc, doc_name=key)
             return ''
-        return self._render_doc(doc)
+        return self._render_doc(doc, key)
 
-    def _render_doc(self, doc: str) -> Value:
+    def _render_doc(self, doc: str, doc_name: str | None = None) -> Value:
         with self._push():
-            self._render(doc)
+            self._render(doc, doc_name=doc_name)
             return self._gather()
 
     def _eval_func(self, doc) -> Value:
