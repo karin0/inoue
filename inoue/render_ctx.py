@@ -156,9 +156,8 @@ class RenderContext:
             raise RuntimeError('uneditable context')
 
         # A new task starts only after the running callback returns, so its batch gathers every
-        # edit and error that the callback produces. A batch cancelled before its task took it is
-        # never sent, so later edits start a new one.
-        if self._batch is None or self._batch[1].cancelled():
+        # edit and error that the callback produces.
+        if self._batch is None:
             content = [seg]
             task = asyncio.create_task(self._send())
             self._batch = (content, task)

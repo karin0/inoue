@@ -92,10 +92,6 @@ async def test_cancelled_edit_skips_the_update():
     await settle()
     assert seen == []
 
-    await ctx._edit_message('y')
-    assert len(seen) == 1
-    assert 'z' not in seen[0][0]
-
 
 async def test_first_response_goes_through_the_update_callback():
     rs = FakeResponder()

@@ -1,3 +1,4 @@
+import asyncio
 import gc
 import os
 import weakref
@@ -85,6 +86,31 @@ async def test_pending_task_keeps_its_context_alive():
     await settle()
     gc.collect()
     assert ref() is None
+
+
+async def test_rerender_rejects_edits_from_callbacks_already_scheduled():
+    rs = FakeResponder()
+    ctx, seen = make_ctx(responder=rs)
+    bridge = bridge_of(ctx)
+    rejected: list[str] = []
+
+    def edit():
+        try:
+            bridge.edit_message('stale')
+        except RuntimeError as e:
+            rejected.append(str(e))
+
+    async def finish():
+        pass
+
+    bridge._promise(finish()).then(edit)
+    # The task finishes and schedules its done callback, which a cancel can no longer stop.
+    await asyncio.sleep(0)
+    make_ctx(responder=rs)
+
+    await settle()
+    assert not any('stale' in spec[0] for spec in seen)
+    assert rejected
 
 
 async def test_count_tasks_drains_as_tasks_finish():

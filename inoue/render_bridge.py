@@ -194,6 +194,8 @@ class Bridge(Box):
             self._promise_cap -= 1
 
         if isinstance(tasks := self._tasks, Tasks):
+            if tasks.cancelled:
+                raise RuntimeError('Promise: context cancelled')
             return tasks
         raise RuntimeError(f'Promise: {tasks}')
 
