@@ -245,16 +245,21 @@ def _format_task(task: asyncio.Future) -> str:
 
 
 class Tasks:
-    __slots__ = ('_tasks', '__weakref__')
+    __slots__ = ('_tasks', '_cancelled', '__weakref__')
 
     def __init__(self):
         self._tasks: dict[asyncio.Task, Promise] = {}
+        self._cancelled = False
 
     def __repr__(self) -> str:
         return f'Tasks[{", ".join(_format_task(t) for t in self._tasks)}]'
 
     def __bool__(self) -> bool:
         return bool(self._tasks)
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled
 
     def create[T: PromiseResult](self, task: asyncio.Task[T], ctx: RenderContext) -> Promise[T]:
         # Edits gathered into one batch share its task.
@@ -280,6 +285,8 @@ class Tasks:
 
     def cancel(self):
         log.debug('Tasks.cancel: %r', self)
+        # A task done before the cancel still runs its callbacks, which must not start more work.
+        self._cancelled = True
         if tasks := self._tasks:
             for task in tasks:
                 task.cancel()
