@@ -3,7 +3,7 @@ import time
 
 from collections.abc import Callable, Iterable, Sequence
 from typing import TYPE_CHECKING, cast
-from weakref import WeakSet
+from weakref import WeakSet, ref
 
 from render_core import Box, Fragment, Value, to_str
 
@@ -262,24 +262,34 @@ class Tasks:
 
     def create[T: PromiseResult](self, task: asyncio.Future[T], ctx: RenderContext) -> Promise[T]:
         promise = Promise()
-        if not isinstance(task, asyncio.Task):
+        get_ctx = ref(ctx)
+        if isinstance(task, asyncio.Task):
+            # The event loop holds a pending task, which keeps the context alive through `keep`.
+            keep = ctx
+        else:
             # For non-task futures from edit_message, we count their chained promises instead, or
             # a cancel button will always show up for every edited message.
             self._promises.add(promise)
+            # Only the context resolves these futures, so a strong reference here would only form
+            # a cycle that keeps the context from being finalized.
+            keep = None
 
-        def callback(fut: asyncio.Future[T], _=ctx):
+        def callback(fut: asyncio.Future[T], _=keep):
             # `set.remove` may raise here, since the `Future` produced by `edit_message` can be
             # chained to multiple promises.
             self._tasks.discard(fut)
             self._promises.discard(promise)
+            ctx = get_ctx()
             try:
                 promise._invoke(fut)
             except ValueError as e:
                 # Circular chaining detected.
                 promise._cancel()
                 log.warning('Tasks.callback: %s: %s', type(e).__name__, e)
-                ctx._error(f'Promise: {e}')
-            ctx._task_done()
+                if ctx is not None:
+                    ctx._error(f'Promise: {e}')
+            if ctx is not None:
+                ctx._task_done()
 
         task.add_done_callback(callback)
         self._tasks.add(task)

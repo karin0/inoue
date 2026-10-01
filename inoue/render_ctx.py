@@ -173,6 +173,9 @@ class RenderContext:
                     log.info('_invoke_update_callback: context cancelled after update: %r', fut)
                 else:
                     fut.set_result(key)
+                    # The callbacks of `fut` hold this context weakly, so keep it alive until they
+                    # have run, which `call_soon` schedules ahead of this task's next step.
+                    await asyncio.sleep(0)
             return spec
 
     def _escalate(self) -> int | None:

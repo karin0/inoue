@@ -45,6 +45,32 @@ def test_collected_context_removes_temp_files_and_clears_data():
     assert not data
 
 
+async def test_context_dropped_with_an_unflushed_edit_removes_temp_files():
+    ctx, _ = make_ctx(sender=HOST, responder=FakeResponder())
+    bridge = bridge_of(ctx)
+    path = bridge.mkstemp().path
+    bridge.edit_message('x')
+    ref = weakref.ref(ctx)
+
+    del ctx, bridge
+    gc.collect()
+    assert ref() is None
+    assert not os.path.exists(path)
+
+
+async def test_flushed_edit_keeps_its_context_alive_for_its_callbacks():
+    ctx, _ = make_ctx(responder=FakeResponder())
+    ref = weakref.ref(ctx)
+    alive: list[bool] = []
+    bridge_of(ctx).edit_message('x').then(lambda _: alive.append(ref() is not None))
+    response = ctx.to_response('seed')
+
+    del ctx
+    await response
+    await settle()
+    assert alive == [True]
+
+
 async def test_pending_task_keeps_its_context_alive():
     rs = FakeResponder()
     ctx, _ = make_ctx(responder=rs)
