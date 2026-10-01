@@ -14,7 +14,7 @@ def _ctx() -> MagicMock:
     return MagicMock(name='ctx', spec=RenderContext)
 
 
-def test_empty_group_counts_zero():
+async def test_empty_group_counts_zero():
     tasks = Tasks()
     assert not tasks
     assert tasks.count('k') == 0
@@ -37,28 +37,24 @@ async def test_finished_task_leaves_the_group_and_reports_done():
     ctx._task_done.assert_called_once()
 
 
-async def test_future_counts_only_its_chained_callbacks():
+async def test_running_task_counts_only_its_chained_callbacks():
     tasks = Tasks()
     ctx = _ctx()
-    fut1: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-    fut2: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-    p1 = tasks.create(fut1, ctx)
-    p2 = tasks.create(fut2, ctx)
-    assert tasks.count('k') == 0
+    seen: list[int] = []
 
-    p1.then(lambda: None)
-    p1.then(lambda: None)
-    p2.then(lambda: None)
-    assert tasks.count('k') == 3
+    async def coro():
+        seen.append(tasks.count('k'))
 
-    fut1.set_result(None)
-    await settle()
+    task = asyncio.create_task(coro())
+    promise = tasks.create(task, ctx)
+    assert tasks.create(task, ctx) is promise
     assert tasks.count('k') == 1
 
-    fut2.set_result(None)
+    promise.then(lambda: None)
+    promise.then(lambda: None)
     await settle()
-    assert tasks.count('k') == 0
-    assert ctx._task_done.call_count == 2
+    assert seen == [2]
+    ctx._task_done.assert_called_once()
 
 
 async def test_cancel_cancels_every_task():

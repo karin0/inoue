@@ -1,8 +1,10 @@
+import asyncio
+
 import pytest
 
 from inoue.env import USER_ID
 from inoue.render_bridge import TASK_GROUPS, count_tasks
-from inoue.render_ctx import BUTTON_KEY
+from inoue.render_ctx import BUTTON_KEY, MessageSpec
 
 from .fakes import GUEST, HOST, FakeResponder, bridge_of, make_ctx, make_data, settle
 
@@ -23,6 +25,14 @@ async def test_cancel_button_rejects_new_promises():
     ctx, _ = make_ctx(make_data({BUTTON_KEY: '_cancel'}), responder=FakeResponder())
     with pytest.raises(RuntimeError, match='context cancelled'):
         bridge_of(ctx).edit_message('hi')
+
+
+async def test_rejected_edit_is_not_sent():
+    ctx, seen = make_ctx(make_data({BUTTON_KEY: '_cancel'}), responder=FakeResponder())
+    with pytest.raises(RuntimeError, match='context cancelled'):
+        bridge_of(ctx).edit_message('rejected')
+    await ctx.to_response('seed')
+    assert 'rejected' not in seen[0][0]
 
 
 def test_host_sender_is_trusted():
@@ -55,34 +65,36 @@ def test_escalate_without_doc_is_rejected():
         bridge.evil('1 + 1')
 
 
-async def test_edits_in_one_callback_share_a_future_and_one_update():
+async def test_edits_in_one_callback_share_a_task_and_one_update():
     rs = FakeResponder()
     ctx, seen = make_ctx(responder=rs)
-    fut = ctx._edit_message('A')
-    assert ctx._edit_message('B') is fut
-    assert ctx._edit_message('C') is fut
+    task = ctx._edit_message('A')
+    assert ctx._edit_message('B') is task
+    assert ctx._edit_message('C') is task
 
-    await ctx._invoke_update_callback('')
+    assert await task == rs.get_message_key()
     assert len(seen) == 1
     text = seen[0][0]
     assert 'A' in text
     assert 'B' in text
     assert 'C' in text
-    assert fut.result() == rs.get_message_key()
 
 
 async def test_edit_to_none_empties_the_message():
     ctx, seen = make_ctx(responder=FakeResponder())
-    ctx._edit_message(None)
-    await ctx._invoke_update_callback('')
+    await ctx._edit_message(None)
     assert 'empty' in seen[0][0]
 
 
 async def test_cancelled_edit_skips_the_update():
     ctx, seen = make_ctx(responder=FakeResponder())
     ctx._edit_message('z').cancel()
-    await ctx._invoke_update_callback('')
+    await settle()
     assert seen == []
+
+    await ctx._edit_message('y')
+    assert len(seen) == 1
+    assert 'z' not in seen[0][0]
 
 
 async def test_first_response_goes_through_the_update_callback():
@@ -94,10 +106,10 @@ async def test_first_response_goes_through_the_update_callback():
     assert ctx._edit_handle is rs.handle
 
 
-async def test_task_done_flushes_buffered_edits():
+async def test_edit_is_sent_after_the_running_callback():
     ctx, seen = make_ctx(responder=FakeResponder())
     ctx._edit_message('hello')
-    ctx._task_done()
+    assert seen == []
     await settle()
     assert len(seen) == 1
     assert 'hello' in seen[0][0]
@@ -149,6 +161,32 @@ async def test_rendered_edit_message_merges_into_the_response():
     text = seen[0][0]
     assert 'hi' in text
     assert 'tail' in text
+
+
+async def test_render_merges_edits_even_if_awaited_late():
+    ctx, seen = make_ctx(responder=FakeResponder())
+    response = ctx.render("{ edit_message('hi') }tail")
+    await asyncio.sleep(0)
+    await response
+    assert len(seen) == 1
+    assert 'hi' in seen[0][0]
+    assert 'tail' in seen[0][0]
+
+
+def _buttons(spec: MessageSpec) -> list[str]:
+    markup = spec[2]
+    return [b.text for row in markup.inline_keyboard for b in row] if markup else []
+
+
+async def test_cancel_button_shows_only_for_work_chained_after_an_edit():
+    ctx, seen = make_ctx(responder=FakeResponder())
+    bridge = bridge_of(ctx)
+    bridge.edit_message('plain')
+    await settle()
+    bridge.edit_message('chained').then(lambda _: None)
+    await settle()
+    assert not any(b.startswith('🛑') for b in _buttons(seen[0]))
+    assert '🛑1' in _buttons(seen[1])
 
 
 async def test_edit_message_promise_resolves_to_the_message_key():

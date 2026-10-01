@@ -45,15 +45,16 @@ def test_collected_context_removes_temp_files_and_clears_data():
     assert not data
 
 
-async def test_context_dropped_with_an_unflushed_edit_removes_temp_files():
-    ctx, _ = make_ctx(sender=HOST, responder=FakeResponder())
+async def test_context_dropped_with_a_pending_edit_is_finalized_after_sending_it():
+    ctx, seen = make_ctx(sender=HOST, responder=FakeResponder())
     bridge = bridge_of(ctx)
     path = bridge.mkstemp().path
     bridge.edit_message('x')
     ref = weakref.ref(ctx)
 
     del ctx, bridge
-    gc.collect()
+    await settle()
+    assert len(seen) == 1
     assert ref() is None
     assert not os.path.exists(path)
 

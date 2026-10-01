@@ -187,27 +187,20 @@ class Bridge(Box):
             return val
         raise AttributeError(name)
 
+    def _admit(self) -> Tasks:
+        if self._promise_cap is not None:
+            if self._promise_cap <= 0:
+                raise RuntimeError('Promise capacity exceeded')
+            self._promise_cap -= 1
+
+        if isinstance(tasks := self._tasks, Tasks):
+            return tasks
+        raise RuntimeError(f'Promise: {tasks}')
+
     def _promise[T: PromiseResult](self, coro: Coroutine[Any, Any, T]) -> Promise[T]:
-        if self._promise_cap is not None:
-            if self._promise_cap <= 0:
-                raise RuntimeError('Promise capacity exceeded')
-            self._promise_cap -= 1
-
-        if isinstance(tasks := self._tasks, Tasks):
-            # Let each task hold a reference to the `RenderContext` to keep it
-            # alive until all promises are resolved.
-            return tasks.create(asyncio.create_task(coro), self._cb)
-        raise RuntimeError(f'Promise: {tasks}')
-
-    def _promise_fut[T: PromiseResult](self, fut: asyncio.Future[T]) -> Promise[T]:
-        if self._promise_cap is not None:
-            if self._promise_cap <= 0:
-                raise RuntimeError('Promise capacity exceeded')
-            self._promise_cap -= 1
-
-        if isinstance(tasks := self._tasks, Tasks):
-            return tasks.create(fut, self._cb)
-        raise RuntimeError(f'Promise: {tasks}')
+        # Let each task hold a reference to the `RenderContext` to keep it
+        # alive until all promises are resolved.
+        return self._admit().create(asyncio.create_task(coro), self._cb)
 
     @trusted
     def communicate(self, cmd, input='') -> Promise[dict[str, Value]]:
@@ -253,7 +246,8 @@ class Bridge(Box):
     @public
     def edit_message(self, text) -> Promise:
         log.debug('Bridge: edit_message: %r %r', text, self._cb)
-        return self._promise_fut(self._cb._edit_message(text))
+        tasks = self._admit()
+        return tasks.create(self._cb._edit_message(text), self._cb)
 
     @public
     def sleep(self, seconds: float) -> Promise[None]:
