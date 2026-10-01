@@ -10,6 +10,10 @@ A command's output is described by three abstractions. `Responder` is where the
 output goes. `EditHandle` is the position in that output being written.
 `MediaPayload` is what the output is made of and where its bytes currently live.
 
+A `Responder` is this project's file descriptor. `get_text` and `set_text` read
+and rewrite argv, `reply` writes stdout, `capture` redirects it and `get_route`
+is exec, which is all `reroute_cmd` needs to run a command from a document.
+
 ## Output mechanisms
 
 Telegram offers three output mechanisms, and they differ on two axes.
