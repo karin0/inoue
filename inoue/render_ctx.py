@@ -76,7 +76,7 @@ class RenderContext:
         '_responder',
         '_edit_handle',
         '_error_idx',
-        '_editing',
+        '_batch',
         'data',
         'engine',
         '__weakref__',
@@ -104,7 +104,7 @@ class RenderContext:
 
         self._error_idx = 0
         self._edit_handle = None
-        self._editing: tuple[list[FlattenSegment], asyncio.Future[str | None]] | None = None
+        self._batch: tuple[list[FlattenSegment], asyncio.Task[str | None]] | None = None
 
         context = get_context()
         if (sender := context.sender) is not None and sender.id in (USER_ID, CHAN_ID):
@@ -151,32 +151,40 @@ class RenderContext:
     def set_update_callback(self, callback: UpdateCallback | None) -> None:
         self._update_callback = callback and (callback, asyncio.Lock())
 
-    async def _invoke_update_callback(self, seg: FlattenSegment) -> MessageSpec:
+    def _queue(self, seg: FlattenSegment, *, first: bool = False) -> asyncio.Task[str | None]:
+        if self._update_callback is None:
+            raise RuntimeError('uneditable context')
+
+        # A new task starts only after the running callback returns, so its batch gathers every
+        # edit and error that the callback produces. A batch cancelled before its task took it is
+        # never sent, so later edits start a new one.
+        if self._batch is None or self._batch[1].cancelled():
+            content = [seg]
+            task = asyncio.create_task(self._send())
+            self._batch = (content, task)
+        else:
+            content, task = self._batch
+            if first:
+                content.insert(0, seg)
+            else:
+                content.append(seg)
+
+        log.debug('_queue: %r', content)
+        return task
+
+    async def _send(self) -> str | None:
         assert self._update_callback is not None
-        editing = self._editing
-        self._editing = None
         func, lock = self._update_callback
         async with lock:
-            if editing is not None:
-                content, fut = editing
-                if fut.cancelled():
-                    log.debug('_invoke_update_callback: context cancelled: %r', seg)
-                    return self._format_response(seg)
-                seg = merge_segments((seg, *content)) if seg else merge_segments(content)
-            spec = self._format_response(seg)
+            # Edits queued while an earlier update holds the lock join this batch.
+            assert self._batch is not None
+            content, _ = self._batch
+            self._batch = None
+            spec = self.format_response(merge_segments(content))
             self._edit_handle = handle = await func(spec)
-            key = handle.get_message_key()
-            log.debug('_invoke_update_callback: key=%r, editing=%r', key, editing)
-            if editing is not None:
-                _, fut = editing
-                if fut.cancelled():
-                    log.info('_invoke_update_callback: context cancelled after update: %r', fut)
-                else:
-                    fut.set_result(key)
-                    # The callbacks of `fut` hold this context weakly, so keep it alive until they
-                    # have run, which `call_soon` schedules ahead of this task's next step.
-                    await asyncio.sleep(0)
-            return spec
+        key = handle.get_message_key()
+        log.debug('_send: key=%r', key)
+        return key
 
     def _escalate(self) -> int | None:
         if (token := self._can_escalate) is not None:
@@ -230,43 +238,22 @@ class RenderContext:
         self._render_time = int(time.time())
 
     # Exposed as a callback to Bridge, used for `edit_message`.
-    # This does not count as a last task in `count_tasks`.
-    def _edit_message(self, val: Value | None) -> asyncio.Future[str | None]:
-        if self._update_callback is None:
-            raise RuntimeError('uneditable context')
-
+    def _edit_message(self, val: Value | None) -> asyncio.Task[str | None]:
         # We always append the new value, so the doc can clear the message by editing it to empty.
-        seg = to_segment(val) if val is not None else ''
-
-        # To gather multiple edits, along with all `engine.errors` generated during the task
-        # callback, we have to defer the actual update until `_task_done` is called.
-        if self._editing is None:
-            fut = asyncio.get_event_loop().create_future()
-            self._editing = ([seg], fut)
-        else:
-            content, fut = self._editing
-            content.append(seg)
-
-        log.debug('_edit_message: %r', self._editing)
-        return fut
+        return self._queue(to_segment(val) if val is not None else '')
 
     def _task_done(self):
         self._atexit()
         log.debug(
-            '_task_done: editing=%r errors=%d/%d',
-            self._editing,
+            '_task_done: batch=%r errors=%d/%d',
+            self._batch,
             self._error_idx,
             len(self.engine.errors),
         )
 
-        if self._editing is not None:
-            log.debug('_task_done: _editing: %r', self._editing)
-            # The edit buffer is only preserved during a single task callback.
-            create_task(self._invoke_update_callback(''))
-        elif (errors := self.engine.errors) and self._error_idx < len(errors):
+        # A pending batch reports the new errors along with its edits.
+        if self._batch is None and (errors := self.engine.errors) and self._error_idx < len(errors):
             log.debug('_task_done: new errors: %d/%d', self._error_idx, len(errors))
-            # If new error occurs without calling `_edit_message`, we still want to
-            # reply it to the user when possible.
             create_task(self._report_errors())
 
     async def _report_errors(self):
@@ -293,25 +280,25 @@ class RenderContext:
     async def _reply(self, val: Value | None) -> str | None:
         assert self._responder
         seg = to_segment(val) if val is not None else ''
-        spec = self._format_response(seg, has_markup=False)
+        spec = self.format_response(seg, has_markup=False)
         rs = (await self._reply_to_rs()) or self._responder
         h = await rs.reply(*spec)
         log.debug('_reply: replied: %r', h and h.get_message_key())
         return h.get_message_key() if h is not None else None
 
-    def render(self, text: str) -> Awaitable[MessageSpec]:
+    def render(self, text: str) -> Awaitable[str | None]:
         return self.to_response(self.render_text(text))
 
-    async def to_response(self, seg: FlattenSegment) -> MessageSpec:
-        # Bootstrapping path.
-        if self._update_callback is not None:
-            return await self._invoke_update_callback(seg)
-        return self._format_response(seg)
+    def to_response(self, seg: FlattenSegment) -> Awaitable[str | None]:
+        if self._update_callback is None:
+            # An uneditable context has no message to respond with.
+            return asyncio.sleep(0)
+        return self._queue(seg, first=True)
 
-    def _format_response(self, seg: FlattenSegment, *, has_markup: bool = True) -> MessageSpec:
+    def format_response(self, seg: FlattenSegment, *, has_markup: bool = True) -> MessageSpec:
         from .render import make_markup
 
-        log.debug('_format_response: %r', seg)
+        log.debug('format_response: %r', seg)
         ctx = self.data
         do_cleanup = get_env_flag(ctx, 'cleanup', True)
         self._as_caption = as_caption = self._as_caption or has_media(ctx)
@@ -368,7 +355,7 @@ class RenderContext:
 
         fmt = Formatter(limit)
         for part in self._format_seg(fmt, seg, state):
-            log.debug('_format_response: part: %r', part)
+            log.debug('format_response: part: %r', part)
             func(part, out)
 
         seg_num = len(fmt.segments)
@@ -394,7 +381,7 @@ class RenderContext:
             result = cleanup_text(result)
 
         res_len_2 = len(result)
-        log.debug('_format_response: final: %r (%d)', result, res_len_2)
+        log.debug('format_response: final: %r (%d)', result, res_len_2)
         log.info(
             'formatted %s into %d/%d as %d/%d%s, %s, %s',
             seg_typ,

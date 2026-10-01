@@ -3,7 +3,7 @@ import time
 
 from collections.abc import Callable, Iterable, Sequence
 from typing import TYPE_CHECKING, cast
-from weakref import WeakSet, ref
+from weakref import WeakSet
 
 from render_core import Box, Fragment, Value, to_str
 
@@ -245,54 +245,37 @@ def _format_task(task: asyncio.Future) -> str:
 
 
 class Tasks:
-    __slots__ = ('_tasks', '_promises', '__weakref__')
+    __slots__ = ('_tasks', '__weakref__')
 
     def __init__(self):
-        self._tasks: set[asyncio.Future] = set()
-        self._promises: WeakSet[Promise] = WeakSet()
+        self._tasks: dict[asyncio.Task, Promise] = {}
 
     def __repr__(self) -> str:
-        return (
-            f'Tasks[tasks: {", ".join(_format_task(t) for t in self._tasks)}, '
-            f'promises: {", ".join(repr(p) for p in self._promises)}]'
-        )
+        return f'Tasks[{", ".join(_format_task(t) for t in self._tasks)}]'
 
     def __bool__(self) -> bool:
         return bool(self._tasks)
 
-    def create[T: PromiseResult](self, task: asyncio.Future[T], ctx: RenderContext) -> Promise[T]:
-        promise = Promise()
-        get_ctx = ref(ctx)
-        if isinstance(task, asyncio.Task):
-            # The event loop holds a pending task, which keeps the context alive through `keep`.
-            keep = ctx
-        else:
-            # For non-task futures from edit_message, we count their chained promises instead, or
-            # a cancel button will always show up for every edited message.
-            self._promises.add(promise)
-            # Only the context resolves these futures, so a strong reference here would only form
-            # a cycle that keeps the context from being finalized.
-            keep = None
+    def create[T: PromiseResult](self, task: asyncio.Task[T], ctx: RenderContext) -> Promise[T]:
+        # Edits gathered into one batch share its task.
+        if (promise := self._tasks.get(task)) is not None:
+            return promise
 
-        def callback(fut: asyncio.Future[T], _=keep):
-            # `set.remove` may raise here, since the `Future` produced by `edit_message` can be
-            # chained to multiple promises.
-            self._tasks.discard(fut)
-            self._promises.discard(promise)
-            ctx = get_ctx()
+        promise = Promise()
+
+        def callback(fut: asyncio.Task[T]):
+            del self._tasks[fut]
             try:
                 promise._invoke(fut)
             except ValueError as e:
                 # Circular chaining detected.
                 promise._cancel()
                 log.warning('Tasks.callback: %s: %s', type(e).__name__, e)
-                if ctx is not None:
-                    ctx._error(f'Promise: {e}')
-            if ctx is not None:
-                ctx._task_done()
+                ctx._error(f'Promise: {e}')
+            ctx._task_done()
 
         task.add_done_callback(callback)
-        self._tasks.add(task)
+        self._tasks[task] = promise
         return promise
 
     def cancel(self):
@@ -309,18 +292,18 @@ class Tasks:
                 log.warning('Tasks._cancel_done: task not done: %r', _format_task(task))
 
     def count(self, key: str) -> int:
-        n = len([t for t in self._tasks if isinstance(t, asyncio.Task) and not t.done()])
-        m = sum(len(p._inner) for p in self._promises if isinstance(p._inner, list))
-        log.debug(
-            'Tasks.count: %s: %r: %d/%d tasks, %d/%d promises',
-            key,
-            self,
-            n,
-            len(self._tasks),
-            m,
-            len(self._promises),
-        )
-        return n + m
+        # The task sending a response is about to finish, so it counts only the callbacks chained
+        # to it. This keeps the cancel button off a message whose edit has nothing after it.
+        current = asyncio.current_task()
+        n = 0
+        for task, promise in self._tasks.items():
+            if task is current:
+                if isinstance(inner := promise._inner, list):
+                    n += len(inner)
+            elif not task.done():
+                n += 1
+        log.debug('Tasks.count: %s: %r: %d/%d', key, self, n, len(self._tasks))
+        return n
 
 
 async def communicate(cmd: str, input: str | None) -> dict[str, Value]:

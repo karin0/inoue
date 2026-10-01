@@ -396,7 +396,7 @@ async def handle_render_inline_query(query: InlineQuery, text: str):
     ctx = RenderContext(create_data({}), doc_id=doc_id, path=path)
     ctx.data['_env.footer'] = Element((Bold('via '), '@', bot.username, ' ', text))
     rendered = ctx.render_text(text)
-    result, parse_mode, markup = await ctx.to_response(rendered)
+    result, parse_mode, markup = ctx.format_response(rendered)
 
     if rendered := render_segment(rendered).strip():
         p = 50
