@@ -16,7 +16,7 @@ from bot import CallbackData, Responder, VoicePayload, bot, callback_query
 
 from .commands import dispatch_cmd, handle_help
 from .ctx import Sender, get_context, is_admin
-from .env import CHAN_ID, GROUP_ID, TODO_ID, USER_ID
+from .env import CHAN_ID, GROUP_ID, USER_ID
 from .inoue import render_receipt
 from .log import log
 from .merge import check_merge
@@ -24,7 +24,6 @@ from .render import handle_render_doc, handle_render_group, handle_render_inline
 from .rg import handle_rg
 from .sticker import handle_sticker
 from .text import pre_block
-from .todo import handle_todo_msg
 from .voice import handle_voice
 from .ytdlp import extract_url, handle_yt_chosen_result, handle_yt_inline_query
 
@@ -59,13 +58,6 @@ async def handle_msg(rs: Responder, direct: bool = True):
     if (msg := rs.get_message()) is None:
         raise ValueError(f'handle_msg: no message: {rs}')
     log.debug('handle_msg: rs: %s, sender: %s', rs, context.sender)
-
-    if TODO_ID and msg.chat_id == TODO_ID:
-        # Responders are not used for messages in `TODO_ID`, which has a different
-        # interaction model.
-        if context.sender_is_host():
-            return await handle_todo_msg(msg)
-        raise ValueError(f'Unauthorized todo: {msg}')
 
     # `render` handles Doc messages that are forwarded from CHAN_ID to its discussion group.
     if (

@@ -2,8 +2,8 @@
 
 A single-user Telegram bot built around one idea: a message is a display that a
 program rewrites in place. A command replies once and then keeps editing that
-reply, so streamed subprocess output, a paged log viewer, a todo panel and a
-turn-based game are the same mechanism seen from different angles.
+reply, so streamed subprocess output, a paged log viewer and a turn-based game
+are the same mechanism seen from different angles.
 
 The programs are written in a language of this repository's own, documented in
 `render_core/README.md`. Sending `/render <source>` runs it, the result becomes
@@ -132,10 +132,9 @@ startup. Concrete values live in a gitignored `.env`.
 | Optional | |
 | --- | --- |
 | `DB_FILE` | SQLite path, `<me>.db` in the working directory by default |
-| `TODO_ID` | chat of the todo panel |
 | `LOG_THREAD_ID`, `MEDIA_STAGING_MESSAGE_THREAD_ID` | forum topic ids for the notifications sent to `USER_ID` and for media staging |
 | `GUEST_USER_IDS`, `IGNORE_CHAT_IDS` | comma-separated id lists of guests and of chats to ignore |
-| `TRUSTED_IDS` | chats besides `USER_ID`, `GROUP_ID` and `TODO_ID` whose command menu lists every command |
+| `TRUSTED_IDS` | chats besides `USER_ID`, `CHAN_ID` and `GROUP_ID` whose command menu lists every command |
 | `ALLOWED_GUEST_DOC_PREFIXES` | document name prefixes a guest may expand |
 | `DOC_OVERRIDE_DIR`, `DOC_SEARCH_PATH` | file lookup for documents, the second colon-separated |
 | `RG_CWD`, `UPDATE_CWD` | working directories for `/rg` and `/update` |
