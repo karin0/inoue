@@ -11,6 +11,12 @@ the message text, inline buttons become its input, and per-message state
 persists across button presses. `examples/redirect_hook.m` is a document that
 pipes text through an external command and reports the timings of each stage.
 
+The closest analogy is a creative workshop inside a chat window. Its works are
+documents, published by posting them to the channel, and commands, each one
+function whose parameter annotations tell `Route` what to pass in. Works build
+on each other, and the analogy stops at authorship, since `USER_ID` is the only
+author.
+
 ## Layout
 
 Three packages, with imports flowing in one direction.
