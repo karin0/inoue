@@ -8,7 +8,6 @@ ME_LOWER = ME.lower()
 USER_ID = int(os.environ['USER_ID'])
 CHAN_ID = int(os.environ['CHAN_ID'])
 GROUP_ID = int(os.environ['GROUP_ID'])
-TODO_ID = int(os.environ.get('TODO_ID', 0))
 
 
 def encode_id(chat_id: int) -> str:
@@ -34,9 +33,7 @@ def load_ids(key: str) -> tuple[int, ...]:
 GUEST_USER_IDS = frozenset(load_ids('GUEST_USER_IDS'))
 IGNORE_CHAT_IDS = frozenset(load_ids('IGNORE_CHAT_IDS'))
 
-TRUSTED_IDS = frozenset(
-    x for x in (USER_ID, CHAN_ID, GROUP_ID, TODO_ID, *load_ids('TRUSTED_IDS')) if x
-)
+TRUSTED_IDS = frozenset((USER_ID, CHAN_ID, GROUP_ID, *load_ids('TRUSTED_IDS')))
 
 LOG_THREAD_ID = int(os.environ.get('LOG_THREAD_ID', 0)) or None
 
