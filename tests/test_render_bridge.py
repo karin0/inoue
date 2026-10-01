@@ -3,12 +3,19 @@ import gc
 import os
 import weakref
 
+from itertools import chain
+from typing import TYPE_CHECKING
+
 import pytest
 
 from inoue import render_bridge
 from inoue.render_bridge import TASK_GROUPS, count_tasks
+from inoue.render_ctx import BUTTON_KEY, MessageSpec
 
 from .fakes import GUEST, HOST, FakeResponder, bridge_of, make_ctx, make_data, settle
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 async def test_guest_promise_capacity_is_five():
@@ -111,6 +118,61 @@ async def test_rerender_rejects_edits_from_callbacks_already_scheduled():
     await settle()
     assert not any('stale' in spec[0] for spec in seen)
     assert rejected
+
+
+def _has_cancel_button(spec: MessageSpec) -> bool:
+    markup = spec[2]
+    return markup is not None and any(b.text == '🛑1' for b in chain(*markup.inline_keyboard))
+
+
+async def test_chained_edit_loop_sends_one_update_per_round():
+    ctx, seen = make_ctx(responder=FakeResponder())
+    bridge = bridge_of(ctx)
+    rounds = iter(('one', 'two', 'three'))
+
+    def write(_=None):
+        if (text := next(rounds, None)) is not None:
+            bridge.edit_message(text).then(write)
+
+    write()
+    await ctx.to_response('seed')
+    await settle()
+    assert len(seen) == 3
+    texts = ('seedone', 'two', 'three')
+    assert all(text in spec[0] for text, spec in zip(texts, seen, strict=True))
+    assert all(_has_cancel_button(spec) for spec in seen)
+
+
+async def test_cancel_button_stops_an_edit_loop():
+    rs = FakeResponder()
+    ctx, seen = make_ctx(sender=HOST, responder=rs)
+    bridge = bridge_of(ctx)
+    rejected: list[str] = []
+
+    def guard(call: Callable[[], object]):
+        try:
+            call()
+        except RuntimeError as e:
+            rejected.append(str(e))
+
+    def tick(_=None):
+        guard(lambda: bridge.sleep(0).then(edit))
+
+    def edit():
+        guard(lambda: bridge.edit_message('tick').then(tick))
+
+    tick()
+    await ctx.to_response('seed')
+    for _ in range(20):
+        await asyncio.sleep(0)
+    sent = len(seen)
+    assert sent >= 3
+    assert not rejected
+
+    make_ctx(make_data({BUTTON_KEY: '_cancel'}), responder=rs)
+    await settle()
+    assert len(seen) == sent
+    assert set(rejected) <= {'Promise: context cancelled'}
 
 
 async def test_count_tasks_drains_as_tasks_finish():
