@@ -181,7 +181,8 @@ def _get_download_path(info: dict[str, Any]) -> str:
             return path
     if path := info.get('_filename'):
         return path
-    raise FileNotFoundError('yt-dlp finished but no output file was found')
+    # yt-dlp skips a stream larger than max_filesize without raising.
+    raise ValueError(f'No file downloaded, likely larger than {MAX_FILE_SIZE} bytes')
 
 
 def _get_thumbnail_path(info: dict[str, Any]) -> str | None:
@@ -331,12 +332,17 @@ def get_ytdlp(audio_only: bool) -> YoutubeDL:
 
     os.makedirs(ASSETS_DIR, exist_ok=True)
 
-    # Prefer Telegram-streamable containers.
+    # Prefer Telegram-streamable containers, then streams that fit MAX_FILE_SIZE. The unfiltered
+    # alternatives last make an oversized video fail in `_get_download_path`.
+    fits = f'[filesize<?{MAX_FILE_SIZE}][filesize_approx<?{MAX_FILE_SIZE}]'
     if audio_only:
-        fmt = 'bestaudio[ext=m4a]/bestaudio/best'
+        fmt = f'ba[ext=m4a]{fits}/ba{fits}/b{fits}/ba[ext=m4a]/ba/b'
         postprocessors = ({'key': 'FFmpegExtractAudio', 'preferredcodec': 'm4a'},)
     else:
-        fmt = 'bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b'
+        fmt = (
+            f'bv*[ext=mp4]{fits}+ba[ext=m4a]{fits}/b[ext=mp4]{fits}/bv*{fits}+ba{fits}/b{fits}'
+            '/bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b'
+        )
         postprocessors = ({'key': 'FFmpegVideoConvertor', 'preferedformat': 'mp4'},)
 
     # Do not pass 'logger' here, or progress bars will break.
