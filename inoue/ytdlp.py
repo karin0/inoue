@@ -319,6 +319,10 @@ class Output:
             )
 
 
+def _backoff(n: int) -> float:
+    return min(2**n, 30)
+
+
 def get_ytdlp(audio_only: bool) -> YoutubeDL:
     from yt_dlp import YoutubeDL
 
@@ -348,6 +352,10 @@ def get_ytdlp(audio_only: bool) -> YoutubeDL:
         'outtmpl': OUTTMPL,
         'writethumbnail': True,
         'max_filesize': MAX_FILE_SIZE,
+        # The library defaults to no retries, unlike the CLI.
+        'retries': 10,
+        'fragment_retries': 10,
+        'retry_sleep_functions': {'http': _backoff, 'fragment': _backoff},
         # Disable the generic extractor to prevent SSRF.
         'allowed_extractors': ('default', '-generic'),
     }
