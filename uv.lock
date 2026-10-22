@@ -375,7 +375,7 @@ requires-dist = [
     { name = "pathvalidate", specifier = ">=3.3.1" },
     { name = "pillow", specifier = ">=10.0.0" },
     { name = "prettytable", specifier = ">=3.17.0" },
-    { name = "ptbcontrib", git = "https://github.com/python-telegram-bot/ptbcontrib?rev=main" },
+    { name = "ptbcontrib", git = "https://github.com/python-telegram-bot/ptbcontrib?rev=3fccff10526d19a21f595a23529102a1dd13f976" },
     { name = "python-telegram-bot", specifier = ">=22.8" },
     { name = "regex", specifier = ">=2026.4.4" },
     { name = "rembg", extras = ["cpu"], specifier = ">=2.0.75" },
@@ -890,7 +890,7 @@ wheels = [
 [[package]]
 name = "ptbcontrib"
 version = "0.0.0"
-source = { git = "https://github.com/python-telegram-bot/ptbcontrib?rev=main#3fccff10526d19a21f595a23529102a1dd13f976" }
+source = { git = "https://github.com/python-telegram-bot/ptbcontrib?rev=3fccff10526d19a21f595a23529102a1dd13f976#3fccff10526d19a21f595a23529102a1dd13f976" }
 dependencies = [
     { name = "python-telegram-bot" },
 ]
