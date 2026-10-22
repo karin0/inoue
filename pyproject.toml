@@ -10,10 +10,10 @@ dependencies = [
     "prettytable>=3.17.0",
     "yt-dlp>=2026.3.17",
     "pathvalidate>=3.3.1",
-    "pillow>=10.0.0",
-    "rembg[cpu]>=2.0.75",
+    "pillow>=13.0.0",
+    "rembg[cpu]>=2.0.86",
     "ptbcontrib",
-    "aiohttp>=3.13.5",
+    "aiohttp>=3.14.4",
     "regex>=2026.4.4",
 ]
 
@@ -33,6 +33,9 @@ ptbcontrib = { git = "https://github.com/python-telegram-bot/ptbcontrib", rev = 
 
 [tool.uv]
 exclude-newer = "15 days"
+# Pillow 13.0.0 fixes 24 CVEs in decoding images, and the bot opens images from chats.
+# rembg 2.0.86 is the first release accepting Pillow 13.
+exclude-newer-package = { pillow = "2026-10-17T00:00:00Z", rembg = "2026-10-22T00:00:00Z" }
 
 [tool.ruff]
 line-length = 100
