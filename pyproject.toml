@@ -29,7 +29,7 @@ dev = [
 ]
 
 [tool.uv.sources]
-ptbcontrib = { git = "https://github.com/python-telegram-bot/ptbcontrib", rev = "main" }
+ptbcontrib = { git = "https://github.com/python-telegram-bot/ptbcontrib", rev = "3fccff10526d19a21f595a23529102a1dd13f976" }
 
 [tool.uv]
 exclude-newer = "15 days"
