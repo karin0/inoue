@@ -1,4 +1,4 @@
-# ruff: noqa: RUF001, N806
+# ruff: noqa: RUF001
 import json
 import os
 import random
@@ -65,14 +65,10 @@ def hitokoto_sentences():
         yield __name__
         return
 
-    HITOKOTO_TYPES = os.environ.get('HITOKOTO_TYPES', '').strip()
-    HITOKOTO_BANNED = os.environ.get('HITOKOTO_BANNED', '').strip()
-    if HITOKOTO_BANNED:
-        HITOKOTO_BANNED = tuple(s for w in HITOKOTO_BANNED.split(',') if (s := w.strip()))
-    else:
-        HITOKOTO_BANNED = ()
+    kinds = os.environ.get('HITOKOTO_TYPES', '').strip()
+    banned = tuple(s for w in os.environ.get('HITOKOTO_BANNED', '').split(',') if (s := w.strip()))
 
-    for kind in HITOKOTO_TYPES:
+    for kind in kinds:
         fn = os.path.join(sentences_dir, kind + '.json')
         with open(fn, encoding='utf-8') as fp:
             for d in json.load(fp):
@@ -84,7 +80,7 @@ def hitokoto_sentences():
                     t = d_from_who.strip()
                     c.append(t)
                 c = ''.join(c)
-                if any(w in c for w in HITOKOTO_BANNED):
+                if any(w in c for w in banned):
                     continue
                 if t:
                     s += '—— ' + t
@@ -100,12 +96,13 @@ def hitokoto_sentences():
                 yield s
 
 
-if is_debug:
-    HITOKOTO_SENTENCES = SENTENCES = (__name__,)
-else:
-    HITOKOTO_SENTENCES = tuple(hitokoto_sentences())
-
-    SENTENCES = tuple(truncate_text(s) for s in {s for s in sentences() if len(s) > 5})
+HITOKOTO_SENTENCES = (__name__,) if is_debug else tuple(hitokoto_sentences())
+SENTENCES = (
+    (__name__,)
+    if is_debug
+    else tuple(truncate_text(s) for s in {s for s in sentences() if len(s) > 5})
+)
+if not is_debug:
     log.info('Loaded %d sentences, %d hitokotos', len(SENTENCES), len(HITOKOTO_SENTENCES))
 
 

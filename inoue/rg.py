@@ -180,19 +180,19 @@ class RGQuery:
 CWD = os.environ.get('RG_CWD')
 QUERIES: list[RGQuery] = []
 QUERY_LIMIT = 10
-QUERY_IDX = 0
+_query_idx = 0
 MATCH_LIMIT = 500
 PAGE_LIMIT = 10
 
 
 def push_query(q: RGQuery):
-    global QUERY_IDX
+    global _query_idx
     if len(QUERIES) >= QUERY_LIMIT:
-        QUERIES[QUERY_IDX] = q
-        r = QUERY_IDX
-        QUERY_IDX += 1
-        if QUERY_IDX >= QUERY_LIMIT:
-            QUERY_IDX = 0
+        QUERIES[_query_idx] = q
+        r = _query_idx
+        _query_idx += 1
+        if _query_idx >= QUERY_LIMIT:
+            _query_idx = 0
     else:
         r = len(QUERIES)
         QUERIES.append(q)

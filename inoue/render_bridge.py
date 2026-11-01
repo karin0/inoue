@@ -188,10 +188,9 @@ class Bridge(Box):
         raise AttributeError(name)
 
     def _admit(self) -> Tasks:
-        if self._promise_cap is not None:
-            if self._promise_cap <= 0:
-                raise RuntimeError('Promise capacity exceeded')
-            self._promise_cap -= 1
+        if self._promise_cap <= 0:
+            raise RuntimeError('Promise capacity exceeded')
+        self._promise_cap -= 1
 
         if isinstance(tasks := self._tasks, Tasks):
             if tasks.cancelled:

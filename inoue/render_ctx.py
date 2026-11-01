@@ -282,8 +282,9 @@ class RenderContext:
         spec = self.format_response(seg, has_markup=False)
         rs = (await self._reply_to_rs()) or self._responder
         h = await rs.reply(*spec)
-        log.debug('_reply: replied: %r', h and h.get_message_key())
-        return h.get_message_key() if h is not None else None
+        key = h.get_message_key()
+        log.debug('_reply: replied: %r', key)
+        return key
 
     def render(self, text: str) -> Awaitable[str | None]:
         return self.to_response(self.render_text(text))
