@@ -23,7 +23,6 @@ class DriverImpl(DataStore, Driver):
     def post_init(self):
         from .commands import set_commands, stats
 
-        self.connect()
         log.info('%s initiated: %s', ME, bot.bot)
         if is_debug:
             return set_commands(bot)

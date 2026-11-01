@@ -1,8 +1,8 @@
 import atexit
 import logging
 
-from sqlite3 import Connection, connect
-from typing import TYPE_CHECKING, cast
+from sqlite3 import connect
+from typing import TYPE_CHECKING
 
 from .env import DB_FILE
 
@@ -16,12 +16,6 @@ class DataStore:
     __slots__ = ('conn',)
 
     def __init__(self):
-        self.conn = cast(Connection, None)
-
-    def connect(self):
-        if self.conn is not None:
-            raise RuntimeError('Already connected')
-
         self.conn = connect(DB_FILE, autocommit=False)
         atexit.register(self.conn.close)
 
@@ -65,9 +59,7 @@ class DataStore:
         log.debug('Connected to db: %s', DB_FILE)
 
     def close(self):
-        c = self.conn
-        self.conn = cast(Connection, None)
-        (f := c.close)()
+        (f := self.conn.close)()
         atexit.unregister(f)
 
     def summary(self) -> str:

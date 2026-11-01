@@ -29,7 +29,6 @@ def _runtime():
     from inoue.db import db
     from inoue.log import notify
 
-    db.connect()
     with notify.suppress():
         yield
     db.close()
