@@ -7,3 +7,4 @@ from unittest.mock import MagicMock
 app = MagicMock(name='app')
 bot = MagicMock(name='bot')
 create_task = asyncio.create_task
+UPLOAD_LIMIT = 50 << 20

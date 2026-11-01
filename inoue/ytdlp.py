@@ -25,6 +25,7 @@ from telegram import (
 from telegram.constants import ChatAction
 
 from bot import (
+    UPLOAD_LIMIT,
     AudioPayload,
     CachedPayload,
     DocumentPayload,
@@ -121,7 +122,7 @@ def find_url(text: str) -> str | None:
         return r[0]
 
 
-MAX_FILE_SIZE = 50 << 20
+MAX_FILE_SIZE = min(UPLOAD_LIMIT, 100 << 20)
 ASSETS_DIR = 'assets/yt'
 OUTTMPL = os.path.join(ASSETS_DIR, '%(title).120B [%(id)s].%(ext)s')
 
@@ -205,7 +206,7 @@ class Output:
 
         self.size = size = os.path.getsize(path)
         if size > MAX_FILE_SIZE:
-            raise ValueError(f'File too large for Telegram ({size})')
+            raise ValueError(f'File too large ({size} > {MAX_FILE_SIZE} bytes)')
 
         self.duration = float(info.get('duration') or 0)
         self.thumbnail_path = _get_thumbnail_path(info)

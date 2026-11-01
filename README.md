@@ -141,7 +141,7 @@ startup. Concrete values live in a gitignored `.env`.
 | `YT_DLP_COOKIE_FILE` | cookies for yt-dlp |
 | `MOTTO_FILE`, `SENTENCES_BUNDLE_DIR`, `HITOKOTO_TYPES`, `HITOKOTO_BANNED` | sources for `/greet` and `hitokoto()` |
 | `LOG_FILTER_WORDS` | space-separated substrings that drop a log record at INFO or below |
-| `LOCAL_SERVER`, `LOCAL_MODE` | a self-hosted Bot API server and its local file access |
+| `LOCAL_SERVER`, `LOCAL_MODE` | a self-hosted Bot API server and its `--local` mode, which raises the upload limit from 50 MB to 2000 MB |
 | `DEBUG`, `TRACE`, `TRACE_QUIET` | the first two take `1` and raise logging to that level, `TRACE` also traces the engine, and `TRACE_QUIET=1` trims that trace |
 
 A module named `conf` on the import path may define `handle_help`, which then

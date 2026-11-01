@@ -1,4 +1,4 @@
-from .app import app, bot, create_task
+from .app import UPLOAD_LIMIT, app, bot, create_task
 from .dispatch import (
     CallbackData,
     MessageArg,
@@ -29,6 +29,7 @@ __all__ = [
     'Driver',
     'app',
     'bot',
+    'UPLOAD_LIMIT',
     'create_task',
     'Responder',
     'EditHandle',

@@ -61,3 +61,6 @@ app = _build_app()
 
 bot: Bot = app.bot
 create_task = app.create_task
+
+# A Bot API server lifts the 50 MB limit only when it runs with `--local`.
+UPLOAD_LIMIT = (2000 if bot.local_mode else 50) << 20
