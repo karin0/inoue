@@ -7,6 +7,7 @@ import string
 
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
+from itertools import chain
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -50,7 +51,7 @@ from .log import is_debug, log
 from .render_context import LRUDict
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable
+    from collections.abc import Awaitable, Sequence
 
     from yt_dlp import YoutubeDL
 
@@ -123,6 +124,8 @@ def find_url(text: str) -> str | None:
 
 
 MAX_FILE_SIZE = min(UPLOAD_LIMIT, 100 << 20)
+# Merging streams into mp4 adds up to 2% to their total size.
+MAX_MERGE_SIZE = MAX_FILE_SIZE * 97 // 100
 ASSETS_DIR = 'assets/yt'
 OUTTMPL = os.path.join(ASSETS_DIR, '%(title).120B [%(id)s].%(ext)s')
 
@@ -325,6 +328,39 @@ def _backoff(n: int) -> float:
     return min(2**n, 30)
 
 
+def _size(f: dict[str, Any]) -> int:
+    return f.get('filesize') or f.get('filesize_approx') or 0
+
+
+def _pick_video(formats: Sequence[dict[str, Any]]) -> str:
+    '''Return the format spec for the best video, with the best audio that still fits.
+
+    `formats` is sorted worst first. Telegram-streamable containers come first, and an unfiltered
+    spec comes last so that an oversized video raises an error.'''
+    best_first = formats[::-1]
+    videos = [f for f in best_first if f.get('vcodec') != 'none']
+    audios = [f for f in best_first if f.get('vcodec') == 'none' and f.get('acodec') != 'none']
+
+    def merged(vext: str | None, aext: str | None):
+        for v in videos:
+            if vext in (None, v['ext']):
+                for a in audios:
+                    if aext in (None, a['ext']) and _size(v) + _size(a) <= MAX_MERGE_SIZE:
+                        yield f'{v['format_id']}+{a['format_id']}'
+
+    def single(ext: str | None):
+        for f in videos:
+            if f.get('acodec') != 'none' and ext in (None, f['ext']) and _size(f) <= MAX_FILE_SIZE:
+                yield f['format_id']
+
+    candidates = chain(merged('mp4', 'm4a'), single('mp4'), merged(None, None), single(None))
+    return next(candidates, 'bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b')
+
+
+def _select_video(ctx: dict[str, Any]):
+    return get_ytdlp(False).build_format_selector(_pick_video(ctx['formats']))(ctx)
+
+
 def get_ytdlp(audio_only: bool) -> YoutubeDL:
     from yt_dlp import YoutubeDL
 
@@ -333,17 +369,12 @@ def get_ytdlp(audio_only: bool) -> YoutubeDL:
 
     os.makedirs(ASSETS_DIR, exist_ok=True)
 
-    # Prefer Telegram-streamable containers, then streams that fit MAX_FILE_SIZE. The unfiltered
-    # alternatives last make an oversized video fail in `_get_download_path`.
-    fits = f'[filesize<?{MAX_FILE_SIZE}][filesize_approx<?{MAX_FILE_SIZE}]'
     if audio_only:
-        fmt = f'ba[ext=m4a]{fits}/ba{fits}/b{fits}/ba[ext=m4a]/ba/b'
+        fits = f'[filesize<?{MAX_FILE_SIZE}][filesize_approx<?{MAX_FILE_SIZE}]'
+        fmt: object = f'ba[ext=m4a]{fits}/ba{fits}/b{fits}/ba[ext=m4a]/ba/b'
         postprocessors = ({'key': 'FFmpegExtractAudio', 'preferredcodec': 'm4a'},)
     else:
-        fmt = (
-            f'bv*[ext=mp4]{fits}+ba[ext=m4a]{fits}/b[ext=mp4]{fits}/bv*{fits}+ba{fits}/b{fits}'
-            '/bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b'
-        )
+        fmt = _select_video
         postprocessors = ({'key': 'FFmpegVideoConvertor', 'preferedformat': 'mp4'},)
 
     # Do not pass 'logger' here, or progress bars will break.

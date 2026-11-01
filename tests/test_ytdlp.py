@@ -23,10 +23,7 @@ def _format(format_id: str, ext: str, size: int, *, video: bool, audio: bool) ->
 
 # `formats` is sorted from worst to best, as yt-dlp sorts them before selecting.
 def _select(audio_only: bool, formats: list[dict]) -> list[str]:
-    ydl = get_ytdlp(audio_only)
-    spec = ydl.params.get('format')
-    assert isinstance(spec, str)
-    selector = ydl.build_format_selector(spec)
+    selector = get_ytdlp(audio_only).format_selector
     ctx = {'formats': formats, 'has_merged_format': False, 'incomplete_formats': False}
     return [f['format_id'] for f in selector(ctx)]
 
@@ -44,6 +41,24 @@ def test_video_prefers_streams_that_fit():
         _format('a', 'm4a', MAX_FILE_SIZE // 8, video=False, audio=True),
     ]
     assert _select(False, formats) == ['small+a']
+
+
+def test_video_fits_with_its_audio():
+    formats = [
+        _format('a_small', 'm4a', MAX_FILE_SIZE // 4, video=False, audio=True),
+        _format('a_best', 'm4a', MAX_FILE_SIZE * 6 // 10, video=False, audio=True),
+        _format('v', 'mp4', MAX_FILE_SIZE // 2, video=True, audio=False),
+    ]
+    assert _select(False, formats) == ['v+a_small']
+
+
+def test_video_leaves_room_for_merging():
+    formats = [
+        _format('a_small', 'm4a', MAX_FILE_SIZE * 2 // 100, video=False, audio=True),
+        _format('a_best', 'm4a', MAX_FILE_SIZE * 5 // 100, video=False, audio=True),
+        _format('v', 'mp4', MAX_FILE_SIZE * 94 // 100, video=True, audio=False),
+    ]
+    assert _select(False, formats) == ['v+a_small']
 
 
 def test_video_falls_back_to_an_oversized_stream():
