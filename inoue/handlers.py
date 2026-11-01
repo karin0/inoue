@@ -27,6 +27,9 @@ from .text import pre_block
 from .voice import handle_voice
 from .ytdlp import extract_url, handle_yt_chosen_result, handle_yt_inline_query
 
+# A message containing this is ignored, so a reply to media can chat without converting it.
+SKIP_MARK = '\N{CAT}\N{ZERO WIDTH JOINER}\N{BLACK LARGE SQUARE}'
+
 '''
 Responders are only present when handling the following events, and shall not be
 used on other paths:
@@ -96,6 +99,9 @@ async def handle_msg(rs: Responder, direct: bool = True):
 
     if msg.via_bot is not None:
         log.debug('Via bot: %s', msg)
+        return None
+
+    if SKIP_MARK in rs.get_text():
         return None
 
     if await handle_voice.route(rs, as_command=False) or await handle_sticker(rs, as_command=False):
