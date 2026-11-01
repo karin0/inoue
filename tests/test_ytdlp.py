@@ -1,4 +1,5 @@
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit, urlunsplit
 
 import pytest
 
@@ -81,3 +82,17 @@ def test_downloads_retry():
     params = get_ytdlp(False).params
     assert params.get('retries')
     assert params.get('fragment_retries')
+
+
+def test_no_extractor_accepts_an_internal_host():
+    # YoutubeDL lists the extractors it loaded only in `_ies`.
+    ies = get_ytdlp(audio_only=False)._ies  # pyright: ignore[reportAttributeAccessIssue]
+    reachable = set()
+    for ie in ies.values():
+        for case in getattr(ie, 'real_class', ie).get_testcases(include_onlymatching=True):
+            if (u := urlsplit(case['url'])).scheme not in ('http', 'https'):
+                continue
+            for host in ('127.0.0.1:9428', '10.0.0.1'):
+                if ie.suitable(urlunsplit(u._replace(netloc=host))):
+                    reachable.add(ie.IE_NAME)
+    assert reachable == set()

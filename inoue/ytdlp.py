@@ -394,8 +394,8 @@ def get_ytdlp(audio_only: bool) -> YoutubeDL:
         'retries': 10,
         'fragment_retries': 10,
         'retry_sleep_functions': {'http': _backoff, 'fragment': _backoff},
-        # Disable the generic extractor to prevent SSRF.
-        'allowed_extractors': ('default', '-generic'),
+        # Disable the extractors that accept any host to prevent SSRF.
+        'allowed_extractors': ('default', '-generic', '-mediasite.*'),
     }
 
     if file := os.environ.get('YT_DLP_COOKIE_FILE'):
