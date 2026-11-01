@@ -1,9 +1,9 @@
 import asyncio
-import contextlib
 import math
 import os
 import re
 
+from dataclasses import dataclass
 from datetime import timedelta
 
 from telegram import Audio, Document, Message, Video, Voice
@@ -182,6 +182,8 @@ def extract_media(msg: Message) -> tuple[Media, int | timedelta] | None:
 
 
 CROP_RE = re.compile(r'((?:\d+:){0,2}\d+(?:\.\d+)?)?-((?:\d+:){0,2}\d+(?:\.\d+)?)?')
+NIGHTCORE_RE = re.compile(r'(?:nc|nightcore)=?(\d+(?:\.\d+)?)?')
+FLAGS_RE = re.compile(r'(?:(\d+)k)?([Qqsd]*)')
 
 
 def parse_time(s: str) -> float:
@@ -195,87 +197,73 @@ def parse_time(s: str) -> float:
             return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
 
 
-def extract_crop(arg: str) -> tuple[str, float | None, float | None] | None:
-    new_args = []
-    interval = None
-    for word in arg.split():
-        if interval is None and '-' in word and (m := CROP_RE.fullmatch(word)) is not None:
-            start = m.group(1)
-            end = m.group(2)
-            if start or end:
-                interval = (parse_time(start) if start else None, parse_time(end) if end else None)
-                continue
-        new_args.append(word)
-    if interval is not None:
-        return ' '.join(new_args), *interval
+@dataclass(frozen=True, slots=True)
+class VoiceArgs:
+    speed: float = 1
+    start_time: float | None = None
+    end_time: float | None = None
+    bitrate_k: int = 0
+    flags: str = ''
 
 
-def extract_effects(arg: str) -> tuple[str, float, bool]:
+def parse_voice_args(arg: str) -> VoiceArgs | None:
     speed = 1
-    drum = False
-
-    if arg:
-        if m := re.search(r'\b(?:nc|nightcore)(?:=)?([0-9.]+)?\b', arg):
-            speed = 1.5
-            if speed_str := m.group(1):
-                with contextlib.suppress(ValueError):
-                    speed = float(speed_str)
-            # Remove the matched nightcore part from arg
-            arg = (arg[: m.start()].rstrip() + ' ' + arg[m.end() :].lstrip()).strip()
-
-        drum = 'd' in arg
-
-    return arg, speed, drum
+    start_time = end_time = None
+    bitrate_k = 0
+    flags = ''
+    for word in arg.split():
+        if m := NIGHTCORE_RE.fullmatch(word):
+            speed = float(m[1]) if m[1] else 1.5
+        elif word == 'drum':
+            flags += 'd'
+        elif (m := CROP_RE.fullmatch(word)) and (m[1] or m[2]):
+            start_time = parse_time(m[1]) if m[1] else None
+            end_time = parse_time(m[2]) if m[2] else None
+        elif m := FLAGS_RE.fullmatch(word):
+            if m[1]:
+                bitrate_k = int(m[1])
+            flags += m[2]
+        else:
+            return None
+    return VoiceArgs(speed, start_time, end_time, bitrate_k, flags)
 
 
 async def _handle_voice(
     rs: Responder,
     info: tuple[Media | Output, float | timedelta] | None,
-    parsed: tuple[str, str] | None,
-    arg: str,
+    url: str | None,
+    args: VoiceArgs,
     finish: bool = True,
 ):
     with rs.keep_chat_action(ChatAction.RECORD_VOICE):
         if info is None:
-            # Delegate to ytdlp if the argument looks like a URL.
-            assert parsed is not None
-            url, arg = parsed
+            assert url is not None
             output = await run_ytdlp(url, audio_only=True)
             if finish:
                 create_task(output.finish(rs, audio_only=True))
             info = output, output.duration
 
-        # Parse voice effects parameters
-        arg, speed, drum = extract_effects(arg)
-
-        # Parse crop interval from arg
-        if arg and (r := extract_crop(arg)) is not None:
-            arg, start_time, end_time = r
-        else:
-            start_time = end_time = None
-
-        if get_context().sender_is_host():
-            quality = 'Q' not in arg
-        elif arg:
-            quality = 'q' in arg
-        else:
-            quality = False
-
-        quiet = 's' in arg
-
-        bitrate_k = int(arg[:p]) if (p := arg.find('k')) > 0 and arg[:p].isdigit() else 0
+        host = get_context().sender_is_host()
+        quality = 'Q' not in args.flags if host else 'q' in args.flags
 
         await convert_voice(
             rs,
             *info,
-            bitrate_k,
+            args.bitrate_k,
             quality,
-            quiet,
-            start_time,
-            end_time,
-            speed=speed,
-            drum=drum,
+            's' in args.flags,
+            args.start_time,
+            args.end_time,
+            speed=args.speed,
+            drum='d' in args.flags,
         )
+
+
+async def _reply_usage(rs: Responder):
+    await rs.reply_cached(
+        r'Send or reply to a media message with `/voice [q]`, or use `/voice <url>`\.',
+        'MarkdownV2',
+    )
 
 
 # XXX: No `InputMediaVoice` exists, so the voice result cannot be edited onto
@@ -287,18 +275,28 @@ async def _handle_voice(
 async def handle_voice(
     rs: Responder, arg: MessageArg, flush: RequireDefer, as_command: bool = True
 ) -> bool:
-    parsed = None
-    if (info := rs.extract(extract_media)) is not None or (
-        as_command and (parsed := extract_url(arg)) is not None
-    ):
-        # An inline message cannot contain two media, so we have to skip sending
-        # the original audio when deferred.
-        await _handle_voice(rs, info, parsed, arg, flush is None)
+    msg = rs.get_message()
+    own = None if msg is None else extract_media(msg)
+    if (info := own) is None and msg is not None and (replied := msg.reply_to_message):
+        info = extract_media(replied)
+
+    url = None
+    if info is None:
+        if not as_command or (parsed := extract_url(arg)) is None:
+            if as_command:
+                await _reply_usage(rs)
+            return False
+        url, arg = parsed
+
+    # A forwarded media keeps its author's caption, which is rarely a parameter.
+    fallback = VoiceArgs() if own is not None and not as_command else None
+    # A reply whose text is not parameters chats about the media.
+    if (args := parse_voice_args(arg) or fallback) is None:
+        if as_command:
+            await _reply_usage(rs)
         return True
 
-    if as_command:
-        await rs.reply_cached(
-            r'Send or reply to a media message with `/voice [q]`, or use `/voice <url>`\.',
-            'MarkdownV2',
-        )
-    return False
+    # An inline message cannot contain two media, so we have to skip sending
+    # the original audio when deferred.
+    await _handle_voice(rs, info, url, args, flush is None)
+    return True

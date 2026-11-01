@@ -1,7 +1,7 @@
 import pytest
 
 from inoue.ffmpeg import _normalize_crop
-from inoue.voice import CROP_RE, extract_crop, parse_time
+from inoue.voice import CROP_RE, VoiceArgs, parse_time, parse_voice_args
 
 
 def test_parse_time_seconds():
@@ -41,15 +41,15 @@ def test_crop_re_captures_both_ends(text: str, start: str | None, end: str | Non
     assert m.groups() == (start, end)
 
 
-def test_extract_crop_strips_the_interval():
-    assert extract_crop('24kq 10-20') == ('24kq', 10, 20)
-    assert extract_crop('1:30- s') == ('s', 90, None)
-    assert extract_crop('q -45') == ('q', None, 45)
+def test_parse_voice_args_reads_the_interval():
+    expected = VoiceArgs(start_time=10, end_time=20, bitrate_k=24, flags='q')
+    assert parse_voice_args('24kq 10-20') == expected
+    assert parse_voice_args('1:30- s') == VoiceArgs(start_time=90, flags='s')
+    assert parse_voice_args('q -45') == VoiceArgs(end_time=45, flags='q')
 
 
-def test_extract_crop_without_interval():
-    assert extract_crop('128k q') is None
-    assert extract_crop('24k abc-def') is None
+def test_parse_voice_args_rejects_a_bad_interval():
+    assert parse_voice_args('24k abc-def') is None
 
 
 def test_normalize_crop_bounds():

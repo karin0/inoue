@@ -7,39 +7,40 @@ from typing import TYPE_CHECKING
 import pytest
 
 from inoue.drum import detect_bpm_and_offset, generate_drum_track
-from inoue.voice import extract_effects
+from inoue.voice import VoiceArgs, parse_voice_args
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 
-def test_extract_effects_enables_nightcore():
-    assert extract_effects('nc') == ('', 1.5, False)
-    assert extract_effects('nightcore') == ('', 1.5, False)
-    assert extract_effects('NC') == ('NC', 1, False)
-    assert extract_effects('NIGHTCORE') == ('NIGHTCORE', 1, False)
+def test_parse_voice_args_enables_nightcore():
+    assert parse_voice_args('nc') == VoiceArgs(speed=1.5)
+    assert parse_voice_args('nightcore') == VoiceArgs(speed=1.5)
 
 
-def test_extract_effects_reads_speed():
-    assert extract_effects('nc1.3') == ('', 1.3, False)
-    assert extract_effects('nc=1.4') == ('', 1.4, False)
-    assert extract_effects('nightcore1.25') == ('', 1.25, False)
-    assert extract_effects('nightcore=1.1') == ('', 1.1, False)
+def test_parse_voice_args_reads_speed():
+    assert parse_voice_args('nc1.3') == VoiceArgs(speed=1.3)
+    assert parse_voice_args('nc=1.4') == VoiceArgs(speed=1.4)
+    assert parse_voice_args('nightcore1.25') == VoiceArgs(speed=1.25)
+    assert parse_voice_args('nightcore=1.1') == VoiceArgs(speed=1.1)
 
 
-def test_extract_effects_keeps_other_arguments():
-    assert extract_effects('nc1.4 24kq') == ('24kq', 1.4, False)
-    assert extract_effects('24k nc s') == ('24k s', 1.5, False)
-    assert extract_effects('q -45 nc1.2') == ('q -45', 1.2, False)
-    assert extract_effects('abc nc_speed') == ('abc nc_speed', 1, True)
+def test_parse_voice_args_reads_flags_and_bitrate():
+    assert parse_voice_args('nc1.4 24kq') == VoiceArgs(speed=1.4, bitrate_k=24, flags='q')
+    assert parse_voice_args('24k nc s') == VoiceArgs(speed=1.5, bitrate_k=24, flags='s')
+    assert parse_voice_args('Qs 64k') == VoiceArgs(bitrate_k=64, flags='Qs')
+    assert parse_voice_args('') == VoiceArgs()
 
 
-def test_extract_effects_reads_drum():
-    assert extract_effects('nc d') == ('d', 1.5, True)
-    assert extract_effects('nc drum') == ('drum', 1.5, True)
-    assert extract_effects('nc1.2 d 24kq') == ('d 24kq', 1.2, True)
-    assert extract_effects('drum') == ('drum', 1, True)
-    assert extract_effects('d') == ('d', 1, True)
+def test_parse_voice_args_reads_drum():
+    assert parse_voice_args('nc d') == VoiceArgs(speed=1.5, flags='d')
+    assert parse_voice_args('nc drum') == VoiceArgs(speed=1.5, flags='d')
+    assert parse_voice_args('nc1.2 d 24kq') == VoiceArgs(speed=1.2, bitrate_k=24, flags='dq')
+
+
+@pytest.mark.parametrize('arg', ['NC', 'nc_speed', 'nc1..2', 'sad', '好听', 'nc 好听', '-', 'k'])
+def test_parse_voice_args_rejects_other_words(arg: str):
+    assert parse_voice_args(arg) is None
 
 
 def test_generate_drum_track_writes_mono_pcm(tmp_path: Path):
