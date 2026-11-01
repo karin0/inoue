@@ -33,7 +33,7 @@ from .app import bot
 from .env import log
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Iterator
+    from collections.abc import Awaitable, Generator
 
     from .responder import ReplyMarkup
 
@@ -47,7 +47,7 @@ type CachedPayload = MediaPayload[Media | str]
 
 
 @contextmanager
-def open_content(content: Content) -> Iterator[Any]:
+def open_content(content: Content) -> Generator[Any]:
     if isinstance(content, Path):
         with content.open('rb') as fp:
             yield fp
@@ -202,7 +202,7 @@ class MediaPayloadWithInput[T: Content](MediaPayload[T], Protocol):
     @contextmanager
     def as_input(
         self, caption: str | None = None, parse_mode: str | None = None
-    ) -> Iterator[InputMedia]:
+    ) -> Generator[InputMedia]:
         with open_content(self.content) as c:
             yield self._as_input(c, caption, parse_mode)
 

@@ -12,7 +12,7 @@ from inoue.rg import SECTION_GAP, SECTION_SEP_OFFSET, RGFile, RGMatch, RGQuery, 
 from .fakes import FakeResponder
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator
     from pathlib import Path
 
 H1 = b'>>> 2026-01-02 12:00:00 (1)\n'
@@ -22,7 +22,7 @@ LONG = H1 + b'a' * 20000 + b'\n' + H2 + b'b' * 20000 + b'\n' + H3 + b'c' * 20000
 
 
 @contextmanager
-def mapped(content: bytes) -> Iterator[mmap.mmap]:
+def mapped(content: bytes) -> Generator[mmap.mmap]:
     with tempfile.TemporaryFile() as fp:
         fp.write(content)
         fp.flush()

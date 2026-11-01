@@ -16,7 +16,7 @@ from .app import bot, create_task
 from .env import log
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterator
+    from collections.abc import Awaitable, Callable, Generator
 
     from .dispatch import Route
     from .message_responder import InlineMessageEditHandle, MessageEditHandle
@@ -183,7 +183,7 @@ class Responder(Protocol):
     @contextmanager
     def capture(
         self, buf: list[tuple[str, str | None]] | None = None
-    ) -> Iterator[list[tuple[str, str | None]]]:
+    ) -> Generator[list[tuple[str, str | None]]]:
         if buf is None:
             buf = []
         old = self._capture_buf
