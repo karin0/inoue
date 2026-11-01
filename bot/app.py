@@ -33,7 +33,10 @@ def _build_app() -> Application:
     builder = (
         ApplicationBuilder()
         .token(os.environ['TELEGRAM_BOT_TOKEN'])
-        .request(AiohttpRequest(connection_pool_size=5, client_timeout=timeout))
+        # Telegram may take minutes to accept a large upload.
+        .request(
+            AiohttpRequest(connection_pool_size=5, client_timeout=timeout, media_total_timeout=600)
+        )
         .get_updates_request(AiohttpRequest(connection_pool_size=5, client_timeout=timeout))
         .concurrent_updates(True)
         .post_init(_post_init)
