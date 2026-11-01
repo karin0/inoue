@@ -4,7 +4,7 @@ import contextlib
 import os
 import time
 
-from telegram import Message, MessageOriginChannel, Update, User
+from telegram import MessageOriginChannel, Update, User
 from telegram.constants import ChatID
 from telegram.ext import BaseHandler, ContextTypes
 
@@ -33,7 +33,6 @@ from .log import log, notify
 
 
 async def handle_update(update: Update, _: ContextTypes.DEFAULT_TYPE):
-    # ruff: noqa: E731
     t0 = time.perf_counter()
     rs = Responder.create(update)
 
@@ -85,59 +84,16 @@ async def handle_update(update: Update, _: ContextTypes.DEFAULT_TYPE):
 
     log.trace('Update from %s: %s', src, update)
 
-    def _rs():
-        if rs is None:
-            raise ValueError(f'No responder for update: {update}')
-        return rs
-
-    post = None
-    if (msg := update.message) is not None:
-        log.info('%s: msg %s', src, shorten(msg.text))
-        func = lambda: handle_msg(_rs())
-    elif (msg := update.edited_message) is not None:
-        log.info('%s: edited %s', src, shorten(msg.text))
-        func = lambda: handle_msg(_rs())
-    elif (post := update.channel_post) is not None:
-        log.info('%s: channel post %s', src, shorten(post.text))
-        func = lambda: handle_post(post, sender)
-    elif (post := update.edited_channel_post) is not None:
-        log.info('%s: edited post %s', src, shorten(post.text))
-        func = lambda: handle_post(post, sender)
-    elif (callback := update.callback_query) is not None:
-        if isinstance(callback.message, Message):
-            msg = callback.message
-        log.info('%s: callback %s', src, callback.data)
-        func = lambda: handle_callback_query(_rs(), callback)
-    elif (query := update.inline_query) is not None:
-        log.info('%s: inline %s', src, query.query)
-        func = lambda: handle_inline_query(query)
-    elif (chosen := update.chosen_inline_result) is not None:
-        log.info('%s: chosen %s %s', src, chosen.result_id, chosen.query)
-        func = lambda: handle_chosen_inline(rs, chosen)
-    elif (post := update.guest_message) is not None:
-        log.info('%s: guest message %s', src, shorten(post.text))
-        func = lambda: handle_guest(_rs(), post)
-    else:
-        log.warning('%s: unhandled: %s', src, update)
-        func = None
-
-    if (item := msg or post) != effective_msg:
-        log.warning('Message mismatch: %s vs %s', item, effective_msg)
-
     if not valid:
         log.warning(
             'Drop unauthorized update from %s: %s\nSender: %s\nChat: %s', src, update, sender, chat
         )
         return
 
-    if func is None:
-        return
-
-    with use_context(update, msg and rs, sender):
+    with use_context(update, rs, sender):
         try:
             try:
-                if (coro := func()) is not None:
-                    await coro
+                await dispatch(update, rs, sender, src)
             except (PermissionError, ValueError) as e:
                 log.exception('Error: %s: %s\nFrom: %s', type(e).__name__, e, src)
                 if rs is not None:
@@ -148,6 +104,40 @@ async def handle_update(update: Update, _: ContextTypes.DEFAULT_TYPE):
                 log.exception('handle_update: %s: %s\nFrom: %s', type(e).__name__, e, src)
 
     log.debug('Exiting after %.3f secs', time.perf_counter() - t0)
+
+
+async def dispatch(update: Update, rs: Responder | None, sender: Sender | None, src: str | None):
+    def _rs():
+        if rs is None:
+            raise ValueError(f'No responder for update: {update}')
+        return rs
+
+    if (msg := update.message) is not None:
+        log.info('%s: msg %s', src, shorten(msg.text))
+        await handle_msg(_rs())
+    elif (msg := update.edited_message) is not None:
+        log.info('%s: edited %s', src, shorten(msg.text))
+        await handle_msg(_rs())
+    elif (post := update.channel_post) is not None:
+        log.info('%s: channel post %s', src, shorten(post.text))
+        await handle_post(post, sender)
+    elif (post := update.edited_channel_post) is not None:
+        log.info('%s: edited post %s', src, shorten(post.text))
+        await handle_post(post, sender)
+    elif (callback := update.callback_query) is not None:
+        log.info('%s: callback %s', src, callback.data)
+        await handle_callback_query(_rs(), callback)
+    elif (query := update.inline_query) is not None:
+        log.info('%s: inline %s', src, query.query)
+        await handle_inline_query(query)
+    elif (chosen := update.chosen_inline_result) is not None:
+        log.info('%s: chosen %s %s', src, chosen.result_id, chosen.query)
+        await handle_chosen_inline(rs, chosen)
+    elif (msg := update.guest_message) is not None:
+        log.info('%s: guest message %s', src, shorten(msg.text))
+        await handle_guest(_rs(), msg)
+    else:
+        log.warning('%s: unhandled: %s', src, update)
 
 
 class Handler(BaseHandler):

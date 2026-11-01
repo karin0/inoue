@@ -51,9 +51,9 @@ but we don't think they should be responded to for now.
 '''
 
 
-def handle_post(channel_post: Message, sender: Sender | None):
+async def handle_post(channel_post: Message, sender: Sender | None):
     if sender is not None and sender.id in (USER_ID, CHAN_ID):
-        return handle_render_doc(channel_post)
+        await handle_render_doc(channel_post)
 
 
 async def handle_msg(rs: Responder, direct: bool = True):
@@ -199,11 +199,11 @@ def strip_mention(rs: Responder, msg: Message) -> bool:
     return False
 
 
-def handle_guest(rs: Responder, msg: Message):
+async def handle_guest(rs: Responder, msg: Message):
     log.debug('handle_guest: %s', rs)
     # Guest messages may mention or reply to us.
     strip_mention(rs, msg)
-    return handle_msg(rs, direct=False)
+    await handle_msg(rs, direct=False)
 
 
 async def handle_callback_query(rs: Responder | None, query: CallbackQuery):
