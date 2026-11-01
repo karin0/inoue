@@ -4,8 +4,9 @@ import pytest
 
 from telegram.constants import ChatType
 
-from inoue import voice
+from inoue import handlers, voice, ytdlp
 from inoue.ctx import use_context
+from inoue.env import USER_ID
 from inoue.handlers import SKIP_MARK, handle_msg
 from inoue.voice import VoiceArgs
 
@@ -14,7 +15,10 @@ from .fakes import HOST, FakeResponder
 
 @pytest.fixture(autouse=True)
 def _host():
-    with use_context(MagicMock(name='update'), None, HOST):
+    update = MagicMock(name='update')
+    update.effective_chat.type = ChatType.PRIVATE
+    update.effective_chat.id = USER_ID
+    with use_context(update, None, HOST):
         yield
 
 
@@ -32,6 +36,8 @@ def _private(text: str) -> FakeResponder:
     msg.via_bot = None
     msg.forward_origin = None
     msg.document = msg.audio = msg.video = msg.voice = None
+    msg.sticker = msg.animation = None
+    msg.photo = ()
     return rs
 
 
@@ -83,3 +89,28 @@ async def test_skip_mark_leaves_the_message_alone(convert: AsyncMock, rs: FakeRe
     await handle_msg(rs)
     convert.assert_not_called()
     assert rs.replies == []
+
+
+@pytest.mark.parametrize(
+    ('text', 'url'),
+    [
+        ('BV1GJ411x7h7', 'https://www.bilibili.com/video/BV1GJ411x7h7'),
+        (' dQw4w9WgXcQ ', 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'),
+        ('https://youtu.be/dQw4w9WgXcQ', 'https://youtu.be/dQw4w9WgXcQ'),
+    ],
+)
+async def test_lone_video_downloads_it(monkeypatch: pytest.MonkeyPatch, text: str, url: str):
+    download = AsyncMock()
+    monkeypatch.setattr(ytdlp, 'run_ytdlp', download)
+    await handle_msg(_private(text))
+    download.assert_called_once_with(url, audio_only=False)
+
+
+@pytest.mark.parametrize('text', ['BV1GJ411x7h7 nice', 'see https://youtu.be/dQw4w9WgXcQ'])
+async def test_video_with_other_words_is_searched(monkeypatch: pytest.MonkeyPatch, text: str):
+    download, search = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(ytdlp, 'run_ytdlp', download)
+    monkeypatch.setattr(handlers, 'handle_rg', search)
+    await handle_msg(_private(text))
+    download.assert_not_called()
+    search.assert_called_once()

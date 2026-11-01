@@ -25,7 +25,7 @@ from .rg import handle_rg
 from .sticker import handle_sticker
 from .text import pre_block
 from .voice import handle_voice
-from .ytdlp import extract_url, handle_yt_chosen_result, handle_yt_inline_query
+from .ytdlp import extract_url, handle_yt, handle_yt_chosen_result, handle_yt_inline_query
 
 # A message containing this is ignored, so a reply to media can chat without converting it.
 SKIP_MARK = '\N{CAT}\N{ZERO WIDTH JOINER}\N{BLACK LARGE SQUARE}'
@@ -122,6 +122,9 @@ async def handle_msg(rs: Responder, direct: bool = True):
             return None
 
         return await rs.reply(media=VoicePayload(Path('out.ogg')))
+
+    if (parsed := extract_url(text)) is not None and not parsed[1]:
+        return await handle_yt(rs)
 
     # The sender's identity comes from the `context`, since for a relayed callback
     # query `msg` is the bot's own message that carries the button.
