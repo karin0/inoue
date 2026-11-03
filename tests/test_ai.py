@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 CHAT_ID = 42
 OWNER = {'name': 'Host', 'username': 'host', 'role': 'owner'}
-CHAT = {'type': 'private', 'with': {'name': 'Alice', 'username': 'alice'}}
+CHAT = {'type': 'private', 'peer': {'name': 'Alice', 'username': 'alice'}}
 YOU = {'name': 'Bot', 'username': 'the_bot'}
 DATE = '2026-11-04 13:10 +0900'
 
@@ -353,3 +353,13 @@ async def test_an_animation_is_described_as_an_animation(clients: list[FakeClien
     msg.animation = msg.document = MagicMock()
     await handle_ai(rs, msg, 'what')
     assert json.loads(clients[0].prompts[0])['message']['media'] == {'kind': 'animation'}
+
+
+def test_both_modes_learn_what_a_guest_message_is(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(ai, 'mtproto', MagicMock())
+    assert cast('str', ai._chat_options(CHAT_ID).system_prompt).startswith(ai.GUEST)
+    assert ai._tool_options(CHAT_ID).system_prompt == {
+        'type': 'preset',
+        'preset': 'claude_code',
+        'append': ai.GUEST,
+    }
