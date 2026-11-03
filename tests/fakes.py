@@ -73,6 +73,7 @@ class FakeResponder(Responder):
         msg.caption = None
         msg.reply_to_message = None
         msg.sender_chat = None
+        msg.guest_query_id = None
         msg.from_user.id = USER_ID
         self.replies: list[Sent] = []
         self.handle = FakeEditHandle(self.get_message_key(), self)

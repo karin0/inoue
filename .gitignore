@@ -11,3 +11,5 @@ __pycache__
 /assets
 *.json
 *.pid
+*.session
+*.session-journal

@@ -35,6 +35,13 @@ WEBM_ARGS = (
 )
 
 
+REMBG = 'rembg'
+
+
+def is_sticker_args(text: str) -> bool:
+    return all(word == REMBG for word in text.split())
+
+
 def to_webp(src: str, rs: Responder) -> bytes:
     img = Image.open(src)
     log.info('to_webp: %s, %d x %d', img.format, *img.size)
@@ -42,7 +49,7 @@ def to_webp(src: str, rs: Responder) -> bytes:
     if img.mode not in ('RGBA', 'RGB', 'P'):
         img = img.convert('RGBA')
 
-    if 'rembg' in rs.get_text():
+    if REMBG in rs.get_text():
         log.info('to_webp: invoking rembg!')
         from rembg import remove
 

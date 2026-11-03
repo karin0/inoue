@@ -142,7 +142,7 @@ def _get_logger(name):
     if FILTER_WORDS:
         h.addFilter(Filter())
 
-    for name in ('telegram', 'httpcore', 'httpx', 'asyncio'):
+    for name in ('telegram', 'httpcore', 'httpx', 'asyncio', 'telethon'):
         logging.getLogger(name).setLevel(logging.WARNING)
 
     if TRACE:

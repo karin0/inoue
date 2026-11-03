@@ -1,4 +1,5 @@
 import re
+import unicodedata
 
 from bot import truncate_text
 
@@ -11,6 +12,12 @@ def escape_pre(s: str) -> str:
 
 
 type Content = tuple[str, str | None]
+
+
+# Format characters render as nothing, so dropping them leaves a model reading
+# the text a person sees.
+def visible(s: str) -> str:
+    return ''.join(c for c in s if unicodedata.category(c) != 'Cf')
 
 
 def pre_block_raw(s: str, *, lang: str = '') -> str:

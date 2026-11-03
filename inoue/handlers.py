@@ -14,6 +14,7 @@ from telegram.constants import ChatType, MessageEntityType
 
 from bot import CallbackData, Responder, VoicePayload, bot, callback_query
 
+from .ai import MODES, handle_ai
 from .commands import dispatch_cmd, handle_help
 from .ctx import Sender, get_context, is_admin
 from .env import CHAN_ID, GROUP_ID, USER_ID
@@ -22,9 +23,10 @@ from .log import log
 from .merge import check_merge
 from .render import handle_render_doc, handle_render_group, handle_render_inline_query
 from .rg import handle_rg
-from .sticker import handle_sticker
+from .sticker import handle_sticker, is_sticker_args
 from .text import pre_block
-from .voice import handle_voice
+from .voice import extract_media as extract_voice_media
+from .voice import handle_voice, parse_voice_args
 from .ytdlp import extract_url, handle_yt, handle_yt_chosen_result, handle_yt_inline_query
 
 # A message containing this is ignored, so a reply to media can chat without converting it.
@@ -103,6 +105,20 @@ async def handle_msg(rs: Responder, direct: bool = True):
 
     if SKIP_MARK in rs.get_text():
         return None
+
+    # The host's text in a chat of others goes to Claude when a mode is
+    # configured, while a bare mention, a lone URL and the parameters of a voice
+    # or sticker conversion still convert media.
+    if (
+        MODES
+        and msg.guest_query_id is not None
+        and context.sender_is_host()
+        and (text := rs.get_text().strip())
+        and ((parsed := extract_url(text)) is None or parsed[1])
+        and (rs.extract(extract_voice_media) is None or parse_voice_args(text) is None)
+        and not is_sticker_args(text)
+    ):
+        return await handle_ai(rs, msg, text)
 
     if await handle_voice.route(rs, as_command=False) or await handle_sticker(rs, as_command=False):
         return None

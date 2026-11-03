@@ -2,6 +2,7 @@ import asyncio
 import inspect
 import os
 import sys
+import time
 
 import pytest
 
@@ -17,7 +18,10 @@ os.environ.update(
     MEDIA_STAGING_CHAT_ID='444',
     TELEGRAM_BOT_TOKEN='1:test',  # noqa: S106 -- a placeholder for inoue.log to redact
     DB_FILE=':memory:',
+    # Times are rendered in the local zone.
+    TZ='Asia/Tokyo',
 )
+time.tzset()
 sys.modules['bot.app'] = fake_app
 # A deployment may drop a `conf` module next to the package. Tests run against
 # the defaults a clean checkout has.

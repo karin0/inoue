@@ -115,6 +115,50 @@ attribute names that start with an underscore is what keeps the real modules out
 of reach. `evil` evaluates Python with the real `os` and `sys` in scope, which is
 one reason it is trusted.
 
+## Claude in other chats
+
+When `USER_ID` mentions the bot in a chat the bot is not a member of, Telegram
+delivers a guest message, and `inoue/ai.py` answers the text with Claude Code
+through claude-agent-sdk, on the subscription that the system `claude` is logged
+in with. Commands, a bare mention, a lone URL, the parameters of a voice
+conversion in reply to audio or video and the `rembg` of a sticker conversion
+keep their usual handling. The
+answer starts as a status line that names the running tool and becomes the
+answer when the turn ends.
+
+A plain text runs in the chat mode, which can read the whole chat over MTProto
+as `USER_ID` through `inoue/mtproto.py` and search the web, and can neither run
+commands nor fetch a page, so text that others wrote in the chat cannot make it
+act on the machine or send the chat to an address of their choosing. A text starting with `!` runs in the
+tool mode, and so does a reply to the tool mode's own replies, which start with a
+hammer and wrench. The tool mode has every tool of an ordinary Claude Code
+session, and its prompt holds only the message and the message it replies to,
+which `USER_ID` has read before sending. It also has the chat mode's tools, and
+its `CLAUDE.md` should tell it to read the chat only when `USER_ID` asks, since
+the rest of the chat then reaches a session that can run commands.
+
+Both modes run in `AI_CWD`, whose settings and `CLAUDE.md` apply to the tool
+mode only. The settings grant the tool mode's permissions and should exclude,
+through `claudeMdExcludes`, any rule file of the user that addresses `USER_ID`
+rather than the chat. Each prompt is a JSON object that names the chat, the bot
+and the time beside the message and the message it replies to, since a guest
+message carries no other context, and the chat tool returns JSON too. Every
+name and text that people wrote stays inside a JSON string, and a `role` field
+marks the bot and `USER_ID` by their sender ids, so no text or display name can
+forge a message or a role.
+
+Each chat has one session per mode, recorded in the `AiSession` table, and
+`/clear` sent in the chat starts new ones. inoue must be the only process that
+resumes a session, since two processes resuming one session fork its transcript
+without an error. A session idle for most of the prompt cache's hour compacts a
+large context while the cache still holds it and closes, so the next turn
+resumes from the summary.
+
+The chat mode needs a Telethon session file logged in as `USER_ID`, which this
+command creates once, asking for the login code on the terminal:
+
+    set -a; . ./.env; set +a; uv run python -c "import os; from telethon.sync import TelegramClient; TelegramClient(os.environ['TELETHON_SESSION'], int(os.environ['TELETHON_API_ID']), os.environ['TELETHON_API_HASH']).start()"
+
 ## Configuration
 
 Every value is read from the environment, and a missing required one crashes
@@ -138,6 +182,8 @@ startup. Concrete values live in a gitignored `.env`.
 | `ALLOWED_GUEST_DOC_PREFIXES` | document name prefixes a guest may expand |
 | `DOC_OVERRIDE_DIR`, `DOC_SEARCH_PATH` | file lookup for documents, the second colon-separated |
 | `RG_CWD`, `UPDATE_CWD` | working directories for `/rg` and `/update` |
+| `TELETHON_SESSION`, `TELETHON_API_ID`, `TELETHON_API_HASH` | the Telethon session file and the API credentials from my.telegram.org, all three enabling the chat mode of Claude |
+| `AI_CWD` | working directory of Claude's sessions, which enables the tool mode |
 | `YT_DLP_COOKIE_FILE` | cookies for yt-dlp |
 | `MOTTO_FILE`, `SENTENCES_BUNDLE_DIR`, `HITOKOTO_TYPES`, `HITOKOTO_BANNED` | sources for `/greet` and `hitokoto()` |
 | `LOG_FILTER_WORDS` | space-separated substrings that drop a log record at INFO or below |
@@ -151,8 +197,8 @@ replaces the default `/help`.
 
 `ffmpeg` and `ffprobe` for audio and video, `rg` for `/rg`, `lottie_to_gif.sh`
 on `PATH` for animated sticker conversion, `bash` for `/run`, `sh` for the
-`system` and `communicate` builtins, and a `run.sh` in `UPDATE_CWD` for
-`/update`.
+`system` and `communicate` builtins, a `run.sh` in `UPDATE_CWD` for
+`/update`, and `claude` for Claude in other chats.
 
 ## Running
 

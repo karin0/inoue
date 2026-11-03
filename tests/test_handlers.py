@@ -5,6 +5,7 @@ import pytest
 from telegram.constants import ChatType
 
 from inoue import handlers, voice, ytdlp
+from inoue.ai import Mode
 from inoue.ctx import use_context
 from inoue.env import USER_ID
 from inoue.handlers import SKIP_MARK, handle_msg
@@ -114,3 +115,79 @@ async def test_video_with_other_words_is_searched(monkeypatch: pytest.MonkeyPatc
     await handle_msg(_private(text))
     download.assert_not_called()
     search.assert_called_once()
+
+
+@pytest.fixture
+def claude(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    claude = AsyncMock()
+    monkeypatch.setattr(handlers, 'handle_ai', claude)
+    monkeypatch.setitem(handlers.MODES, Mode.CHAT, MagicMock())
+    return claude
+
+
+def host_guest(text: str) -> FakeResponder:
+    rs = _private(text)
+    msg = rs.get_message()
+    msg.guest_query_id = 'guest'
+    msg.reply_to_message = MagicMock(
+        name='photo',
+        photo=(MagicMock(),),
+        sticker=None,
+        document=None,
+        audio=None,
+        video=None,
+        voice=None,
+    )
+    return rs
+
+
+@pytest.mark.parametrize('text', ['what is this', 'see https://youtu.be/dQw4w9WgXcQ'])
+async def test_host_text_in_a_guest_chat_goes_to_claude(claude: AsyncMock, text: str):
+    rs = host_guest(text)
+    await handle_msg(rs, direct=False)
+    claude.assert_awaited_once_with(rs, rs.get_message(), text)
+
+
+async def test_host_lone_url_in_a_guest_chat_downloads_it(
+    monkeypatch: pytest.MonkeyPatch, claude: AsyncMock
+):
+    download = AsyncMock()
+    monkeypatch.setattr(ytdlp, 'run_ytdlp', download)
+    rs = host_guest('https://youtu.be/dQw4w9WgXcQ')
+    rs.get_message().reply_to_message = None
+    await handle_msg(rs, direct=False)
+    claude.assert_not_called()
+    download.assert_called_once_with('https://youtu.be/dQw4w9WgXcQ', audio_only=False)
+
+
+async def test_host_text_in_a_guest_chat_converts_media_without_claude(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    claude, sticker = AsyncMock(), AsyncMock(return_value=True)
+    monkeypatch.setattr(handlers, 'handle_ai', claude)
+    monkeypatch.setattr(handlers, 'handle_sticker', sticker)
+    rs = host_guest('what is this')
+    await handle_msg(rs, direct=False)
+    claude.assert_not_called()
+    sticker.assert_awaited_once()
+
+
+@pytest.mark.parametrize(('text', 'claude_called'), [('nc 10-', False), ('what is said', True)])
+async def test_host_reply_to_voice_in_a_guest_chat_converts_only_parameters(
+    convert: AsyncMock, claude: AsyncMock, text: str, claude_called: bool
+):
+    rs = reply_to_voice(text)
+    rs.get_message().guest_query_id = 'guest'
+    await handle_msg(rs, direct=False)
+    assert claude.await_count == claude_called
+    assert convert.call_count == (not claude_called)
+
+
+async def test_host_rembg_in_a_guest_chat_converts_the_sticker(
+    monkeypatch: pytest.MonkeyPatch, claude: AsyncMock
+):
+    sticker = AsyncMock(return_value=True)
+    monkeypatch.setattr(handlers, 'handle_sticker', sticker)
+    await handle_msg(host_guest('rembg'), direct=False)
+    claude.assert_not_called()
+    sticker.assert_awaited_once()

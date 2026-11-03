@@ -55,6 +55,13 @@ class DataStore:
                     saved_at   TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(chat_id, message_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS AiSession (
+                    chat_id    INTEGER NOT NULL,
+                    mode       TEXT    NOT NULL,
+                    session_id TEXT    NOT NULL,
+                    PRIMARY KEY (chat_id, mode)
+                );
                 ''')
         log.debug('Connected to db: %s', DB_FILE)
 
@@ -236,3 +243,23 @@ class DataStore:
             if (row := cursor.fetchone()) is not None:
                 self.conn.execute('DELETE FROM Media WHERE id = ?;', (id,))
         return row
+
+    def get_ai_session(self, chat_id: int, mode: str) -> str | None:
+        cursor = self.conn.execute(
+            'SELECT session_id FROM AiSession WHERE chat_id = ? AND mode = ?;', (chat_id, mode)
+        )
+        if row := cursor.fetchone():
+            return row[0]
+        return None
+
+    def add_ai_session(self, chat_id: int, mode: str, session_id: str):
+        with self.conn:
+            self.conn.execute(
+                'INSERT INTO AiSession (chat_id, mode, session_id) VALUES (?, ?, ?);',
+                (chat_id, mode, session_id),
+            )
+
+    def delete_ai_sessions(self, chat_id: int) -> int:
+        with self.conn:
+            r = self.conn.execute('DELETE FROM AiSession WHERE chat_id = ?;', (chat_id,))
+            return r.rowcount

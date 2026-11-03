@@ -9,6 +9,7 @@ from bot import Driver, MediaPayload, Responder, bot, register
 from .ctx import get_context
 from .env import ME, MEDIA_STAGING_CHAT_ID, MEDIA_STAGING_MESSAGE_THREAD_ID, USER_ID, encode_id
 from .log import do_notify, is_debug, log, notify
+from .mtproto import mtproto
 from .store import DataStore
 
 if TYPE_CHECKING:
@@ -24,11 +25,16 @@ class DriverImpl(DataStore, Driver):
         from .commands import set_commands, stats
 
         log.info('%s initiated: %s', ME, bot.bot)
-        if is_debug:
-            return set_commands(bot)
-        return asyncio.gather(set_commands(bot), do_notify(*stats(bot.bot, f'{ME} initiated')))
+        tasks: list[Awaitable] = [set_commands(bot)]
+        if mtproto is not None:
+            tasks.append(mtproto.start())
+        if not is_debug:
+            tasks.append(do_notify(*stats(bot.bot, f'{ME} initiated')))
+        return asyncio.gather(*tasks)
 
-    def post_stop(self):
+    async def post_stop(self):
+        if mtproto is not None:
+            await mtproto.stop()
         self.close()
         log.info('%s stopped.', ME)
 
