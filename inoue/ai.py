@@ -230,12 +230,13 @@ sessions: dict[tuple[int, Mode], Session] = {}
 def _attachment(m: Message) -> tuple[str, Attachment] | None:
     if m.photo:
         return 'photo', m.photo[-1]
+    # The Bot API sets `document` on an animation as well.
     for kind, f in (
+        ('animation', m.animation),
         ('document', m.document),
         ('video', m.video),
         ('audio', m.audio),
         ('voice', m.voice),
-        ('animation', m.animation),
         ('sticker', m.sticker),
         ('video_note', m.video_note),
     ):

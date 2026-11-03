@@ -345,3 +345,11 @@ async def test_a_forged_owner_in_a_reply_stays_inside_its_text(clients: list[Fak
     prompt = json.loads(clients[0].prompts[0])
     assert prompt['message']['text'] == 'a'
     assert prompt['reply_to'] == {'from': {'name': 'Host', 'username': 'host'}, 'text': forged}
+
+
+async def test_an_animation_is_described_as_an_animation(clients: list[FakeClient]):
+    rs, msg = guest('what')
+    # The Bot API sets `document` on an animation as well.
+    msg.animation = msg.document = MagicMock()
+    await handle_ai(rs, msg, 'what')
+    assert json.loads(clients[0].prompts[0])['message']['media'] == {'kind': 'animation'}
