@@ -37,7 +37,7 @@ def _private(text: str) -> FakeResponder:
     msg.via_bot = None
     msg.forward_origin = None
     msg.document = msg.audio = msg.video = msg.voice = None
-    msg.sticker = msg.animation = None
+    msg.sticker = msg.animation = msg.video_note = None
     msg.photo = ()
     return rs
 
@@ -191,3 +191,25 @@ async def test_host_rembg_in_a_guest_chat_converts_the_sticker(
     await handle_msg(host_guest('rembg'), direct=False)
     claude.assert_not_called()
     sticker.assert_awaited_once()
+
+
+def reply_to_answer(text: str) -> FakeResponder:
+    rs = _private(text)
+    msg = rs.get_message()
+    msg.guest_query_id = 'guest'
+    answer = msg.reply_to_message = MagicMock(name='answer', text='an answer')
+    answer.from_user.id = handlers.bot.bot.id
+    return rs
+
+
+@pytest.mark.parametrize('text', ['', 'rembg', 'nc 10-', 'https://youtu.be/dQw4w9WgXcQ'])
+async def test_host_reply_to_an_answer_with_media_goes_to_claude(claude: AsyncMock, text: str):
+    rs = reply_to_answer(text)
+    rs.get_message().voice = MagicMock(name='voice')
+    await handle_msg(rs, direct=False)
+    claude.assert_awaited_once_with(rs, rs.get_message(), text)
+
+
+async def test_host_bare_reply_to_an_answer_skips_claude(convert: AsyncMock, claude: AsyncMock):
+    await handle_msg(reply_to_answer(''), direct=False)
+    claude.assert_not_called()

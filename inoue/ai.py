@@ -239,7 +239,14 @@ class Session:
 sessions: dict[tuple[int, Mode], Session] = {}
 
 
-def _attachment(m: Message) -> tuple[str, Attachment] | None:
+def bot_text(m: Message | None) -> str | None:
+    '''The text of `m` when the bot sent it as a text message.'''
+    if m is not None and (u := m.from_user) is not None and u.id == bot.bot.id:
+        return m.text
+    return None
+
+
+def attachment(m: Message) -> tuple[str, Attachment] | None:
     if m.photo:
         return 'photo', m.photo[-1]
     # The Bot API sets `document` on an animation as well.
@@ -258,7 +265,7 @@ def _attachment(m: Message) -> tuple[str, Attachment] | None:
 
 
 async def _media(m: Message, mode: Mode) -> Fields | None:
-    if (a := _attachment(m)) is None:
+    if (a := attachment(m)) is None:
         return None
     kind, f = a
     if mode is Mode.CHAT or (f.file_size or 0) > DOWNLOAD_LIMIT and not bot.local_mode:
@@ -309,12 +316,7 @@ async def _prompt(msg: Message, text: str, mode: Mode) -> str:
 def _select(msg: Message, text: str) -> tuple[Mode, str]:
     if text.startswith('!'):
         return Mode.TOOL, text[1:].lstrip()
-    if (
-        (m := msg.reply_to_message) is not None
-        and (u := m.from_user) is not None
-        and u.id == bot.bot.id
-        and (m.text or '').startswith(TOOL_MARK)
-    ):
+    if (t := bot_text(msg.reply_to_message)) is not None and t.startswith(TOOL_MARK):
         return Mode.TOOL, text
     return Mode.CHAT, text
 

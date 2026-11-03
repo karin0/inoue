@@ -14,7 +14,7 @@ from telegram.constants import ChatType, MessageEntityType
 
 from bot import CallbackData, Responder, VoicePayload, bot, callback_query
 
-from .ai import MODES, handle_ai
+from .ai import MODES, attachment, bot_text, handle_ai
 from .commands import dispatch_cmd, handle_help
 from .ctx import Sender, get_context, is_admin
 from .env import CHAN_ID, GROUP_ID, USER_ID
@@ -108,17 +108,19 @@ async def handle_msg(rs: Responder, direct: bool = True):
 
     # The host's text in a chat of others goes to Claude when a mode is
     # configured, while a bare mention, a lone URL and the parameters of a voice
-    # or sticker conversion still convert media.
-    if (
-        MODES
-        and msg.guest_query_id is not None
-        and context.sender_is_host()
-        and (text := rs.get_text().strip())
-        and ((parsed := extract_url(text)) is None or parsed[1])
-        and (rs.extract(extract_voice_media) is None or parse_voice_args(text) is None)
-        and not is_sticker_args(text)
-    ):
-        return await handle_ai(rs, msg, text)
+    # or sticker conversion still convert media. A reply to a text of the bot
+    # continues the conversation, so its text and media all go to Claude.
+    if MODES and msg.guest_query_id is not None and context.sender_is_host():
+        text = rs.get_text().strip()
+        if (
+            bot_text(msg.reply_to_message) is not None
+            and (text or attachment(msg) is not None)
+            or text
+            and ((parsed := extract_url(text)) is None or parsed[1])
+            and (rs.extract(extract_voice_media) is None or parse_voice_args(text) is None)
+            and not is_sticker_args(text)
+        ):
+            return await handle_ai(rs, msg, text)
 
     if await handle_voice.route(rs, as_command=False) or await handle_sticker(rs, as_command=False):
         return None
