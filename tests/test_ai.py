@@ -7,7 +7,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ResultMessage, ToolUseBlock
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    ResultMessage,
+    SystemMessage,
+    ToolUseBlock,
+)
 from telegram.constants import ChatType
 
 from inoue import ai
@@ -30,11 +36,12 @@ DATE = '2026-11-04 13:10 +0900'
 class FakeClient:
     '''Answers each turn after `gate` opens, and fails a turn whose text is
     "fail". `texts` records the text of each turn, or the prompt itself when it is
-    a command.'''
+    a command. `/compact` compacts when `compacts` is set.'''
 
     gate = asyncio.Event()
     instances: ClassVar[list[FakeClient]] = []
     tokens = 0
+    compacts = True
 
     def __init__(self, options: ClaudeAgentOptions):
         self.options = options
@@ -50,9 +57,13 @@ class FakeClient:
         self.prompts.append(prompt)
         self.texts.append(json.loads(prompt)['message']['text'] if prompt[0] == '{' else prompt)
 
-    async def receive_response(self) -> AsyncIterator[AssistantMessage | ResultMessage]:
+    async def receive_response(
+        self,
+    ) -> AsyncIterator[AssistantMessage | SystemMessage | ResultMessage]:
         await self.gate.wait()
         text = self.texts[-1]
+        if text == '/compact' and self.compacts:
+            yield SystemMessage('compact_boundary', {})
         yield AssistantMessage([ToolUseBlock('1', 'mcp__telegram__chat', {})], 'model')
         failed = text == 'fail'
         yield ResultMessage(
@@ -177,6 +188,20 @@ async def test_an_idle_session_compacts_a_large_context_and_resumes_later(
     await ask('b')
     assert clients[1].options.resume == db.get_ai_session(CHAT_ID, Mode.CHAT)
     assert clients[1].options.session_id is None
+
+
+async def test_an_idle_session_warns_when_it_fails_to_compact(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, clients: list[FakeClient]
+):
+    monkeypatch.setattr(ai, 'IDLE_SECS', 0)
+    monkeypatch.setattr(FakeClient, 'tokens', ai.COMPACT_TOKENS + 1)
+    await ask('a')
+    caplog.clear()
+    monkeypatch.setattr(FakeClient, 'compacts', False)
+    await settle()
+    assert clients[0].texts == ['a', '/compact']
+    assert clients[0].disconnected
+    assert [r.levelname for r in caplog.records if 'not compacted' in r.getMessage()] == ['WARNING']
 
 
 async def test_an_idle_session_with_a_small_context_closes_without_compacting(

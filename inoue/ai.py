@@ -16,8 +16,10 @@ from claude_agent_sdk import (
     ClaudeAgentOptions,
     ClaudeSDKClient,
     ResultMessage,
+    SystemMessage,
     ToolUseBlock,
 )
+from claude_agent_sdk import Message as Event
 from telegram import Message
 from telegram.constants import ChatType
 from telegram.error import TelegramError
@@ -138,7 +140,14 @@ class Status:
         text = truncate_text(text, MAX_TEXT_LENGTH - len(self._mark)) or '(empty answer)'
         return self._handle.edit_text(self._mark + text)
 
-    async def tool(self, name: str):
+    async def see(self, event: Event):
+        if not isinstance(event, AssistantMessage):
+            return
+        for b in event.content:
+            if isinstance(b, ToolUseBlock):
+                await self._tool(b.name)
+
+    async def _tool(self, name: str):
         if (now := time.monotonic()) - self._last < STATUS_SECS:
             return
         self._last = now
@@ -148,20 +157,33 @@ class Status:
             log.warning('ai: status: %s', e)
 
 
-async def _turn(client: ClaudeSDKClient, prompt: str, status: Status | None) -> str:
+async def _turn(
+    client: ClaudeSDKClient, prompt: str, see: Callable[[Event], Awaitable[None]]
+) -> str:
     await client.query(prompt)
     async with asyncio.timeout(TURN_SECS):
         async for m in client.receive_response():
             match m:
-                case AssistantMessage(content=blocks) if status is not None:
-                    for b in blocks:
-                        if isinstance(b, ToolUseBlock):
-                            await status.tool(b.name)
                 case ResultMessage(is_error=True):
                     raise RuntimeError(f'{m.subtype}: {m.errors or m.result}')
                 case ResultMessage(result=result):
                     return result or ''
+                case _:
+                    await see(m)
     raise RuntimeError('Claude Code ended the turn without a result')
+
+
+async def _compact(client: ClaudeSDKClient) -> str | None:
+    '''Returns the result of the turn when it did not compact. The CLI reports a
+    failed compaction, such as one over the usage limit, only in the transcript.'''
+    compacted = False
+
+    async def see(event: Event):
+        nonlocal compacted
+        compacted |= isinstance(event, SystemMessage) and event.subtype == 'compact_boundary'
+
+    result = await _turn(client, '/compact', see)
+    return None if compacted else result
 
 
 class Session:
@@ -188,7 +210,7 @@ class Session:
         async with self._lock:
             self._cancel_idle()
             try:
-                answer = await _turn(await self._connect(), prompt, status)
+                answer = await _turn(await self._connect(), prompt, status.see)
             except Exception:
                 await self._close(compact=False)
                 raise
@@ -230,8 +252,12 @@ class Session:
             return
         self._client = None
         try:
-            if compact and (await client.get_context_usage())['totalTokens'] > COMPACT_TOKENS:
-                await _turn(client, '/compact', None)
+            if (
+                compact
+                and (await client.get_context_usage())['totalTokens'] > COMPACT_TOKENS
+                and (result := await _compact(client)) is not None
+            ):
+                log.warning('ai: %s: not compacted: %r', self._id, result)
         finally:
             await client.disconnect()
 
