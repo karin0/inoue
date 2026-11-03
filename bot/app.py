@@ -43,10 +43,11 @@ def _build_app() -> Application:
         .post_stop(_post_stop)
     )
 
-    # Looks like http://127.0.0.1:8081/
+    # Looks like http://127.0.0.1:8081, with or without a trailing slash.
     if url := os.environ.get('LOCAL_SERVER'):
         log.info('Using local server: %s', url)
-        builder = builder.base_url(url + 'bot').base_file_url(url + 'file/bot')
+        url = url.removesuffix('/')
+        builder = builder.base_url(f'{url}/bot').base_file_url(f'{url}/file/bot')
 
     if os.environ.get('LOCAL_MODE'):
         log.debug('Running in local mode')
