@@ -40,8 +40,6 @@ if TYPE_CHECKING:
     type Attachment = Animation | Audio | Document | PhotoSize | Sticker | Video | VideoNote | Voice
 
 CLAUDE = shutil.which('claude')
-# Sessions are stored by their working directory, which a resumed session must
-# share with its creation.
 CWD = os.environ.get('AI_CWD')
 ATTACH_DIR = Path(tempfile.gettempdir()) / f'{ME_LOWER}-ai'
 # The Bot API serves larger files only from a `--local` server.
