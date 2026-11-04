@@ -35,9 +35,9 @@ ptbcontrib = { git = "https://github.com/python-telegram-bot/ptbcontrib", rev = 
 
 [tool.uv]
 exclude-newer = "15 days"
-# Pillow 13.0.0 fixes 24 CVEs in decoding images, and the bot opens images from chats.
-# rembg 2.0.86 is the first release accepting Pillow 13.
-exclude-newer-package = { pillow = "2026-10-17T00:00:00Z", rembg = "2026-10-22T00:00:00Z" }
+# rembg 2.0.86 is the first release accepting Pillow 13, which fixes 24 CVEs in decoding
+# images, and the bot opens images from chats.
+exclude-newer-package = { rembg = "2026-10-22T00:00:00Z" }
 
 [tool.ruff]
 line-length = 100
