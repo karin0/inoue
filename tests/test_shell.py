@@ -64,22 +64,28 @@ def test_the_scope_keeps_dollar_signs_for_bash():
     assert argv[-3:] == ['bash', '-c', 'echo $HOME']
 
 
-async def test_the_tool_refuses_a_turn_without_the_shell(stopped: list[str], tmp_path: Path):
+async def test_the_tool_refuses_a_turn_without_the_shell_and_logs_every_call(
+    stopped: list[str], tmp_path: Path, caplog: pytest.LogCaptureFixture
+):
     allowed = False
-    tool = shell.shell_tool(str(tmp_path), lambda: allowed)
+    tool = shell.shell_tool(str(tmp_path), 42, lambda: allowed)
     refused = await tool.handler({'command': 'touch x'})
     assert refused['is_error']
     assert not (tmp_path / 'x').exists()
 
     allowed = True
-    assert not (await tool.handler({'command': 'touch x'}))['is_error']
+    assert not (await tool.handler({'command': 'touch x; echo done'}))['is_error']
     assert (tmp_path / 'x').exists()
     assert len(stopped) == 1
+    refusal, run = [r for r in caplog.records if r.getMessage().startswith('shell: 42:')]
+    assert (refusal.levelname, run.levelname) == ('WARNING', 'INFO')
+    assert 'touch x; echo done' in run.getMessage()
+    assert run.getMessage().endswith('done\n\n[exit status 0]')
 
 
 @pytest.mark.parametrize('secs', [0, shell.MAX_SECS + 1])
 async def test_the_tool_rejects_a_timeout_out_of_range(stopped: list[str], secs: int):
-    tool = shell.shell_tool('/', lambda: True)
+    tool = shell.shell_tool('/', 42, lambda: True)
     assert (await tool.handler({'command': 'true', 'timeout': secs}))['is_error']
     assert stopped == []
 

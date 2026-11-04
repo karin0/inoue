@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 import uuid
 
 from types import MappingProxyType
@@ -148,7 +149,7 @@ def _result(text: str, *, error: bool = False) -> dict[str, Any]:
     return {'content': [{'type': 'text', 'text': text}], 'is_error': error}
 
 
-def shell_tool(cwd: str, allowed: Callable[[], bool]) -> SdkMcpTool[ShellArgs]:
+def shell_tool(cwd: str, chat_id: int, allowed: Callable[[], bool]) -> SdkMcpTool[ShellArgs]:
     @tool(
         'shell',
         f'Run a bash command on the host in {cwd}, with stdin closed, and return its '
@@ -158,15 +159,21 @@ def shell_tool(cwd: str, allowed: Callable[[], bool]) -> SdkMcpTool[ShellArgs]:
         ShellArgs,
     )
     async def shell(args: ShellArgs) -> dict[str, Any]:
+        command = args['command']
         if not allowed():
+            # The prompt tells the model whether the turn allows the shell.
+            log.warning('shell: %d: refused: %s', chat_id, command)
             return _result('The owner did not allow shell commands in this turn.', error=True)
         secs = args.get('timeout', DEFAULT_SECS)
         if not 0 < secs <= MAX_SECS:
             return _result(f'timeout must be between 1 and {MAX_SECS}.', error=True)
-        return _result(await run(args['command'], secs, cwd))
+        t0 = time.monotonic()
+        out = await run(command, secs, cwd)
+        log.info('shell: %d: %s (%.1fs)\n%s', chat_id, command, time.monotonic() - t0, out)
+        return _result(out)
 
     return shell
 
 
-def server(cwd: str, allowed: Callable[[], bool]) -> McpSdkServerConfig:
-    return create_sdk_mcp_server(SERVER, tools=[shell_tool(cwd, allowed)])
+def server(cwd: str, chat_id: int, allowed: Callable[[], bool]) -> McpSdkServerConfig:
+    return create_sdk_mcp_server(SERVER, tools=[shell_tool(cwd, chat_id, allowed)])

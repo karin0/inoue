@@ -93,7 +93,7 @@ PERSONA = (
 
 def _options(cwd: str, chat_id: int, shell_allowed: Callable[[], bool]) -> ClaudeAgentOptions:
     # The tools stay the same in every turn, which keeps the prompt cache valid.
-    servers: dict[str, McpServerConfig] = {shell.SERVER: shell.server(cwd, shell_allowed)}
+    servers: dict[str, McpServerConfig] = {shell.SERVER: shell.server(cwd, chat_id, shell_allowed)}
     if mtproto is not None:
         servers[SERVER] = mtproto.server(chat_id)
     tools = ['WebSearch', 'WebFetch']
