@@ -143,12 +143,12 @@ what that turn can reach, because text that others wrote in the chat could
 otherwise make the session act on the machine.
 
 Each prompt is a JSON object that names the chat, the bot and the time beside
-the message, the message it replies to and the part of that message it quotes,
-since a guest message carries no other context, and it states whether the shell
-tool works in this turn. The chat tool returns JSON too. Every name and text
-that people wrote stays inside a JSON string, and a `role` field marks the bot
-and `USER_ID` by their sender ids, so no text or display name can forge a
-message or a role.
+the message, the message it replies to, the part of that message it quotes and
+the original sender of a forwarded message, since a guest message carries no
+other context, and it states whether the shell tool works in this turn. The chat
+tool returns JSON too. Every name and text that people wrote stays inside a JSON
+string, and a `role` field marks the bot and `USER_ID` by their sender ids, so
+no text or display name can forge a message or a role.
 
 Each command runs in a transient systemd user scope with a time limit, so systemd
 kills every process it started, including those started with `setsid`, even when

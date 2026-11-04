@@ -15,11 +15,20 @@ from claude_agent_sdk import (
     SystemMessage,
     ToolUseBlock,
 )
+from telegram import (
+    Chat,
+    MessageOrigin,
+    MessageOriginChannel,
+    MessageOriginHiddenUser,
+    MessageOriginUser,
+    User,
+)
 from telegram.constants import ChatType
 
 from inoue import ai
 from inoue.ai import handle_ai, handle_clear, handle_compact, handle_session, handle_usage
 from inoue.db import db
+from inoue.env import USER_ID
 
 from .fakes import FakeResponder, settle
 
@@ -33,6 +42,7 @@ OWNER = {'name': 'Host', 'username': 'host', 'role': 'owner'}
 CHAT = {'type': 'private', 'peer': {'name': 'Alice', 'username': 'alice'}}
 YOU = {'name': 'Bot', 'username': 'the_bot'}
 DATE = '2026-11-04 13:10 +0900'
+DATE_OF_ORIGIN = datetime(2026, 11, 1, tzinfo=UTC)
 
 
 class FakeClient:
@@ -118,7 +128,7 @@ def guest(text: str) -> tuple[FakeResponder, MagicMock]:
     msg.photo = ()
     msg.document = msg.video = msg.audio = msg.voice = None
     msg.animation = msg.sticker = msg.video_note = None
-    msg.quote = None
+    msg.quote = msg.forward_origin = None
     return rs, msg
 
 
@@ -254,6 +264,7 @@ async def test_the_prompt_quotes_the_visible_reply_and_its_media(
     replied.from_user.id = 5
     replied.text = None
     replied.caption = 'look'
+    replied.forward_origin = None
     photo = MagicMock(file_size=1, file_unique_id='u')
     photo.get_file = AsyncMock(return_value=MagicMock(file_path='photos/1.jpg'))
     photo.get_file.return_value.download_to_drive = AsyncMock()
@@ -444,3 +455,28 @@ async def test_session_prints_the_command_that_forks_it_in_the_cli(clients: list
     assert rs.replies == [
         (f'```\ncd /ai && claude --resume {sid} --fork-session```', 'MarkdownV2', None)
     ]
+
+
+@pytest.mark.parametrize(
+    ('origin', 'forwarded_from'),
+    [
+        (
+            MessageOriginChannel(DATE_OF_ORIGIN, Chat(9, 'channel', 'News', 'news'), 1),
+            {
+                'name': 'News',
+                'username': 'news',
+            },
+        ),
+        (MessageOriginHiddenUser(DATE_OF_ORIGIN, 'Hidden'), {'name': 'Hidden'}),
+        (MessageOriginUser(DATE_OF_ORIGIN, User(5, 'Guest', False)), {'name': 'Guest'}),
+        (MessageOriginUser(DATE_OF_ORIGIN, User(USER_ID, 'Host', False, username='host')), None),
+    ],
+)
+async def test_a_forwarded_reply_names_its_origin_when_another_person_wrote_it(
+    clients: list[FakeClient], origin: MessageOrigin, forwarded_from: dict[str, str] | None
+):
+    rs, msg = guest('who wrote this')
+    _, msg.reply_to_message = guest('news')
+    msg.reply_to_message.forward_origin = origin
+    await handle_ai(rs, msg, 'who wrote this')
+    assert json.loads(clients[0].prompts[0])['reply_to'].get('forwarded_from') == forwarded_from
