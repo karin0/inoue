@@ -57,10 +57,8 @@ class DataStore:
                 );
 
                 CREATE TABLE IF NOT EXISTS AiSession (
-                    chat_id    INTEGER NOT NULL,
-                    mode       TEXT    NOT NULL,
-                    session_id TEXT    NOT NULL,
-                    PRIMARY KEY (chat_id, mode)
+                    chat_id    INTEGER PRIMARY KEY NOT NULL,
+                    session_id TEXT    NOT NULL
                 );
                 ''')
         log.debug('Connected to db: %s', DB_FILE)
@@ -244,22 +242,21 @@ class DataStore:
                 self.conn.execute('DELETE FROM Media WHERE id = ?;', (id,))
         return row
 
-    def get_ai_session(self, chat_id: int, mode: str) -> str | None:
+    def get_ai_session(self, chat_id: int) -> str | None:
         cursor = self.conn.execute(
-            'SELECT session_id FROM AiSession WHERE chat_id = ? AND mode = ?;', (chat_id, mode)
+            'SELECT session_id FROM AiSession WHERE chat_id = ?;', (chat_id,)
         )
         if row := cursor.fetchone():
             return row[0]
         return None
 
-    def add_ai_session(self, chat_id: int, mode: str, session_id: str):
+    def add_ai_session(self, chat_id: int, session_id: str):
         with self.conn:
             self.conn.execute(
-                'INSERT INTO AiSession (chat_id, mode, session_id) VALUES (?, ?, ?);',
-                (chat_id, mode, session_id),
+                'INSERT INTO AiSession (chat_id, session_id) VALUES (?, ?);', (chat_id, session_id)
             )
 
-    def delete_ai_sessions(self, chat_id: int) -> int:
+    def delete_ai_session(self, chat_id: int) -> bool:
         with self.conn:
             r = self.conn.execute('DELETE FROM AiSession WHERE chat_id = ?;', (chat_id,))
-            return r.rowcount
+            return r.rowcount > 0

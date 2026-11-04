@@ -14,7 +14,8 @@ from telegram.constants import ChatType, MessageEntityType
 
 from bot import CallbackData, Responder, VoicePayload, bot, callback_query
 
-from .ai import MODES, attachment, bot_text, handle_ai
+from .ai import CWD as AI_CWD
+from .ai import attachment, bot_text, handle_ai
 from .commands import dispatch_cmd, handle_help
 from .ctx import Sender, get_context, is_admin
 from .env import CHAN_ID, GROUP_ID, USER_ID
@@ -111,11 +112,11 @@ async def handle_msg(rs: Responder, direct: bool = True):
     if SKIP_MARK in rs.get_text():
         return None
 
-    # The host's text in a chat of others goes to Claude when a mode is
-    # configured, while a bare mention, a lone URL and the parameters of a voice
+    # The host's text in a chat of others goes to Claude when `AI_CWD` is
+    # set, while a bare mention, a lone URL and the parameters of a voice
     # or sticker conversion still convert media. A reply to a text of the bot
     # continues the conversation, so its text and media all go to Claude.
-    if MODES and msg.guest_query_id is not None and context.sender_is_host():
+    if AI_CWD is not None and msg.guest_query_id is not None and context.sender_is_host():
         text = rs.get_text().strip()
         if (
             bot_text(msg.reply_to_message) is not None

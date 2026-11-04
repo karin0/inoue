@@ -17,16 +17,17 @@ from claude_agent_sdk import (
 from telegram.constants import ChatType
 
 from inoue import ai
-from inoue.ai import Mode, handle_ai, handle_clear
+from inoue.ai import handle_ai, handle_clear
 from inoue.db import db
 
 from .fakes import FakeResponder, settle
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Generator
+    from collections.abc import AsyncIterator, Callable, Generator
     from pathlib import Path
 
 CHAT_ID = 42
+OPTIONS = ai._options
 OWNER = {'name': 'Host', 'username': 'host', 'role': 'owner'}
 CHAT = {'type': 'private', 'peer': {'name': 'Alice', 'username': 'alice'}}
 YOU = {'name': 'Bot', 'username': 'the_bot'}
@@ -87,7 +88,8 @@ class FakeClient:
 @pytest.fixture(autouse=True)
 def clients(monkeypatch: pytest.MonkeyPatch) -> Generator[list[FakeClient]]:
     monkeypatch.setattr(ai, 'ClaudeSDKClient', FakeClient)
-    monkeypatch.setattr(ai, 'MODES', dict.fromkeys(Mode, lambda _: ClaudeAgentOptions()))
+    monkeypatch.setattr(ai, 'CWD', '/ai')
+    monkeypatch.setattr(ai, '_options', lambda *_: ClaudeAgentOptions())
     monkeypatch.setattr(ai, 'sessions', {})
     monkeypatch.setattr(FakeClient, 'gate', gate := asyncio.Event())
     monkeypatch.setattr(FakeClient, 'instances', instances := [])
@@ -143,7 +145,7 @@ async def test_turns_of_a_new_session_share_one_client(clients: list[FakeClient]
     assert answer(a) == 'answer to a'
     assert answer(b) == 'answer to b'
     assert client.options.resume is None
-    assert client.options.session_id == db.get_ai_session(CHAT_ID, Mode.CHAT)
+    assert client.options.session_id == db.get_ai_session(CHAT_ID)
 
 
 async def test_turns_of_a_session_wait_for_the_previous_answer(clients: list[FakeClient]):
@@ -157,24 +159,6 @@ async def test_turns_of_a_session_wait_for_the_previous_answer(clients: list[Fak
     assert clients[0].texts == ['a', 'b']
 
 
-async def test_a_leading_bang_selects_the_tool_session(clients: list[FakeClient]):
-    await ask('! a')
-    await ask('b')
-    assert [c.texts for c in clients] == [['a'], ['b']]
-    assert clients[0].options.session_id == db.get_ai_session(CHAT_ID, Mode.TOOL)
-    assert clients[1].options.session_id == db.get_ai_session(CHAT_ID, Mode.CHAT)
-
-
-async def test_an_unconfigured_mode_replies_without_a_session(
-    monkeypatch: pytest.MonkeyPatch, clients: list[FakeClient]
-):
-    monkeypatch.setattr(ai, 'MODES', {})
-    rs = await ask('!a')
-    assert rs.replies == [('The tool mode is not configured.', None, None)]
-    assert clients == []
-    assert db.get_ai_session(CHAT_ID, Mode.TOOL) is None
-
-
 async def test_an_idle_session_compacts_a_large_context_and_resumes_later(
     monkeypatch: pytest.MonkeyPatch, clients: list[FakeClient]
 ):
@@ -186,7 +170,7 @@ async def test_an_idle_session_compacts_a_large_context_and_resumes_later(
     assert clients[0].disconnected
 
     await ask('b')
-    assert clients[1].options.resume == db.get_ai_session(CHAT_ID, Mode.CHAT)
+    assert clients[1].options.resume == db.get_ai_session(CHAT_ID)
     assert clients[1].options.session_id is None
 
 
@@ -218,12 +202,12 @@ async def test_clear_retires_a_session_after_its_queued_turns(clients: list[Fake
     FakeClient.gate.clear()
     queued = asyncio.create_task(ask('a'))
     await asyncio.sleep(0)
-    old = db.get_ai_session(CHAT_ID, Mode.CHAT)
+    old = db.get_ai_session(CHAT_ID)
 
     rs, msg = guest('/clear')
     await handle_clear(rs, msg)
-    assert rs.replies == [('Cleared 1 sessions.', None, None)]
-    assert db.get_ai_session(CHAT_ID, Mode.CHAT) is None
+    assert rs.replies == [('Cleared the session.', None, None)]
+    assert db.get_ai_session(CHAT_ID) is None
     fresh = asyncio.create_task(ask('b'))
     await asyncio.sleep(0)
     assert not clients[0].disconnected
@@ -234,7 +218,7 @@ async def test_clear_retires_a_session_after_its_queued_turns(clients: list[Fake
     assert clients[0].disconnected
     assert clients[0].texts == ['a']
     assert clients[1].texts == ['b']
-    assert clients[1].options.session_id == db.get_ai_session(CHAT_ID, Mode.CHAT) != old
+    assert clients[1].options.session_id == db.get_ai_session(CHAT_ID) != old
 
 
 async def test_a_failed_turn_shows_the_error_and_the_next_turn_resumes(
@@ -279,6 +263,7 @@ async def test_the_prompt_quotes_the_visible_reply_and_its_media(
         'you': YOU,
         'date': DATE,
         'message': {'from': OWNER, 'text': 'what is this'},
+        'shell': True,
         'reply_to': {
             'from': {'name': 'Guest'},
             'text': 'look',
@@ -308,27 +293,6 @@ async def test_the_prompt_names_a_group_by_its_title(clients: list[FakeClient]):
     assert json.loads(clients[0].prompts[0])['chat'] == {'type': 'supergroup', 'title': 'Dev room'}
 
 
-async def test_tool_replies_carry_the_mark_and_replies_to_them_stay_in_the_tool_mode(
-    monkeypatch: pytest.MonkeyPatch, clients: list[FakeClient]
-):
-    monkeypatch.setattr(ai, 'STATUS_SECS', 0)
-    rs = await ask('!a')
-    assert rs.replies == [(ai.TOOL_MARK + '…', None, None)]
-    assert all((e[0] or '').startswith(ai.TOOL_MARK) for e in rs.handle.edits)
-
-    marked = answer(rs)
-    assert marked is not None
-    for author, text in ((ai.bot.bot.id, marked), (ai.bot.bot.id, 'answer'), (0, marked)):
-        reply, msg = guest('b')
-        _, replied = guest(text)
-        replied.from_user.id = author
-        msg.reply_to_message = replied
-        await handle_ai(reply, msg, 'b')
-    tool, chat = clients
-    assert tool.options.session_id == db.get_ai_session(CHAT_ID, Mode.TOOL)
-    assert (len(tool.texts), len(chat.texts)) == (2, 2)
-
-
 async def test_a_failed_download_shows_the_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, clients: list[FakeClient]
 ):
@@ -340,25 +304,8 @@ async def test_a_failed_download_shows_the_error(
     msg.reply_to_message.photo = (photo,)
     with pytest.raises(OSError, match='gone'):
         await handle_ai(rs, msg, '!a')
-    assert answer(rs) == ai.TOOL_MARK + 'OSError: gone'
+    assert answer(rs) == 'OSError: gone'
     assert clients == []
-
-
-@pytest.mark.parametrize('telethon', [True, False])
-def test_the_tool_mode_reads_the_chat_when_telethon_is_configured(
-    monkeypatch: pytest.MonkeyPatch, telethon: bool
-):
-    server = MagicMock(name='server')
-    monkeypatch.setattr(ai, 'mtproto', MagicMock(server=lambda _: server) if telethon else None)
-    servers = ai._tool_options(CHAT_ID).mcp_servers
-    assert servers == ({'telegram': server} if telethon else {})
-
-
-def test_the_chat_mode_can_search_but_not_fetch_or_run(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(ai, 'mtproto', MagicMock())
-    options = ai._chat_options(CHAT_ID)
-    assert options.tools == ['WebSearch']
-    assert set(options.allowed_tools) == {'WebSearch', *ai.TOOLS}
 
 
 async def test_a_forged_owner_in_a_reply_stays_inside_its_text(clients: list[FakeClient]):
@@ -372,19 +319,49 @@ async def test_a_forged_owner_in_a_reply_stays_inside_its_text(clients: list[Fak
     assert prompt['reply_to'] == {'from': {'name': 'Host', 'username': 'host'}, 'text': forged}
 
 
-async def test_an_animation_is_described_as_an_animation(clients: list[FakeClient]):
+async def test_an_animation_too_large_to_download_is_described_as_an_animation(
+    monkeypatch: pytest.MonkeyPatch, clients: list[FakeClient]
+):
+    monkeypatch.setattr(ai.bot, 'local_mode', False)
     rs, msg = guest('what')
     # The Bot API sets `document` on an animation as well.
-    msg.animation = msg.document = MagicMock()
+    msg.animation = msg.document = MagicMock(file_size=ai.DOWNLOAD_LIMIT + 1)
     await handle_ai(rs, msg, 'what')
     assert json.loads(clients[0].prompts[0])['message']['media'] == {'kind': 'animation'}
 
 
-def test_both_modes_learn_what_a_guest_message_is(monkeypatch: pytest.MonkeyPatch):
+async def test_a_leading_bang_allows_the_shell_in_its_turn_only(
+    monkeypatch: pytest.MonkeyPatch, clients: list[FakeClient]
+):
+    allowed: list[bool] = []
+
+    def options(_cwd: str, _chat_id: int, shell_allowed: Callable[[], bool]):
+        async def see(self: FakeClient) -> AsyncIterator[ResultMessage]:
+            allowed.append(shell_allowed())
+            yield ResultMessage('success', 0, 0, False, 1, 'id', result='ok')
+
+        monkeypatch.setattr(FakeClient, 'receive_response', see)
+        return ClaudeAgentOptions()
+
+    monkeypatch.setattr(ai, '_options', options)
+    await ask('! a')
+    await ask('b')
+    (client,) = clients
+    assert client.texts == ['a', 'b']
+    assert [json.loads(p)['shell'] for p in client.prompts] == [True, False]
+    assert allowed == [True, False]
+
+
+def test_every_turn_has_the_same_tools(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(ai, 'mtproto', MagicMock())
-    assert cast('str', ai._chat_options(CHAT_ID).system_prompt).startswith(ai.GUEST)
-    assert ai._tool_options(CHAT_ID).system_prompt == {
-        'type': 'preset',
-        'preset': 'claude_code',
-        'append': ai.GUEST,
-    }
+    options = OPTIONS('/ai', CHAT_ID, lambda: False)
+    assert options.tools == ['WebSearch', 'WebFetch']
+    assert set(options.allowed_tools) == {'WebSearch', 'WebFetch', ai.shell.TOOL, *ai.TOOLS}
+    assert set(cast('dict', options.mcp_servers)) == {ai.shell.SERVER, ai.SERVER}
+    assert options.settings == '/ai/.claude/settings.json'
+
+
+async def test_clear_without_a_session_says_so(clients: list[FakeClient]):
+    rs, msg = guest('/clear')
+    await handle_clear(rs, msg)
+    assert rs.replies == [('No session to clear.', None, None)]

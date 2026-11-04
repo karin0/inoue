@@ -5,7 +5,6 @@ import pytest
 from telegram.constants import ChatType
 
 from inoue import handlers, voice, ytdlp
-from inoue.ai import Mode
 from inoue.ctx import use_context
 from inoue.env import USER_ID
 from inoue.handlers import SKIP_MARK, handle_msg
@@ -137,7 +136,7 @@ async def test_video_with_parameters_converts_it(convert: AsyncMock, text: str, 
 def claude(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     claude = AsyncMock()
     monkeypatch.setattr(handlers, 'handle_ai', claude)
-    monkeypatch.setitem(handlers.MODES, Mode.CHAT, MagicMock())
+    monkeypatch.setattr(handlers, 'AI_CWD', '/ai')
     return claude
 
 
