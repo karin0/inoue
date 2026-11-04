@@ -23,7 +23,7 @@ from bot import (
 from .ctx import get_context
 from .ffmpeg import encode_voice
 from .log import log
-from .ytdlp import Output, extract_url, run_ytdlp
+from .ytdlp import Output, extract_url, is_video, run_ytdlp
 
 VOICE_ASSETS_DIR = 'assets/voice'
 
@@ -228,9 +228,29 @@ def parse_voice_args(arg: str) -> VoiceArgs | None:
     return VoiceArgs(speed, start_time, end_time, bitrate_k, flags)
 
 
+type Source = tuple[Media | Output, float | timedelta]
+
+
+def voice_request(
+    rs: Responder, arg: str, as_command: bool
+) -> tuple[Source | None, str | None, VoiceArgs] | None:
+    '''The media or URL that the message of rs with arg converts, and the parameters arg holds.
+    Without a command, a URL converts only with parameters other than `q` alone, since a URL
+    alone or with `q` downloads the video.'''
+    url = None
+    info = rs.extract(extract_media)
+    if info is None:
+        if (parsed := extract_url(arg)) is None or not as_command and is_video(parsed[1]):
+            return None
+        url, arg = parsed
+    if (args := parse_voice_args(arg)) is None:
+        return None
+    return info, url, args
+
+
 async def _handle_voice(
     rs: Responder,
-    info: tuple[Media | Output, float | timedelta] | None,
+    info: Source | None,
     url: str | None,
     args: VoiceArgs,
     finish: bool = True,
@@ -276,27 +296,17 @@ async def handle_voice(
     rs: Responder, arg: MessageArg, flush: RequireDefer, as_command: bool = True
 ) -> bool:
     msg = rs.get_message()
-    own = None if msg is None else extract_media(msg)
-    if (info := own) is None and msg is not None and (replied := msg.reply_to_message):
-        info = extract_media(replied)
-
-    url = None
-    if info is None:
-        if not as_command or (parsed := extract_url(arg)) is None:
-            if as_command:
-                await _reply_usage(rs)
-            return False
-        url, arg = parsed
-
-    # A forwarded media keeps its author's caption, which is rarely a parameter.
-    fallback = VoiceArgs() if own is not None and not as_command else None
-    # A reply whose text is not parameters chats about the media.
-    if (args := parse_voice_args(arg) or fallback) is None:
+    req = voice_request(rs, arg, as_command)
+    if req is None and not as_command and msg is not None and (own := extract_media(msg)):
+        # A forwarded media keeps its author's caption, which is rarely a parameter.
+        req = own, None, VoiceArgs()
+    if req is None:
         if as_command:
             await _reply_usage(rs)
-        return True
+        # A reply to media whose text is not parameters chats about the media.
+        return rs.extract(extract_media) is not None
 
     # An inline message cannot contain two media, so we have to skip sending
     # the original audio when deferred.
-    await _handle_voice(rs, info, url, args, flush is None)
+    await _handle_voice(rs, *req, flush is None)
     return True

@@ -99,6 +99,15 @@ def restore_url(s: str) -> str | None:
         return 'https://www.youtube.com/watch?v=' + s
 
 
+# `q` after a URL drops the URL from the caption of an inline result.
+QUIET = 'q'
+
+
+def is_video(args: str) -> bool:
+    '''Whether the words after a URL ask for its video, as no words or `q` alone do.'''
+    return args.split() in ([], [QUIET])
+
+
 def extract_url(text: str) -> tuple[str, str] | None:
     if not (parts := text.split(None, 1)):
         return None

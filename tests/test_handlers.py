@@ -98,9 +98,12 @@ async def test_skip_mark_leaves_the_message_alone(convert: AsyncMock, rs: FakeRe
         ('BV1GJ411x7h7', 'https://www.bilibili.com/video/BV1GJ411x7h7'),
         (' dQw4w9WgXcQ ', 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'),
         ('https://youtu.be/dQw4w9WgXcQ', 'https://youtu.be/dQw4w9WgXcQ'),
+        ('av117465963037923 q', 'https://www.bilibili.com/video/av117465963037923'),
     ],
 )
-async def test_lone_video_downloads_it(monkeypatch: pytest.MonkeyPatch, text: str, url: str):
+async def test_video_alone_or_with_q_downloads_it(
+    monkeypatch: pytest.MonkeyPatch, text: str, url: str
+):
     download = AsyncMock()
     monkeypatch.setattr(ytdlp, 'run_ytdlp', download)
     await handle_msg(_private(text))
@@ -115,6 +118,19 @@ async def test_video_with_other_words_is_searched(monkeypatch: pytest.MonkeyPatc
     await handle_msg(_private(text))
     download.assert_not_called()
     search.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ('text', 'url'),
+    [
+        ('BV1GJ411x7h7 nc', 'https://www.bilibili.com/video/BV1GJ411x7h7'),
+        ('https://youtu.be/dQw4w9WgXcQ 10- q', 'https://youtu.be/dQw4w9WgXcQ'),
+    ],
+)
+async def test_video_with_parameters_converts_it(convert: AsyncMock, text: str, url: str):
+    await handle_msg(_private(text))
+    convert.assert_called_once()
+    assert convert.call_args.args[1:3] == (None, url)
 
 
 @pytest.fixture
@@ -158,6 +174,20 @@ async def test_host_lone_url_in_a_guest_chat_downloads_it(
     await handle_msg(rs, direct=False)
     claude.assert_not_called()
     download.assert_called_once_with('https://youtu.be/dQw4w9WgXcQ', audio_only=False)
+
+
+async def test_host_video_with_q_in_a_guest_chat_downloads_it(
+    monkeypatch: pytest.MonkeyPatch, claude: AsyncMock
+):
+    download = AsyncMock()
+    monkeypatch.setattr(ytdlp, 'run_ytdlp', download)
+    rs = host_guest('av117465963037923 q')
+    rs.get_message().reply_to_message = None
+    await handle_msg(rs, direct=False)
+    claude.assert_not_called()
+    download.assert_called_once_with(
+        'https://www.bilibili.com/video/av117465963037923', audio_only=False
+    )
 
 
 async def test_host_text_in_a_guest_chat_converts_media_without_claude(
@@ -213,3 +243,13 @@ async def test_host_reply_to_an_answer_with_media_goes_to_claude(claude: AsyncMo
 async def test_host_bare_reply_to_an_answer_skips_claude(convert: AsyncMock, claude: AsyncMock):
     await handle_msg(reply_to_answer(''), direct=False)
     claude.assert_not_called()
+
+
+async def test_host_video_with_parameters_in_a_guest_chat_converts_it(
+    convert: AsyncMock, claude: AsyncMock
+):
+    rs = host_guest('https://youtu.be/dQw4w9WgXcQ nc')
+    rs.get_message().reply_to_message = None
+    await handle_msg(rs, direct=False)
+    claude.assert_not_called()
+    assert args_of(convert) == VoiceArgs(speed=1.5)

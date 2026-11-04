@@ -120,12 +120,12 @@ one reason it is trusted.
 When `USER_ID` mentions the bot in a chat the bot is not a member of, Telegram
 delivers a guest message, and `inoue/ai.py` answers the text with Claude Code
 through claude-agent-sdk, on the subscription that the system `claude` is logged
-in with. Commands keep their usual handling. So do a bare mention, a lone URL,
-the parameters of a voice conversion in reply to audio or video and the `rembg`
-of a sticker conversion, except in a reply to a text of the bot, where a message
-with text or media continues the conversation and takes its media to Claude as
-well. The answer starts as a status line that names the running tool and
-becomes the answer when the turn ends.
+in with. Commands keep their usual handling. So do a bare mention, a URL alone
+or followed by `q`, the parameters of a voice conversion after a URL or in reply
+to audio or video, and the `rembg` of a sticker conversion, except in a reply to
+a text of the bot, where a message with text or media continues the
+conversation and takes its media to Claude as well. The answer starts as a status
+line that names the running tool and becomes the answer when the turn ends.
 
 A plain text runs in the chat mode, which can read the whole chat over MTProto
 as `USER_ID` through `inoue/mtproto.py` and search the web, and can neither run

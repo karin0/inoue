@@ -25,9 +25,14 @@ from .render import handle_render_doc, handle_render_group, handle_render_inline
 from .rg import handle_rg
 from .sticker import handle_sticker, is_sticker_args
 from .text import pre_block
-from .voice import extract_media as extract_voice_media
-from .voice import handle_voice, parse_voice_args
-from .ytdlp import extract_url, handle_yt, handle_yt_chosen_result, handle_yt_inline_query
+from .voice import handle_voice, voice_request
+from .ytdlp import (
+    extract_url,
+    handle_yt,
+    handle_yt_chosen_result,
+    handle_yt_inline_query,
+    is_video,
+)
 
 # A message containing this is ignored, so a reply to media can chat without converting it.
 SKIP_MARK = '\N{CAT}\N{ZERO WIDTH JOINER}\N{BLACK LARGE SQUARE}'
@@ -116,8 +121,8 @@ async def handle_msg(rs: Responder, direct: bool = True):
             bot_text(msg.reply_to_message) is not None
             and (text or attachment(msg) is not None)
             or text
-            and ((parsed := extract_url(text)) is None or parsed[1])
-            and (rs.extract(extract_voice_media) is None or parse_voice_args(text) is None)
+            and ((parsed := extract_url(text)) is None or not is_video(parsed[1]))
+            and voice_request(rs, text, as_command=False) is None
             and not is_sticker_args(text)
         ):
             return await handle_ai(rs, msg, text)
@@ -141,7 +146,7 @@ async def handle_msg(rs: Responder, direct: bool = True):
 
         return await rs.reply(media=VoicePayload(Path('out.ogg')))
 
-    if (parsed := extract_url(text)) is not None and not parsed[1]:
+    if (parsed := extract_url(text)) is not None and is_video(parsed[1]):
         return await handle_yt(rs)
 
     # The sender's identity comes from the `context`, since for a relayed callback
