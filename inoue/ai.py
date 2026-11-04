@@ -35,7 +35,7 @@ from .text import visible
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from claude_agent_sdk import McpServerConfig
+    from claude_agent_sdk import ContextUsageResponse, McpServerConfig
     from telegram import Animation, Audio, Document, PhotoSize, Sticker, Video, VideoNote, Voice
 
     type Attachment = Animation | Audio | Document | PhotoSize | Sticker | Video | VideoNote | Voice
@@ -196,18 +196,39 @@ class Session:
         self._idle: asyncio.Task | None = None
 
     async def ask(self, prompt: str, status: Status, *, shell: bool) -> str:
-        async with self._lock:
-            self._cancel_idle()
+        async def turn(client: ClaudeSDKClient) -> str:
             self._shell = shell
             try:
-                answer = await _turn(await self._connect(), prompt, status.see)
+                return await _turn(client, prompt, status.see)
+            finally:
+                self._shell = False
+
+        return await self._use(turn)
+
+    async def compact(self) -> tuple[int, int]:
+        '''Returns the tokens of the context before and after compacting it.'''
+
+        async def compact(client: ClaudeSDKClient) -> tuple[int, int]:
+            before = (await client.get_context_usage())['totalTokens']
+            if (result := await _compact(client)) is not None:
+                raise RuntimeError(f'not compacted: {result}')
+            return before, (await client.get_context_usage())['totalTokens']
+
+        return await self._use(compact)
+
+    async def usage(self) -> ContextUsageResponse:
+        return await self._use(lambda client: client.get_context_usage())
+
+    async def _use[T](self, work: Callable[[ClaudeSDKClient], Awaitable[T]]) -> T:
+        async with self._lock:
+            self._cancel_idle()
+            try:
+                result = await work(await self._connect())
             except Exception:
                 await self._close(compact=False)
                 raise
-            finally:
-                self._shell = False
             self._idle = create_task(self._expire())
-        return answer
+        return result
 
     async def retire(self):
         async with self._lock:
@@ -334,13 +355,19 @@ async def _prompt(msg: Message, text: str, *, shell: bool) -> str:
     return json.dumps(prompt, ensure_ascii=False)
 
 
+def _session(chat_id: int, *, create: bool) -> Session | None:
+    if (s := sessions.get(chat_id)) is None and (create or db.get_ai_session(chat_id) is not None):
+        assert CWD is not None
+        s = sessions[chat_id] = Session(CWD, chat_id)
+    return s
+
+
 async def handle_ai(rs: Responder, msg: Message, text: str):
-    assert CWD is not None
     if shell := text.startswith(SHELL_MARK):
         text = text.removeprefix(SHELL_MARK).lstrip()
     status = Status(await rs.reply('…'))
-    if (s := sessions.get(msg.chat_id)) is None:
-        s = sessions[msg.chat_id] = Session(CWD, msg.chat_id)
+    s = _session(msg.chat_id, create=True)
+    assert s is not None
     try:
         answer = await s.ask(await _prompt(msg, text, shell=shell), status, shell=shell)
     except Exception as e:
@@ -355,3 +382,48 @@ async def handle_clear(rs: Responder, msg: Message):
     if (s := sessions.pop(msg.chat_id, None)) is not None:
         create_task(s.retire())
     await rs.reply_cached('Cleared the session.' if cleared else 'No session to clear.')
+
+
+@command
+async def handle_compact(rs: Responder, msg: Message):
+    if (s := _session(msg.chat_id, create=False)) is None:
+        return await rs.reply_cached('No session to compact.')
+    before, after = await s.compact()
+    await rs.reply_cached(f'Compacted {before} tokens to {after}.')
+
+
+async def _quota() -> str:
+    '''The usage lines of the CLI's own `/usage`, which alone reports the
+    subscription's quota. Its other lines, such as tips that name local files,
+    stay out of the chat.'''
+    proc = await asyncio.create_subprocess_exec(
+        'claude',
+        '-p',
+        '/usage',
+        '--restricted',
+        '--no-session-persistence',
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+    )
+    try:
+        async with asyncio.timeout(CONNECT_SECS):
+            out, _ = await proc.communicate()
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise
+    if proc.returncode:
+        raise RuntimeError(f'claude -p /usage: exit status {proc.returncode}')
+    if not (lines := [line for line in out.decode().splitlines() if '% used' in line]):
+        raise RuntimeError(f'claude -p /usage: no usage in {out!r}')
+    return '\n'.join(lines)
+
+
+@command
+async def handle_usage(rs: Responder, msg: Message):
+    if (s := _session(msg.chat_id, create=False)) is None:
+        context = 'No session in this chat.'
+    else:
+        u = await s.usage()
+        context = f'Context: {u["totalTokens"]} of {u["maxTokens"]} tokens ({u["percentage"]:.0f}%)'
+    await rs.reply_cached(f'{context}\n\n{await _quota()}')

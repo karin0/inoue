@@ -128,17 +128,18 @@ conversation and takes its media to Claude as well. The answer starts as a statu
 line that names the running tool and becomes the answer when the turn ends.
 
 Each chat has one session, recorded in the `AiSession` table and run in
-`AI_CWD`, and `/clear` sent in the chat starts a new one. The session runs in
-Claude Code's restricted mode, which loads no settings or `CLAUDE.md` file by
-itself, and inoue passes it `AI_CWD/.claude/settings.json` so that the hooks
-there can record the session for `USER_ID` to audit. Its tools search and fetch
-the web, read the whole chat over MTProto as `USER_ID` through
-`inoue/mtproto.py`, and run commands through `inoue/shell.py`. The tools stay
-the same in every turn, since a change in them would invalidate the prompt
-cache, and the shell tool runs a command only in a turn whose text starts with
-`!`. `USER_ID` should send `!` only after reading what that turn can reach,
-because text that others wrote in the chat could otherwise make the session act
-on the machine.
+`AI_CWD`. Sent in the chat, `/clear` starts a new session, `/compact` compacts
+its context at once, and `/usage` shows the size of its context and the
+subscription's quota. The session runs in Claude Code's restricted mode, which
+loads no settings or `CLAUDE.md` file by itself, and inoue passes it
+`AI_CWD/.claude/settings.json` so that the hooks there can record the session
+for `USER_ID` to audit. Its tools search and fetch the web, read the whole chat
+over MTProto as `USER_ID` through `inoue/mtproto.py`, and run commands through
+`inoue/shell.py`. The tools stay the same in every turn, since a change in them
+would invalidate the prompt cache, and the shell tool runs a command only in a
+turn whose text starts with `!`. `USER_ID` should send `!` only after reading
+what that turn can reach, because text that others wrote in the chat could
+otherwise make the session act on the machine.
 
 Each prompt is a JSON object that names the chat, the bot and the time beside
 the message, the message it replies to and the part of that message it quotes,

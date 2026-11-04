@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar, cast
@@ -17,7 +18,7 @@ from claude_agent_sdk import (
 from telegram.constants import ChatType
 
 from inoue import ai
-from inoue.ai import handle_ai, handle_clear
+from inoue.ai import handle_ai, handle_clear, handle_compact, handle_usage
 from inoue.db import db
 
 from .fakes import FakeResponder, settle
@@ -64,6 +65,7 @@ class FakeClient:
         await self.gate.wait()
         text = self.texts[-1]
         if text == '/compact' and self.compacts:
+            type(self).tokens //= 2
             yield SystemMessage('compact_boundary', {})
         yield AssistantMessage([ToolUseBlock('1', 'mcp__telegram__chat', {})], 'model')
         failed = text == 'fail'
@@ -78,8 +80,8 @@ class FakeClient:
             errors=['boom'] if failed else None,
         )
 
-    async def get_context_usage(self) -> dict[str, int]:
-        return {'totalTokens': self.tokens}
+    async def get_context_usage(self) -> dict[str, float]:
+        return {'totalTokens': self.tokens, 'maxTokens': 1000, 'percentage': self.tokens / 10}
 
     async def disconnect(self):
         self.disconnected = True
@@ -374,3 +376,57 @@ async def test_the_prompt_carries_the_quoted_part_of_the_reply(clients: list[Fak
     msg.quote = MagicMock(text='two\u200b')
     await handle_ai(rs, msg, 'why')
     assert json.loads(clients[0].prompts[0])['quote'] == 'two'
+
+
+async def test_compact_compacts_the_session_now(
+    monkeypatch: pytest.MonkeyPatch, clients: list[FakeClient]
+):
+    rs, msg = guest('/compact')
+    await handle_compact(rs, msg)
+    assert rs.replies == [('No session to compact.', None, None)]
+
+    monkeypatch.setattr(FakeClient, 'tokens', 800)
+    await ask('a')
+    rs, msg = guest('/compact')
+    await handle_compact(rs, msg)
+    assert clients[0].texts == ['a', '/compact']
+    assert rs.replies == [('Compacted 800 tokens to 400.', None, None)]
+
+
+async def test_compact_fails_loud_when_the_cli_does_not_compact(
+    monkeypatch: pytest.MonkeyPatch, clients: list[FakeClient]
+):
+    monkeypatch.setattr(FakeClient, 'compacts', False)
+    await ask('a')
+    rs, msg = guest('/compact')
+    with pytest.raises(RuntimeError, match='not compacted'):
+        await handle_compact(rs, msg)
+    assert clients[0].disconnected
+
+
+async def test_usage_shows_the_context_and_the_quota(
+    monkeypatch: pytest.MonkeyPatch, clients: list[FakeClient]
+):
+    monkeypatch.setattr(ai, '_quota', AsyncMock(return_value='Current session: 14% used'))
+    rs, msg = guest('/usage')
+    await handle_usage(rs, msg)
+    assert rs.replies == [('No session in this chat.\n\nCurrent session: 14% used', None, None)]
+
+    monkeypatch.setattr(FakeClient, 'tokens', 250)
+    await ask('a')
+    rs, msg = guest('/usage')
+    await handle_usage(rs, msg)
+    assert rs.replies[0][0] == 'Context: 250 of 1000 tokens (25%)\n\nCurrent session: 14% used'
+
+
+async def test_the_quota_keeps_only_the_usage_lines(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    cli = tmp_path / 'claude'
+    cli.write_text(
+        "#!/bin/sh\nprintf 'Plan\\n\\nCurrent session: 17%% used\\nCurrent week: 3%% used\\n"
+        "\\n  30%%  Trim ~/x/CLAUDE.md\\n'\n"
+    )
+    cli.chmod(0o755)
+    monkeypatch.setenv('PATH', f'{tmp_path}:{os.environ["PATH"]}')
+    assert await ai._quota() == 'Current session: 17% used\nCurrent week: 3% used'
