@@ -33,7 +33,7 @@ from inoue.env import USER_ID
 from .fakes import FakeResponder, settle
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Generator
+    from collections.abc import AsyncIterator, Callable, Coroutine, Generator
     from pathlib import Path
 
 CHAT_ID = 42
@@ -480,3 +480,24 @@ async def test_a_forwarded_reply_names_its_origin_when_another_person_wrote_it(
     msg.reply_to_message.forward_origin = origin
     await handle_ai(rs, msg, 'who wrote this')
     assert json.loads(clients[0].prompts[0])['reply_to'].get('forwarded_from') == forwarded_from
+
+
+async def test_the_application_waits_for_no_task_of_an_idle_session(
+    monkeypatch: pytest.MonkeyPatch, clients: list[FakeClient]
+):
+    # The application's stop awaits every task of its `create_task`.
+    tracked: list[asyncio.Task] = []
+
+    def track(coro: Coroutine[None, None, None]) -> asyncio.Task:
+        tracked.append(task := asyncio.create_task(coro))
+        return task
+
+    monkeypatch.setattr(ai, 'create_task', track)
+    monkeypatch.setattr(FakeClient, 'tokens', ai.COMPACT_TOKENS + 1)
+    await ask('a')
+    await spin()
+    assert all(t.done() for t in tracked)
+
+    await ai.stop()
+    assert clients[0].disconnected
+    assert clients[0].texts == ['a']

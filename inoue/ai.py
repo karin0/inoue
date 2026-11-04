@@ -236,10 +236,15 @@ class Session:
             except Exception:
                 await self._close(compact=False)
                 raise
-            self._idle = create_task(self._expire())
+            # The application's stop waits for every task of its own
+            # `create_task`, and this one sleeps for most of an hour.
+            self._idle = asyncio.create_task(self._expire())
         return result
 
     async def retire(self):
+        # Cancelling first interrupts an idle compaction that holds the lock,
+        # and a turn that held it arms the idle close again.
+        self._cancel_idle()
         async with self._lock:
             self._cancel_idle()
             await self._close(compact=False)
@@ -266,8 +271,10 @@ class Session:
     async def _expire(self):
         await asyncio.sleep(IDLE_SECS)
         async with self._lock:
-            self._idle = None
-            await self._close(compact=True)
+            try:
+                await self._close(compact=True)
+            finally:
+                self._idle = None
 
     async def _close(self, *, compact: bool):
         if (client := self._client) is None:
@@ -401,6 +408,10 @@ async def handle_ai(rs: Responder, msg: Message, text: str):
         await status.show(f'{type(e).__name__}: {e}')
         raise
     await status.show(answer)
+
+
+async def stop():
+    await asyncio.gather(*(s.retire() for s in sessions.values()))
 
 
 @command

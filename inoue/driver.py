@@ -33,6 +33,9 @@ class DriverImpl(DataStore, Driver):
         return asyncio.gather(*tasks)
 
     async def post_stop(self):
+        from .ai import stop
+
+        await stop()
         if mtproto is not None:
             await mtproto.stop()
         self.close()
