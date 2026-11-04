@@ -2,6 +2,7 @@ import asyncio
 import dataclasses
 import json
 import os
+import shlex
 import shutil
 import tempfile
 import time
@@ -30,7 +31,7 @@ from .db import db
 from .env import MAX_TEXT_LENGTH, ME_LOWER
 from .log import log
 from .mtproto import SERVER, TOOLS, Fields, mtproto, named, stamp
-from .text import visible
+from .text import pre_block, visible
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -382,6 +383,18 @@ async def handle_clear(rs: Responder, msg: Message):
     if (s := sessions.pop(msg.chat_id, None)) is not None:
         create_task(s.retire())
     await rs.reply_cached('Cleared the session.' if cleared else 'No session to clear.')
+
+
+@command
+async def handle_session(rs: Responder, msg: Message):
+    if (sid := db.get_ai_session(msg.chat_id)) is None:
+        return await rs.reply_cached('No session in this chat.')
+    # The CLI finds a session by the directory it ran in, and a fork leaves
+    # the transcript that inoue resumes untouched.
+    assert CWD is not None
+    await rs.reply_cached(
+        *pre_block(f'cd {shlex.quote(CWD)} && claude --resume {sid} --fork-session')
+    )
 
 
 @command

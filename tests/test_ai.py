@@ -18,7 +18,7 @@ from claude_agent_sdk import (
 from telegram.constants import ChatType
 
 from inoue import ai
-from inoue.ai import handle_ai, handle_clear, handle_compact, handle_usage
+from inoue.ai import handle_ai, handle_clear, handle_compact, handle_session, handle_usage
 from inoue.db import db
 
 from .fakes import FakeResponder, settle
@@ -430,3 +430,17 @@ async def test_the_quota_keeps_only_the_usage_lines(
     cli.chmod(0o755)
     monkeypatch.setenv('PATH', f'{tmp_path}:{os.environ["PATH"]}')
     assert await ai._quota() == 'Current session: 17% used\nCurrent week: 3% used'
+
+
+async def test_session_prints_the_command_that_forks_it_in_the_cli(clients: list[FakeClient]):
+    rs, msg = guest('/session')
+    await handle_session(rs, msg)
+    assert rs.replies == [('No session in this chat.', None, None)]
+
+    await ask('a')
+    rs, msg = guest('/session')
+    await handle_session(rs, msg)
+    sid = db.get_ai_session(CHAT_ID)
+    assert rs.replies == [
+        (f'```\ncd /ai && claude --resume {sid} --fork-session```', 'MarkdownV2', None)
+    ]

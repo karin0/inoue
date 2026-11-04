@@ -129,9 +129,10 @@ line that names the running tool and becomes the answer when the turn ends.
 
 Each chat has one session, recorded in the `AiSession` table and run in
 `AI_CWD`. Sent in the chat, `/clear` starts a new session, `/compact` compacts
-its context at once, and `/usage` shows the size of its context and the
-subscription's quota. The session runs in Claude Code's restricted mode, which
-loads no settings or `CLAUDE.md` file by itself, and inoue passes it
+its context at once, `/usage` shows the size of its context and the
+subscription's quota, and `/session` prints the command that opens a fork of it
+in the CLI. The session runs in Claude Code's restricted mode, which loads no
+settings or `CLAUDE.md` file by itself, and inoue passes it
 `AI_CWD/.claude/settings.json` so that the hooks there can record the session
 for `USER_ID` to audit. Its tools search and fetch the web, read the whole chat
 over MTProto as `USER_ID` through `inoue/mtproto.py`, and run commands through
