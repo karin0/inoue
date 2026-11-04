@@ -116,6 +116,7 @@ def guest(text: str) -> tuple[FakeResponder, MagicMock]:
     msg.photo = ()
     msg.document = msg.video = msg.audio = msg.voice = None
     msg.animation = msg.sticker = msg.video_note = None
+    msg.quote = None
     return rs, msg
 
 
@@ -365,3 +366,11 @@ async def test_clear_without_a_session_says_so(clients: list[FakeClient]):
     rs, msg = guest('/clear')
     await handle_clear(rs, msg)
     assert rs.replies == [('No session to clear.', None, None)]
+
+
+async def test_the_prompt_carries_the_quoted_part_of_the_reply(clients: list[FakeClient]):
+    rs, msg = guest('why')
+    _, msg.reply_to_message = guest('one two three')
+    msg.quote = MagicMock(text='two\u200b')
+    await handle_ai(rs, msg, 'why')
+    assert json.loads(clients[0].prompts[0])['quote'] == 'two'

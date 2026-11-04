@@ -140,12 +140,13 @@ cache, and the shell tool runs a command only in a turn whose text starts with
 because text that others wrote in the chat could otherwise make the session act
 on the machine.
 
-Each prompt is a JSON object that names the chat, the bot and the time beside the
-message and the message it replies to, since a guest message carries no other
-context, and it states whether the shell tool works in this turn. The chat tool
-returns JSON too. Every name and text that people wrote stays inside a JSON
-string, and a `role` field marks the bot and `USER_ID` by their sender ids, so no
-text or display name can forge a message or a role.
+Each prompt is a JSON object that names the chat, the bot and the time beside
+the message, the message it replies to and the part of that message it quotes,
+since a guest message carries no other context, and it states whether the shell
+tool works in this turn. The chat tool returns JSON too. Every name and text
+that people wrote stays inside a JSON string, and a `role` field marks the bot
+and `USER_ID` by their sender ids, so no text or display name can forge a
+message or a role.
 
 Each command runs in a transient systemd user scope with a time limit, so systemd
 kills every process it started, including those started with `setsid`, even when
